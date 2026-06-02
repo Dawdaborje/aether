@@ -1,3 +1,3 @@
 [workspace]
-resolver = "3"
-members = ["addons/account", "addons/base","aeter"]
+members = ["aeter", "aeter_cli"]
+resolver = "2"
