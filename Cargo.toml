@@ -1,3 +1,3 @@
 [workspace]
-members = ["aether", "aether_cli", "core/aether_core", "core/orm", "core/web"]
+members = ["aether", "aether_cli", "core/aether_core", "core/event_bus", "core/orm", "core/web"]
 resolver = "2"
