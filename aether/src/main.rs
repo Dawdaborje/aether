@@ -1,4 +1,4 @@
-use aether::server::{self, serve::run_server};
+use aether::server::serve::run_server;
 use aether_core::config_manager::models::gen_config_file;
 use clap::Parser;
 
@@ -18,15 +18,14 @@ struct Args {
 async fn main() {
     let args = Args::parse();
 
-    match args.config_file {
-        Some(file) => gen_config_file(&file),
-        None => {
-            // Use default config
-        }
-    }
-
-    if let Some(port) = args.serve {
-        let config_file = args.config_file;
-        let config = run_server(&port, config_file).await;
+    if let Some(host) = args.serve {
+        let config_file = args
+            .config_file
+            .unwrap_or_else(|| "aether.conf.toml".to_string());
+        let config = gen_config_file(&config_file).unwrap_or_else(|err| {
+            eprintln!("Failed to generate config file: {err}");
+            std::process::exit(1);
+        });
+        let _ = run_server(&host, &config_file, config).await;
     }
 }
