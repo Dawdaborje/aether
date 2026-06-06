@@ -8,10 +8,5 @@ The word `Aether` comes from the Greek god of light. Sometimes spells as `Aither
 - Bridges: These are default features/integrations with third party apps
 - Facets:  These are core modules that the kernel.
 
-## Tech stack
 
-- Rust: For kernel.
-- Sveltekit: Frontend.
-- SurrealDB: Database for the software.
-- Wasm: For plugin/addon business logic.
-- S3 Storage
+Read [Archietecture](./docs/archietecture/README.md)
