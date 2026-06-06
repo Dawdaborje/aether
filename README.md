@@ -2,10 +2,16 @@
 
 The word `Aether` comes from the Greek god of light. Sometimes spells as `Aither` or `Ether`
 
-This is gonna be a rebuild of odoo in rust:
+## Terminology
 
-## Techinical design
+- Kernel: In this context kernel here refers to aether server and runtime host for the wasm plugins/addons.
+- Bridges: These are default features/integrations with third party apps
+- Facets:  These are core modules that the kernel.
 
--   Plugin: A plugin will be a set of rules that we will be using as business cases. A plugin will consist of wasm (business logic and other stuff like views and more.)
--   Database: For the database, I am going with `surreal db`.
--   Security: I am heavily inspired by tauri's security and I will go beyond
+## Tech stack
+
+- Rust: For kernel.
+- Sveltekit: Frontend.
+- SurrealDB: Database for the software.
+- Wasm: For plugin/addon business logic.
+- S3 Storage
