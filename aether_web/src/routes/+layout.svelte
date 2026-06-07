@@ -7,7 +7,7 @@
 
 <svelte:head>
 	<link rel="icon" href={favicon} />
-	<title>Your App</title>
+	<title>Aether</title>
 </svelte:head>
 
 {@render children()}

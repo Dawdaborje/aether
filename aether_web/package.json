@@ -23,7 +23,7 @@
 		"@fontsource-variable/playfair-display": "^5.2.8",
 		"@inlang/paraglide-js": "^2.18.2",
 		"@internationalized/date": "^3.12.2",
-		"@lucide/svelte": "^1.17.0",
+		"@lucide/svelte": "^0.577.0",
 		"@playwright/test": "^1.60.0",
 		"@skeletonlabs/skeleton": "^4.15.2",
 		"@skeletonlabs/skeleton-svelte": "^4.15.2",
