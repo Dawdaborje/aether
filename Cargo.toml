@@ -3,14 +3,17 @@ members = [
     "aether",
     # bridges   
     "bridges/documents/docusign",
-    "bridges/documents/google_drive", "bridges/documents/local_storage",
+    "bridges/documents/google_drive",
+    "bridges/documents/local_storage",
     "bridges/documents/mayan_edms",
     "bridges/documents/nextcloud",
     "bridges/documents/s3_storage",
     # facets
-    "facets/aether_core", "facets/authentication",
-    "facets/event_bus", "facets/organization",
+    "facets/aether_core",
+    "facets/authentication",
+    "facets/event_bus",
+    "facets/organization",
     "facets/orm",
-    "facets/web", "sdks/aether_sdk",
+    "facets/web",
 ]
 resolver = "2"

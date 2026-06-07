@@ -248,46 +248,6 @@ Users live in `core` and can belong to multiple organisations via a graph relati
 
 ---
 
-## CLI
-
-All developer operations go through `ae`:
-
-```bash
-ae init                       # scaffold a new Aether workspace
-ae add ./plugins/accounting   # add a local plugin
-ae add ../inventory-module    # add an external plugin
-ae install                    # resolve plugins → generate .aether/modules.toml
-ae dev                        # start kernel + SvelteKit dev server with hot reload
-ae build                      # compile all plugins + frontend
-ae seed                       # run seed data files
-ae seed --env development     # run environment-specific seeds
-```
-
----
-
-## Getting Started
-
-> Prerequisites: Rust (stable), Node.js 20+, SurrealDB, Garage (or any S3-compatible storage)
-
-```bash
-# Install the CLI
-cargo install aether-cli
-
-# Create a new workspace
-ae init my-erp
-cd my-erp
-
-# Add the example accounting plugin
-ae add https://github.com/aether-plugins/accounting
-
-# Resolve plugins
-ae install
-
-# Start development server
-ae dev
-```
-
----
 
 ## Roadmap
 
@@ -328,4 +288,4 @@ MIT — see [LICENSE](./LICENSE).
 ---
 
 > Built by [@Dawdaborje](https://github.com/Dawdaborje) in The Gambia.
-> Part of [KUJABI Global](https://kujabiglobal.com) · [BuraLabs](https://buralabs.cloud)
+> Part of [KUJABI Global](https://kujabiglobal.com) · [Borje's Tech](https://borjestech.com) · [BuraLabs](https://buralabs.cloud)
