@@ -1,6 +1,8 @@
 use aether::server::serve::run_server;
 use aether_core::config_manager::models::gen_config_file;
 use clap::Parser;
+use log::LevelFilter;
+use std::str::FromStr;
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -12,11 +14,46 @@ struct Args {
 
     #[arg(short, long, default_missing_value = "0.0.0.0:7890", num_args = 0..=1)]
     serve: Option<String>,
+
+    #[arg(short = 'l', long = "log", default_value = "debug")]
+    /// Logging level (error, warn, info, debug, trace)
+    log: String,
+
+    #[arg(short = 'e', long = "environment", default_value = "dev")]
+    /// Environment mode: `dev` or `prod`
+    environment: String,
 }
 
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
+
+    // Initialize logging based on CLI arg (default: debug).
+    // If `--log` is `debug`/`trace` or `--verbose` is set, also enable debug
+    // logging for axum, tower_http and hyper so you get framework debug info.
+    let level = match LevelFilter::from_str(&args.log) {
+        Ok(l) => l,
+        Err(_) => {
+            eprintln!("Invalid log level '{}', defaulting to 'debug'", args.log);
+            LevelFilter::Debug
+        }
+    };
+
+    let mut builder = env_logger::Builder::new();
+    builder.filter_level(level);
+
+    let enable_framework_debug =
+        args.verbose || matches!(level, LevelFilter::Debug | LevelFilter::Trace);
+    if enable_framework_debug {
+        builder
+            .filter_module("axum", LevelFilter::Debug)
+            .filter_module("tower_http", LevelFilter::Debug)
+            .filter_module("hyper", LevelFilter::Debug);
+    }
+
+    builder.init();
+
+    println!("Starting in '{}' environment", args.environment);
 
     if let Some(host) = args.serve {
         let config_file = args
@@ -26,6 +63,9 @@ async fn main() {
             eprintln!("Failed to generate config file: {err}");
             std::process::exit(1);
         });
-        let _ = run_server(&host, &config_file, config).await;
+        if let Err(err) = run_server(&host, &config_file, config).await {
+            eprintln!("Server failed: {}", err);
+            std::process::exit(1);
+        }
     }
 }

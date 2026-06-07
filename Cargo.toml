@@ -8,8 +8,8 @@ members = [
     "bridges/documents/nextcloud",
     "bridges/documents/s3_storage",
     # facets
-    "facets/aether_core",
-    "facets/event_bus",
+    "facets/aether_core", "facets/authentication",
+    "facets/event_bus", "facets/organization",
     "facets/orm",
     "facets/web",
 ]

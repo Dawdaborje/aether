@@ -1,17 +1,39 @@
 use aether_core::config_manager::models;
 use axum::Router;
+use std::error::Error;
 
-pub async fn run_server(server: &str, conf_file: &str, config: models::AetherConfig) {
-    let app = Router::new();
+pub async fn run_server(
+    server: &str,
+    conf_file: &str,
+    config: models::AetherConfig,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let app = Router::new().merge(aether_core::routes::routes());
+
+    // Prefer server configuration from `config` when provided; fall back to the
+    // `server` argument otherwise.
+    let bind_addr = if let Some(srv_cfg) = config.server {
+        format!("{}:{}", srv_cfg.host, srv_cfg.port)
+    } else {
+        server.to_string()
+    };
+
     println!(
-        "Starting server on {server} and using configuration file: {:?}",
-        conf_file
+        "Starting server on {} and using configuration file: {:?}",
+        bind_addr, conf_file
     );
 
-    if config.server.is_none() {
-        eprintln!("Server configuration is missing in the config file.");
-        std::process::exit(1);
+    let listener = match tokio::net::TcpListener::bind(bind_addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("Failed to bind TCP listener: {}", e);
+            return Err(Box::new(e));
+        }
+    };
+
+    if let Err(e) = axum::serve(listener, app).await {
+        eprintln!("Server error: {}", e);
+        return Err(Box::new(e));
     }
-    let listener = tokio::net::TcpListener::bind(server).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+
+    Ok(())
 }

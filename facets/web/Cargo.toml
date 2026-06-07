@@ -1,6 +1,9 @@
 [package]
-name = "web"
+name = "aether_web"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+actix-web = "4.13.0"
+axum = { version = "0.8.9", features = ["tokio", "macros"] }
+tower-http = { version = "0.6.11", features = ["full"] }

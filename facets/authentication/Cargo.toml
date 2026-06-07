@@ -1,5 +1,5 @@
 [package]
-name = "aether_core"
+name = "aether_authentication"
 version = "0.1.0"
 edition = "2024"
 
@@ -7,9 +7,3 @@ edition = "2024"
 axum = { version = "0.8.9", features = ["tokio", "macros"] }
 serde = { version = "1.0.228", features = ["derive"] }
 tokio = { version = "1.52.3", features = ["full"] }
-toml = "1.1.2"
-# facets
-aether_authentication = { path = "../authentication" }
-aether_organization = { path = "../organization" }
-aether_web = { path = "../web" }
-aether_event_bus = { path = "../event_bus" }
