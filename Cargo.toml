@@ -11,6 +11,6 @@ members = [
     "facets/aether_core", "facets/authentication",
     "facets/event_bus", "facets/organization",
     "facets/orm",
-    "facets/web",
+    "facets/web", "sdks/aether_sdk",
 ]
 resolver = "2"

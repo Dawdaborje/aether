@@ -240,6 +240,10 @@ name = "aether_orm"
 version = "0.1.0"
 
 [[package]]
+name = "aether_sdk"
+version = "0.1.0"
+
+[[package]]
 name = "aether_web"
 version = "0.1.0"
 dependencies = [
