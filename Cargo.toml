@@ -8,12 +8,16 @@ members = [
     "bridges/documents/mayan_edms",
     "bridges/documents/nextcloud",
     "bridges/documents/s3_storage",
+    "bridges/payrolls/pe_integrator",
+    "bridges/payrolls/sp_integrator",
     # facets
     "facets/aether_core",
     "facets/authentication",
     "facets/event_bus",
     "facets/organization",
     "facets/orm",
+    "facets/payroll",
+    "facets/storage",
     "facets/web",
 ]
 resolver = "2"
