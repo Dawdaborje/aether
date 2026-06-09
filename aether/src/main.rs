@@ -22,6 +22,9 @@ struct Args {
     #[arg(short = 'e', long = "environment", default_value = "dev")]
     /// Environment mode: `dev` or `prod`
     environment: String,
+
+    #[arg(short, long, action = clap::ArgAction::SetTrue)]
+    initialize: bool,
 }
 
 #[tokio::main]
@@ -34,7 +37,7 @@ async fn main() {
     let level = match LevelFilter::from_str(&args.log) {
         Ok(l) => l,
         Err(_) => {
-            eprintln!("Invalid log level '{}', defaulting to 'debug'", args.log);
+            log::error!("Invalid log level '{}', defaulting to 'debug'", args.log);
             LevelFilter::Debug
         }
     };
@@ -53,7 +56,7 @@ async fn main() {
 
     builder.init();
 
-    println!("Starting in '{}' environment", args.environment);
+    log::warn!("Starting in '{}' environment", args.environment);
 
     if let Some(host) = args.serve {
         let config_file = args
@@ -67,5 +70,9 @@ async fn main() {
             eprintln!("Server failed: {}", err);
             std::process::exit(1);
         }
+    }
+
+    if args.initialize {
+        aether::cli::initialization::initialize_system();
     }
 }

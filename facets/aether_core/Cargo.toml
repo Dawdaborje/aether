@@ -13,3 +13,4 @@ aether_authentication = { path = "../authentication" }
 aether_organization = { path = "../organization" }
 aether_web = { path = "../web" }
 aether_event_bus = { path = "../event_bus" }
+log = "0.4.32"

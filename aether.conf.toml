@@ -1,8 +1,0 @@
-[configuration]
-version = "0.1"
-db_config_file = "./db.conf.toml"
-core_addon_paths = "./addons/"
-
-[server]
-host = "0.0.0.0"
-port = 7890

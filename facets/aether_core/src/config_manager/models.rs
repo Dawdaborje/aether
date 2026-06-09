@@ -26,8 +26,6 @@ pub enum StorageType {
     #[default]
     Local,
     S3,
-    GCS,
-    Azure,
 }
 
 #[derive(Debug, Deserialize, Serialize, Default)]
@@ -43,6 +41,8 @@ pub struct AetherConfig {
     pub configuration: Option<CoreConfig>,
     pub database: Option<DatabaseConfig>,
     pub server: Option<ServerConfig>,
+    pub plugin_workspace_paths: Option<String>,
+    pub storages: Option<StorageConfig>,
 }
 
 impl Default for AetherConfig {
@@ -51,6 +51,8 @@ impl Default for AetherConfig {
             configuration: Some(CoreConfig::default()),
             database: Some(DatabaseConfig::default()),
             server: Some(ServerConfig::default()),
+            plugin_workspace_paths: Some("".to_string()),
+            storages: Some(StorageConfig::default()),
         }
     }
 }
