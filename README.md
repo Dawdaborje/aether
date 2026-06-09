@@ -288,4 +288,3 @@ MIT — see [LICENSE](./LICENSE).
 ---
 
 > Built by [@Dawdaborje](https://github.com/Dawdaborje) in The Gambia.
-> Part of [KUJABI Global](https://kujabiglobal.com) · [Borje's Tech](https://borjestech.com) · [BuraLabs](https://buralabs.cloud)
