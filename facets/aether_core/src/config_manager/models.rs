@@ -1,7 +1,4 @@
-use serde::de::Error as SerdeDeError;
 use serde::{Deserialize, Serialize};
-use std::fs;
-use toml::de::Error;
 
 #[derive(Debug, Deserialize, Serialize, Default)]
 pub struct DatabaseConfig {
@@ -42,29 +39,46 @@ pub struct AetherConfig {
     pub database: Option<DatabaseConfig>,
     pub server: Option<ServerConfig>,
     pub plugin_workspace_paths: Option<String>,
-    pub storages: Option<StorageConfig>,
+    pub storages: Option<Vec<StorageConfig>>,
 }
 
 impl Default for AetherConfig {
     fn default() -> Self {
+        let mut storages: Vec<StorageConfig> = Vec::new();
+        storages.push(StorageConfig {
+            storage_type: StorageType::Local,
+        });
         Self {
             configuration: Some(CoreConfig::default()),
             database: Some(DatabaseConfig::default()),
-            server: Some(ServerConfig::default()),
+            server: Some(ServerConfig {
+                host: "0.0.0.0".to_string(),
+                port: 7890,
+            }),
             plugin_workspace_paths: Some("".to_string()),
-            storages: Some(StorageConfig::default()),
+            storages: Some(storages),
         }
     }
 }
 
 impl AetherConfig {
-    pub fn gen_config_from_file(file_path: &str) -> Result<Self, Error> {
-        let data =
-            fs::read_to_string(file_path).map_err(|e| SerdeDeError::custom(e.to_string()))?;
-        toml::from_str(&data)
-    }
-}
+    pub fn display(&self) {
+        if let Some(server) = &self.server {
+            log::info!("Server config: {}:{}", server.host, server.port);
+        }
 
-pub fn gen_config_file(file_path: &str) -> Result<AetherConfig, String> {
-    AetherConfig::gen_config_from_file(file_path).map_err(|e| e.to_string())
+        if let Some(storage) = &self.storages {
+            log::info!("Storages: {:?}", storage)
+        }
+    }
+
+    pub fn display_server_start(&self) {
+        if let Some(server) = &self.server {
+            log::info!(
+                "Starting server at: https://{}:{}",
+                server.host,
+                server.port
+            );
+        }
+    }
 }

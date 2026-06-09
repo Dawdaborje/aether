@@ -1,26 +1,29 @@
-use aether_core::config_manager::models;
+use aether_core::config_manager::models::{self, ServerConfig};
 use axum::Router;
 use std::error::Error;
 
-pub async fn run_server(
-    server: &str,
-    conf_file: &str,
-    config: models::AetherConfig,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let app = Router::new().merge(aether_core::routes::routes());
+pub fn get_server_host(conf: Option<ServerConfig>, port: Option<u16>) -> String {
+    let mut server_host = "".to_string();
 
-    // Prefer server configuration from `config` when provided; fall back to the
-    // `server` argument otherwise.
-    let bind_addr = if let Some(srv_cfg) = config.server {
-        format!("{}:{}", srv_cfg.host, srv_cfg.port)
+    if let Some(port) = &port {
+        server_host = format!("0.0.0.0:{}", port);
     } else {
-        server.to_string()
-    };
+        if let Some(server_config) = &conf {
+            server_host = format!("{}:{}", server_config.host, server_config.port);
+        }
+    }
 
-    println!(
-        "Starting server on {} and using configuration file: {:?}",
-        bind_addr, conf_file
-    );
+    server_host
+}
+
+pub async fn run_server(
+    config: models::AetherConfig,
+    http_port: Option<u16>,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let app = Router::new();
+
+    let bind_addr = get_server_host(config.server, http_port);
+    log::info!("Starting server: http://{}", bind_addr);
 
     let listener = match tokio::net::TcpListener::bind(bind_addr).await {
         Ok(l) => l,
