@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize, Serialize, Default)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct DatabaseConfig {
     pub user: String,
     pub password: String,
@@ -10,6 +10,21 @@ pub struct DatabaseConfig {
     pub pool_size: Option<u32>,
     pub ssl_mode: Option<String>,
     pub db_filter: Option<String>,
+}
+
+impl Default for DatabaseConfig {
+    fn default() -> Self {
+        Self {
+            user: "root".to_string(),
+            password: "root".to_string(),
+            name: "main".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 8000,
+            pool_size: Some(10),
+            ssl_mode: Some(String::new()),
+            db_filter: Some(String::new()),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Default)]

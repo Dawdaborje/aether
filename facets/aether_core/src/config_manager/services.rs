@@ -44,12 +44,12 @@ pub fn gen_aether_conf_from_config_file(conf_file: &str) -> AetherConfig {
         Ok(content) => {
             let value: Value = toml::from_str(&content).expect("Error parsing the config content");
 
-            println!("{:#?}", value);
-
             let db_conf =
                 build_database_conf(value.get("database").expect("Cannot see database").clone());
-            println!("{:?}", db_conf);
-            AetherConfig::default()
+            AetherConfig {
+                database: Some(db_conf),
+                ..Default::default()
+            }
         }
         Err(e) => {
             log::error!("Failed to read file: {e}");

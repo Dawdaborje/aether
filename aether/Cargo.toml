@@ -7,7 +7,12 @@ edition = "2024"
 axum = { version = "0.8.9", features = ["tokio", "macros"] }
 serde = { version = "1.0.228", features = ["derive"] }
 tokio = { version = "1.52.3", features = ["full"] }
-aether_core = { path = "../facets/aether_core" }
 clap = { version = "4.6.1", features = ["env", "derive", "string"] }
 log = "0.4"
 env_logger = "0.10"
+surrealdb = "3.1.4"
+thiserror = "2.0.18"
+# Aether modules
+aether_core = { path = "../facets/aether_core" }
+aether_orm = { path = "../facets/orm" }
+include_dir = "0.7.4"
