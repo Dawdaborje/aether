@@ -13,11 +13,13 @@ pub struct SettingTab {
     pub link: String,
     pub icon: String,
     pub icon_type: IconType,
+    pub default: bool,
 }
 
 #[derive(Deserialize, Serialize)]
 pub struct SettingGroup {
     pub name: String,
+    pub tab: SettingTab,
     pub heading: Option<String>,
     pub icon: String,
     pub icon_type: IconType,
