@@ -37,7 +37,7 @@ members = [
     "facets/localization",
     "facets/organization",
     "facets/orm",
-    "facets/payroll",
+    "facets/payroll", "facets/plugin_manager",
     "facets/storage",
     "facets/web",
 ]

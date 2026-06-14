@@ -1,4 +1,10 @@
-use aether::{cli::initialization::initialize_system, server::serve::run_server};
+use aether::{
+    cli::{
+        initialization::initialize_system,
+        seed::{self, seed_system},
+    },
+    server::serve::run_server,
+};
 use aether_core::config_manager::{
     models::{AetherConfig, DatabaseConfig},
     services::generate_aether_config,
@@ -40,6 +46,14 @@ struct Args {
     #[arg(short, long, action = clap::ArgAction::SetTrue)]
     // Generate a default configuration for the system and exit
     initialize: bool,
+
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    // Generate a default configuration for the system and exit
+    seed: bool,
+
+    #[arg(short, long)]
+    // Plugins to upgrade (e.g., `--upgrade plugin1 plugin2`)
+    upgrade: Option<Vec<String>>,
 
     // database
     #[arg(long)]
@@ -173,8 +187,20 @@ async fn main() {
         };
     };
 
+    if let Some(plugins_to_upgrade) = &args.upgrade {
+        // let (_configuration, db_conn) = get_prerequisites(&args).await;
+        for plugin_name in plugins_to_upgrade {
+            log::info!("{plugin_name}")
+        }
+    }
+
     if args.initialize {
         let (_configuration, db_conn) = get_prerequisites(&args).await;
         initialize_system(db_conn).await;
+    }
+
+    if args.seed {
+        let (_configuration, db_conn) = get_prerequisites(&args).await;
+        seed_system(db_conn).await;
     }
 }

@@ -8,10 +8,7 @@ This is a software suite
 group = "erp_software"
 icon = "./assets/erp.svg"
 
+
 [[modules]]
 name = "accounting"
 path = "./accounting"
-
-[[modules]]
-name = "inventory"
-path = "./inventory"

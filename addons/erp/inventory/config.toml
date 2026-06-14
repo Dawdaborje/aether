@@ -1,9 +1,0 @@
-[plugin]
-name = "inventory"
-version = "1.0.0"
-label = "Inventory Management"
-description = "Inventory management plugin for ERP system"
-long_description = "This plugin provides inventory management features for the ERP system, including stock tracking, order management, and reporting."
-dependency = ["base", "core", "sales", "purchase"]
-
-# ui_path = "./ui"

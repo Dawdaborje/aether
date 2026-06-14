@@ -1,8 +1,0 @@
-<page route="/inventory/home" title="Inventory Home" icon="home" model="inventory.home">
-    <template>
-        <div class="inventory-home">
-            <h1>Welcome to the Inventory Management System</h1>
-            <p>Use the navigation menu to access different sections of the inventory management system.</p>
-        </div>
-    </template>
-</page>
