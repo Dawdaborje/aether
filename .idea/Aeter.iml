@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<module type="EMPTY_MODULE" version="4">
+  <component name="NewModuleRootManager">
+    <content url="file://$MODULE_DIR$">
+      <sourceFolder url="file://$MODULE_DIR$/aether/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bridges/auth_and_identity/auth0/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bridges/auth_and_identity/authentik/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bridges/auth_and_identity/google_auth/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bridges/auth_and_identity/keycloak/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bridges/auth_and_identity/ldap/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bridges/auth_and_identity/microsoft_extra/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bridges/communications/africas_talking/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bridges/communications/bravo/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bridges/communications/mailgun/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bridges/communications/postmark/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bridges/communications/resend/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bridges/communications/termii/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bridges/communications/twilio/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bridges/communications/whatsapp/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bridges/document_management/docusign/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bridges/document_management/google_drive/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bridges/document_management/mayan_edms/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bridges/document_management/nextcloud/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bridges/maps_and_locations/google_map/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bridges/maps_and_locations/open_street_map/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bridges/payments/flutterwave/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bridges/payments/paystack/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bridges/payments/stripe/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bridges/payrolls/payroll_engine/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bridges/payrolls/swift_payroll/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bridges/storage_and_cdn/local_storage/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bridges/storage_and_cdn/s3_storage/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/facets/aether_core/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/facets/authentication/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/facets/communication/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/facets/event_bus/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/facets/localization/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/facets/organization/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/facets/orm/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/facets/payroll/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/facets/plugin_manager/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/facets/report/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/facets/security/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/facets/storage/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/facets/web/src" isTestSource="false" />
+      <excludeFolder url="file://$MODULE_DIR$/target" />
+    </content>
+    <orderEntry type="inheritedJdk" />
+    <orderEntry type="sourceFolder" forTests="false" />
+  </component>
+</module>
