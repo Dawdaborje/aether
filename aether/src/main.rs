@@ -1,8 +1,5 @@
 use aether::{
-    cli::{
-        initialization::initialize_system,
-        seed::{self, seed_system},
-    },
+    cli::{initialization::initialize_system, seed::seed_system},
     server::serve::run_server,
 };
 use aether_core::config_manager::{
@@ -35,6 +32,10 @@ struct Args {
     // Server address to bind to (e.g., 0.0.0.0:7890)
     serve: Option<String>,
 
+    #[arg(short = 'w', long, action = clap::ArgAction::SetTrue)]
+    // Serves the event listener outside the even bus like
+    serve_listener: bool,
+
     #[arg(short = 'l', long = "log", default_value = "debug")]
     /// Logging level (error, warn, info, debug, trace)
     log: String,
@@ -56,6 +57,7 @@ struct Args {
     upgrade: Option<Vec<String>>,
 
     // database
+    // these are the args for the database
     #[arg(long)]
     // Surreal db namespace
     db_namespace: Option<String>,

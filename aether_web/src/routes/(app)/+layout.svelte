@@ -1,11 +1,20 @@
 <script lang="ts">
+	import { goto } from '$app/navigation';
+	import { resolve } from '$app/paths';
+	import DefaultLayout from '$lib/components/layout/default/defaultLayout.svelte';
+	import { onMount } from 'svelte';
+
 	let { children } = $props();
+
+	let hasHomePage = $state(false);
+
+	onMount(() => {
+		if (!hasHomePage) {
+			goto(resolve('/apps'));
+		}
+	});
 </script>
 
-<div class="flex flex-col">
-	<div class="fixed top-0 z-50">hello</div>
-
-	<div class="flex-1">
-		{@render children()}
-	</div>
-</div>
+<DefaultLayout>
+	{@render children()}
+</DefaultLayout>

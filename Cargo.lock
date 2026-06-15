@@ -236,6 +236,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "aether_communication"
+version = "0.1.0"
+
+[[package]]
 name = "aether_core"
 version = "0.1.0"
 dependencies = [
@@ -255,6 +259,10 @@ name = "aether_event_bus"
 version = "0.1.0"
 
 [[package]]
+name = "aether_localization"
+version = "0.1.0"
+
+[[package]]
 name = "aether_organization"
 version = "0.1.0"
 
@@ -271,12 +279,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "aether_payroll"
+version = "0.1.0"
+
+[[package]]
 name = "aether_plugin_manager"
 version = "0.1.0"
 dependencies = [
  "extism",
  "rhai",
 ]
+
+[[package]]
+name = "aether_report"
+version = "0.1.0"
+
+[[package]]
+name = "aether_security"
+version = "0.1.0"
+
+[[package]]
+name = "aether_storage"
+version = "0.1.0"
 
 [[package]]
 name = "aether_web"
@@ -1151,10 +1175,6 @@ dependencies = [
  "bytes",
  "memchr",
 ]
-
-[[package]]
-name = "communication"
-version = "0.1.0"
 
 [[package]]
 name = "compression-codecs"
@@ -3339,10 +3359,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "localization"
-version = "0.1.0"
-
-[[package]]
 name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3853,10 +3869,6 @@ name = "path-clean"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "17359afc20d7ab31fdb42bb844c8b3bb1dabd7dcf7e68428492da7f16966fcef"
-
-[[package]]
-name = "payroll"
-version = "0.1.0"
 
 [[package]]
 name = "paystack"
@@ -5435,10 +5447,6 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
-
-[[package]]
-name = "storage"
-version = "0.1.0"
 
 [[package]]
 name = "storekey"

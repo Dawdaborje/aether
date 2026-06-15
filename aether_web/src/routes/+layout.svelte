@@ -10,4 +10,6 @@
 	<title>Aether</title>
 </svelte:head>
 
-{@render children()}
+<div class="h-screen w-full">
+	{@render children()}
+</div>
