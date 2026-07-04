@@ -1,10 +1,10 @@
 use std::fs;
 use std::io::{Read, Write};
-use std::path::Path;
 
 pub fn create_file(file_path: &str, content: Option<String>) -> std::io::Result<()> {
     let mut file = fs::File::create_new(file_path).expect("Could not create file");
-    file.write(content.expect("Failed").as_bytes()).expect("Could not write to file");
+    file.write(content.expect("Failed").as_bytes())
+        .expect("Could not write to file");
     Ok(())
 }
 

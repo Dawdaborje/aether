@@ -1,0 +1,7 @@
+[plugin]
+name = "account-pdk"
+version = "0.1.0"
+description = "Accounting plugin"
+target = "wasm"
+output = "./bin"
+

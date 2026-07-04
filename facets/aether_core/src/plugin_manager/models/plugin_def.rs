@@ -1,4 +1,3 @@
-use super::route_def::PluginRouteDef;
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize)]

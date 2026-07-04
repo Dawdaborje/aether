@@ -1,0 +1,11 @@
+
+[server]
+port = 7890
+addon_paths = []
+
+[database]
+host = "localhost"
+port = 8000
+user = "root"
+password = "root"
+namespace = "aether"

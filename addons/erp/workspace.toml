@@ -2,11 +2,12 @@
 name = "erp"
 label = "Enterprise Resource Planner"
 version = "0.1"
+assets = "./assets"
 description = """
 This is a software suite
 """
-group = "erp_software"
-icon = "./assets/erp.svg"
+group_label = "ERP Software Addons"
+group_icon = "./assets/erp.svg"
 
 
 [[modules]]
