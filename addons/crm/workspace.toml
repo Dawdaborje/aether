@@ -1,0 +1,17 @@
+[workspace]
+name = "crm"
+label = "Customer Relationship Management"
+version = "0.1"
+assets = "./assets"
+description = "This is an crm workspace"
+long_description = """
+This is a software suite
+"""
+group_label = "CRM Software Addons"
+group_icon = "./assets/crm.svg"
+dependants = ["crm"]
+
+[frontend]
+menues = [
+]
+
