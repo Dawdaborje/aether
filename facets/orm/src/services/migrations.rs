@@ -5,8 +5,6 @@ static MIGRATIONS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../migrations"
 
 pub async fn migrate_core_migrations(db_conn: &Surreal<Client>) {
     for file in MIGRATIONS.files() {
-        println!("{}", file.path().display());
-
         let content = file.contents_utf8();
 
         log::info!("{:?}", content);

@@ -1,0 +1,12 @@
+[
+  {
+    "name": "fs:create_file",
+    "description": "Capability to writing files to the system",
+    "config": {
+      "paths": {
+        "value": ["$APP_DATA/"],
+        "description": "This is the path scope that the plugin has the right access to write"
+      }
+    }
+  }
+]

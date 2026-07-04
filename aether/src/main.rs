@@ -1,14 +1,25 @@
 use aether::{
-    cli::{initialization::initialize_system, seed::seed_system},
+    cli::{
+        generation::generate_default_config_template, initialization::initialize_system,
+        seed::seed_system,
+    },
     server::serve::run_server,
 };
-use aether_core::config_manager::{
-    models::{AetherConfig, DatabaseConfig},
-    services::generate_aether_config,
+use aether_core::{
+    config_manager::{
+        models::{AetherConfig, DatabaseConfig},
+        services::generate_aether_config,
+    },
+    plugin_manager::services::get_plugins_from_config_file,
 };
 use clap::Parser;
 use log::LevelFilter;
-use std::{str::FromStr, sync::LazyLock};
+use std::{
+    env,
+    path::{Path, PathBuf},
+    str::FromStr,
+    sync::LazyLock,
+};
 use surrealdb::{
     Surreal,
     engine::remote::ws::{Client as SurrealClient, Ws},
@@ -23,6 +34,14 @@ struct Args {
     #[arg(short, long, default_missing_value = "aether.toml")]
     // aether configuration
     config_file: Option<String>,
+
+    #[arg(short = 'q', long)]
+    // aether configuration
+    generate_config_file: Option<String>,
+
+    #[arg(short = 'y', long, default_missing_value = "config")]
+    // aether configuration
+    get_plugins: Option<String>,
 
     #[arg(long, default_missing_value = "7890")]
     // port
@@ -157,6 +176,8 @@ async fn get_prerequisites(args: &Args) -> (AetherConfig, &'static Surreal<Surre
 async fn main() {
     let args = Args::parse();
 
+    let current_path = env::current_dir().expect("Failed to get current working directory");
+
     let level = match LevelFilter::from_str(&args.log) {
         Ok(l) => l,
         Err(_) => {
@@ -181,19 +202,17 @@ async fn main() {
 
     log::warn!("Starting in '{}' environment", args.environment);
 
-    if let Some(_host) = &args.serve {
-        let (configuration, db_conn) = get_prerequisites(&args).await;
-        if let Err(err) = run_server(configuration, args.http_port, db_conn).await {
-            log::info!("Server failed: {}", err);
-            std::process::exit(1);
-        };
-    };
-
     if let Some(plugins_to_upgrade) = &args.upgrade {
         // let (_configuration, db_conn) = get_prerequisites(&args).await;
         for plugin_name in plugins_to_upgrade {
             log::info!("{plugin_name}")
         }
+    }
+
+    if let Some(config_file_name) = &args.generate_config_file {
+        let full_path = Path::new(&current_path).join(config_file_name);
+
+        generate_default_config_template(full_path).await;
     }
 
     if args.initialize {
@@ -205,4 +224,12 @@ async fn main() {
         let (_configuration, db_conn) = get_prerequisites(&args).await;
         seed_system(db_conn).await;
     }
+
+    if let Some(_host) = &args.serve {
+        let (configuration, db_conn) = get_prerequisites(&args).await;
+        if let Err(err) = run_server(configuration, args.http_port, db_conn).await {
+            log::info!("Server failed: {}", err);
+            std::process::exit(1);
+        };
+    };
 }

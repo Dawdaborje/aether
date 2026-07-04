@@ -14,3 +14,4 @@ aether_organization = { path = "../organization" }
 aether_web = { path = "../web" }
 aether_event_bus = { path = "../event_bus" }
 log = "0.4.32"
+directories = "6.0.0"

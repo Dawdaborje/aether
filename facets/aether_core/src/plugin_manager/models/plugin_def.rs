@@ -9,5 +9,4 @@ pub struct PluginDefinition {
     pub description: String,
     pub long_description: String,
     pub icon_path: String,
-    pub routes: PluginRouteDef,
 }

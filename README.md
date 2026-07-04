@@ -14,11 +14,12 @@ Aether is a modular, plugin-driven ERP framework built on a Rust kernel with Web
 |---|---|
 | Plugin isolation | WebAssembly sandboxing + capability system |
 | Multi-tenancy | SurrealDB namespace/database isolation per org |
-| Plugin language | Any language that compiles to WASM (Rust, Python, Go, TypeScript) |
+| Plugin language | Any language that compiles to WASM (Rust, Python, Go, TypeScript) and support for rhai and lua |
 | UI extensibility | XML DSL compiled to a SvelteKit component tree at build time |
 | Performance | Rust kernel, compiled WASM modules cached at startup |
 | Deployment | Single binary, minimal infrastructure |
 | Developer experience | CLI toolchain, typed SDK per language, live dev server |
+| Storage | Multiple supported storage (Local file storage, s3 storage and more)
 
 ---
 
@@ -80,7 +81,7 @@ Read the full [Architecture Document](./docs/architecture/README.md).
 | Object Storage | Garage (S3-compatible) |
 | Frontend | SvelteKit · TypeScript |
 | CLI | Rust (same workspace) |
-| Plugin interface | WIT (WebAssembly Interface Types) |
+| Plugin interface | Extism, Rhai, Lua |
 
 
 ## Plugin System
@@ -248,23 +249,6 @@ Users live in `core` and can belong to multiple organisations via a graph relati
 
 ---
 
-
-## Roadmap
-
-- [ ] Kernel — Axum router, WASM host, SurrealDB integration
-- [ ] CLI — `init`, `add`, `install`, `build`, `dev`
-- [ ] WIT interfaces — all core commands
-- [ ] SDK — Rust, Python, TypeScript, Go
-- [ ] DSL compiler — `.ae` XML → component tree JSON
-- [ ] SvelteKit renderer — dynamic component tree rendering
-- [ ] Multi-tenancy — namespace/database isolation
-- [ ] Auth — JWT, user/org graph, permissions
-- [ ] Facets — Scheduler, Audit Log, Cache, Rate Limiting
-- [ ] Bridges — Resend, Stripe, Paystack, Mayan
-- [ ] Plugin registry
-- [ ] Documentation site
-
----
 
 ## Contributing
 

@@ -16,3 +16,4 @@ thiserror = "2.0.18"
 aether_core = { path = "../facets/aether_core" }
 aether_orm = { path = "../facets/orm" }
 include_dir = "0.7.4"
+directories = "6.0.0"
