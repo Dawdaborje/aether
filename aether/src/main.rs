@@ -5,21 +5,13 @@ use aether::{
     },
     server::serve::run_server,
 };
-use aether_core::{
-    config_manager::{
-        models::{AetherConfig, DatabaseConfig},
-        services::generate_aether_config,
-    },
-    plugin_manager::services::get_plugins_from_config_file,
+use aether_core::config_manager::{
+    models::{AetherConfig, DatabaseConfig},
+    services::generate_aether_config,
 };
 use clap::Parser;
 use log::LevelFilter;
-use std::{
-    env,
-    path::{Path, PathBuf},
-    str::FromStr,
-    sync::LazyLock,
-};
+use std::{env, path::Path, str::FromStr, sync::LazyLock};
 use surrealdb::{
     Surreal,
     engine::remote::ws::{Client as SurrealClient, Ws},
