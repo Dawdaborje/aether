@@ -1,15 +1,15 @@
 use aether::{
     cli::{
-        generation::generate_default_config_template, initialization::initialize_system,
-        seed::seed_system,
+        args::Args, generation::generate_default_config_template,
+        initialization::initialize_system, seed::seed_system,
     },
     server::serve::run_server,
 };
+use clap::Parser;
 use aether_core::config_manager::{
     models::{AetherConfig, DatabaseConfig},
     services::generate_aether_config,
 };
-use clap::Parser;
 use log::LevelFilter;
 use std::{env, path::Path, str::FromStr, sync::LazyLock};
 use surrealdb::{
@@ -18,81 +18,6 @@ use surrealdb::{
     opt::auth::Root,
 };
 
-#[derive(Parser, Debug)]
-struct Args {
-    #[arg(short, long)]
-    verbose: bool,
-
-    #[arg(short, long, default_missing_value = "aether.toml")]
-    // aether configuration
-    config_file: Option<String>,
-
-    #[arg(short = 'q', long)]
-    // aether configuration
-    generate_config_file: Option<String>,
-
-    #[arg(short = 'y', long, default_missing_value = "config")]
-    // aether configuration
-    get_plugins: Option<String>,
-
-    #[arg(long, default_missing_value = "7890")]
-    // port
-    http_port: Option<u16>,
-
-    #[arg(short, long, default_missing_value = "0.0.0.0:7890", num_args = 0..=1)]
-    // Server address to bind to (e.g., 0.0.0.0:7890)
-    serve: Option<String>,
-
-    #[arg(short = 'w', long, action = clap::ArgAction::SetTrue)]
-    // Serves the event listener outside the even bus like
-    serve_listener: bool,
-
-    #[arg(short = 'l', long = "log", default_value = "debug")]
-    /// Logging level (error, warn, info, debug, trace)
-    log: String,
-
-    #[arg(short = 'e', long = "environment", default_value = "dev")]
-    /// Environment mode: `dev` or `prod`
-    environment: String,
-
-    #[arg(short, long, action = clap::ArgAction::SetTrue)]
-    // Generate a default configuration for the system and exit
-    initialize: bool,
-
-    #[arg(long, action = clap::ArgAction::SetTrue)]
-    // Generate a default configuration for the system and exit
-    seed: bool,
-
-    #[arg(short, long)]
-    // Plugins to upgrade (e.g., `--upgrade plugin1 plugin2`)
-    upgrade: Option<Vec<String>>,
-
-    // database
-    // these are the args for the database
-    #[arg(long)]
-    // Surreal db namespace
-    db_namespace: Option<String>,
-
-    #[arg(long)]
-    // Surreal db namespace
-    db_name: Option<String>,
-
-    #[arg(long)]
-    // Surreal db user
-    db_user: Option<String>,
-
-    #[arg(long)]
-    // Surreal db user password
-    db_password: Option<String>,
-
-    #[arg(long)]
-    // Surreal db host
-    db_host: Option<String>,
-
-    #[arg(long, default_value = "8000")]
-    // Surreal db port
-    db_port: Option<u16>,
-}
 
 static DB: LazyLock<Surreal<SurrealClient>> = LazyLock::new(Surreal::init);
 
@@ -151,7 +76,13 @@ async fn build_db_conn(
 }
 
 async fn get_prerequisites(args: &Args) -> (AetherConfig, &'static Surreal<SurrealClient>) {
-    let configuration: AetherConfig = generate_aether_config(args.config_file.clone());
+    let configuration: AetherConfig = match generate_aether_config(args.config_file.clone()) {
+        Ok(config) => config,
+        Err(err) => {
+            log::error!("Failed to load configuration: {}", err);
+            std::process::exit(1);
+        }
+    };
     let db_conn = build_db_conn(
         configuration.database.as_ref().expect("Database config"),
         args.db_host.clone(),

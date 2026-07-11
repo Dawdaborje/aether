@@ -8,6 +8,7 @@ axum = { version = "0.8.9", features = ["tokio", "macros"] }
 serde = { version = "1.0.228", features = ["derive"] }
 tokio = { version = "1.52.3", features = ["full"] }
 toml = "1.1.2"
+thiserror = "2.0.18"
 # facets
 aether_authentication = { path = "../authentication" }
 aether_organization = { path = "../organization" }

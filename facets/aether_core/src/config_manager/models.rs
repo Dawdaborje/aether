@@ -46,14 +46,17 @@ pub struct StorageConfig {
 }
 
 #[derive(Debug, Deserialize, Serialize, Default)]
-pub struct CoreConfig {}
+pub struct CoreConfig {
+    pub is_development_mode: bool,
+    pub is_development_with_assets: bool,
+}
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct AetherConfig {
     pub configuration: Option<CoreConfig>,
     pub database: Option<DatabaseConfig>,
     pub server: Option<ServerConfig>,
-    pub plugin_workspace_paths: Option<String>,
+    pub plugin_paths: Option<Vec<String>>,
     pub storages: Option<Vec<StorageConfig>>,
 }
 
@@ -70,7 +73,7 @@ impl Default for AetherConfig {
                 host: "0.0.0.0".to_string(),
                 port: 7890,
             }),
-            plugin_workspace_paths: Some("".to_string()),
+            plugin_paths: Some(vec![]),
             storages: Some(storages),
         }
     }
