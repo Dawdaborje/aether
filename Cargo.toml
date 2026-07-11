@@ -39,7 +39,6 @@ members = [
     "facets/organization",
     "facets/orm",
     "facets/payroll",
-    "facets/plugin_manager",
     "facets/report",
     "facets/storage",
     "facets/web",
