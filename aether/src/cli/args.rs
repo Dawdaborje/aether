@@ -30,9 +30,13 @@ pub struct Args {
     // Server address to bind to (e.g., 0.0.0.0:7890)
     pub serve: Option<String>,
 
-    #[arg(short = 'w', long, action = clap::ArgAction::SetTrue)]
+    #[arg(short = 'k', long, action = clap::ArgAction::SetTrue)]
     // Serves the event listener outside the even bus like
     pub serve_listener: bool,
+
+    #[arg(short = 'w', long, action = clap::ArgAction::SetTrue)]
+    // Watches the plugin plugins for changes and reloads the plugins
+    pub watch: bool,
 
     #[arg(short = 'l', long = "log", default_value = "debug")]
     /// Logging level (error, warn, info, debug, trace)

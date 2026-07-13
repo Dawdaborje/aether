@@ -24,18 +24,19 @@ pub async fn gen_plugins_from_conf(file_path: PathBuf) -> PluginDefinition {
                         .as_str()
                         .expect("Failed")
                         .to_string(),
-                    description: plugin_table["descriptiopn"]
+                    description: Some(plugin_table["descriptiopn"]
                         .as_str()
                         .expect("Failed")
-                        .to_string(),
-                    long_description: plugin_table["long_description"]
+                        .to_string()),
+                    long_description: Some(plugin_table["long_description"]
                         .as_str()
                         .expect("Failed")
-                        .to_string(),
-                    icon_path: plugin_table["icon_path"]
+                        .to_string()),
+                    icon_path: Some(plugin_table["icon_path"]
                         .as_str()
                         .expect("Failed")
-                        .to_string(),
+                        .to_string()),
+                    ..Default::default()
                 }
             } else {
                 log::error!("Plugin table must be defined");
@@ -57,4 +58,9 @@ pub async fn get_plugins_from_config_file(file_paths: Vec<PathBuf>) -> Vec<Plugi
     }
 
     plugins
+}
+
+
+pub async fn reload_plugins(plugins: Vec<PluginDefinition>) {
+    
 }

@@ -1,0 +1,32 @@
+[
+    {
+        "id": "write",
+        "name": "Write Access",
+        "description": "Write access to the database"
+    },
+    {
+        "id": "read",
+        "name": "Read Access",
+        "description": "Read access to the database"
+    },
+    {
+        "id": "delete",
+        "name": "Delete Access",
+        "description": "Delete access to the database"
+    },
+    {
+        "id": "update",
+        "name": "Update Access",
+        "description": "Update access to the database"
+    },
+    {
+        "id": "transaction",
+        "name": "Transaction Access",
+        "description": "Transaction access to the database"
+    },
+    {
+        "id": "query",
+        "name": "Query Access",
+        "description": "Query access to the database"
+    }
+]

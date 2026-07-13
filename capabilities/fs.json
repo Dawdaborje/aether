@@ -1,12 +1,22 @@
 [
   {
-    "name": "fs:create_file",
-    "description": "Capability to writing files to the system",
-    "config": {
-      "paths": {
-        "value": ["$APP_DATA/"],
-        "description": "This is the path scope that the plugin has the right access to write"
-      }
-    }
+    "id": "write",
+    "name": "Write Access",
+    "description": "Capability to writing files to the system"
+  },
+  {
+    "id": "read",
+    "name": "Read Access",
+    "description": "Capability to reading files from the system"
+  },
+  {
+    "id": "delete",
+    "name": "Delete Access",
+    "description": "Capability to deleting files from the system"
+  },
+  {
+    "id": "update",
+    "name": "Update Access",
+    "description": "Capability to updating files in the system"
   }
 ]

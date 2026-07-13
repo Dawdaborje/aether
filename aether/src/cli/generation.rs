@@ -52,13 +52,36 @@ dependencies = []
 "#;
 
 
+async fn generate_file(file_name: PathBuf, template: &str) {
+    log::info!("Generating file at: {:?}", file_name);
+
+    match template {
+        "plugin" => {
+            fs::write(file_name, DEFAULT_PLUGIN_CONFIG_TEMPLATE)
+                .await
+                .expect("Failed to create a config file");
+        }
+        "workspace" => {
+            fs::write(file_name, DEFAULT_PLUGIN_WORKSPACE_TEMPLATE)
+                .await
+                .expect("Failed to create a workspace file");
+        }
+        "aether_config" => {
+            fs::write(file_name, DEFAULT_CONFIG_TEMPLATE)
+                .await
+                .expect("Failed to create a config file");
+        }
+        _ => {
+            log::error!("Unknown template: {:?}", template);
+        }
+    }
+}
 
 pub async fn generate_default_config_template(file_name: PathBuf) {
     log::info!("File name: {:?}", file_name);
 
-    fs::write(file_name, DEFAULT_CONFIG_TEMPLATE)
-        .await
-        .expect("Failed to create a config file");
+    generate_file(file_name, "aether_config").await;
+
 }
 
 pub async fn generate_plugin_workspace(path: String) {
@@ -66,7 +89,14 @@ pub async fn generate_plugin_workspace(path: String) {
 
     log::info!("Generating plugin workspace at: {:?}", workspace_path);
 
-    fs::write(&workspace_path, DEFAULT_PLUGIN_WORKSPACE_TEMPLATE)
-        .await
-        .expect("Failed to create a workspace file");
+    generate_file(workspace_path, "workspace").await;
+
+}
+
+pub async fn generate_plugin_config(path: String) {
+    let config_path = PathBuf::from(path).join("config.toml");
+
+    log::info!("Generating plugin config at: {:?}", config_path);
+
+    generate_file(config_path, "plugin").await;
 }

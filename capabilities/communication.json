@@ -1,0 +1,7 @@
+[
+    {
+        "id": "send_email",
+        "name": "Send Email",
+        "description": "Send an email to the user"
+    }
+]
