@@ -2,7 +2,7 @@
 
 > The word *Aether* (also spelled *Aither* or *Ether*) comes from Greek mythology — the personification of the upper sky, the pure light the gods breathed. Everything in Aether passes through the kernel the same way light passes through the ether.
 
-Aether is a modular, plugin-driven ERP framework built on a Rust kernel with WebAssembly plugins, a SurrealDB multi-model database, and a SvelteKit frontend. It is a **personal learning project** — built to explore systems programming, compiler design, capability-based security, and plugin architecture. Licensed MIT.
+Aether is a modular, plugin-driven Business Suite framework built on a Rust kernel with WebAssembly plugins, a SurrealDB multi-model database, and a SvelteKit frontend. It is a **personal learning project** — built to explore systems programming, compiler design, capability-based security, and plugin architecture. Licensed MIT.
 
 > Aether is not trying to beat Odoo. Odoo has 20 years, hundreds of engineers, and millions of lines of code. Aether exists to learn by building something real and complex.
 

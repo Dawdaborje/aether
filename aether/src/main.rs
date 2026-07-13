@@ -1,7 +1,9 @@
 use aether::{
     cli::{
-        args::Args, generation::generate_default_config_template,
-        initialization::initialize_system, seed::seed_system,
+        args::Args,
+        generation::{generate_default_config_template, generate_plugin_workspace},
+        initialization::initialize_system,
+        seed::seed_system,
     },
     server::serve::run_server,
 };
@@ -136,6 +138,17 @@ async fn main() {
         let full_path = Path::new(&current_path).join(config_file_name);
 
         generate_default_config_template(full_path).await;
+    }
+
+    if let Some(gen_target) = &args.generate {
+        match gen_target.as_str() {
+            "workspace" => {
+                generate_plugin_workspace(current_path.to_string_lossy().to_string()).await;
+            }
+            other => {
+                log::error!("Unknown generation target '{}'. Supported: workspace", other);
+            }
+        }
     }
 
     if args.initialize {

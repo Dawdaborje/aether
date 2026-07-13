@@ -18,6 +18,10 @@ pub struct Args {
     // aether configuration
     pub get_plugins: Option<String>,
 
+    #[arg(long = "gen", num_args = 0..=1, default_missing_value = "workspace")]
+    /// Generate a plugin scaffold. Value determines the target (e.g. `workspace`)
+    pub generate: Option<String>,
+
     #[arg(long, default_missing_value = "7890")]
     // port
     pub http_port: Option<u16>,

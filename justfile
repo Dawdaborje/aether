@@ -15,3 +15,4 @@ dev-serve-web:
 # Show the aether CLI help
 help:
     {{aether}} --help
+
