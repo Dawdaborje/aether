@@ -5,7 +5,10 @@ use tower_http::services::{ServeDir, ServeFile};
 use crate::api;
 
 /// Static SPA. Nested by core at `/web`.
-pub fn router() -> Router {
+pub fn router<S>() -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
     let build_dir = resolve_web_build_dir();
     let fallback = build_dir.join("200.html");
 
@@ -17,7 +20,10 @@ pub fn router() -> Router {
 }
 
 /// UI REST API (theme, pages). Nested by core at `/api/ui`.
-pub fn api_router() -> Router {
+pub fn api_router<S>() -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
     api::router()
 }
 

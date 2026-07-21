@@ -33,7 +33,10 @@ pub struct ThemeListResponse {
     pub source: String,
 }
 
-pub fn router() -> Router {
+pub fn router<S>() -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
     Router::new()
         .route("/theme", get(get_theme))
         .route("/themes", get(list_themes))

@@ -10,8 +10,13 @@ r#"[core]
 instance_name = "Aether Test"
 
 [server]
+host = "0.0.0.0"
 port = 7890
 addon_paths = []
+
+[configuration]
+is_development_mode = false
+is_development_with_assets = false
 
 [database]
 host = "localhost"
@@ -19,6 +24,21 @@ port = 8000
 user = "root"
 password = "root"
 namespace = "aether"
+
+[cache]
+backend = "moka"
+default_ttl_secs = 300
+max_entries = 10000
+max_value_bytes = 1048576
+
+# [cache.redis]
+# url = "redis://127.0.0.1:6379/0"
+# key_prefix = "aether:cache:"
+
+[tenancy]
+org_resolution = "session_only"
+org_header = "X-Org-Slug"
+org_path_prefix = "/o"
 "#;
 
 const DEFAULT_PLUGIN_CONFIG_TEMPLATE: &str =

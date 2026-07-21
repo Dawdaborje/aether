@@ -180,6 +180,10 @@ mod tests {
         assert!(catalog.contains("http::request"));
         assert!(catalog.contains("bridge::call"));
         assert!(catalog.contains("scheduler::register"));
+        assert!(catalog.contains("cache::get"));
+        assert!(catalog.contains("cache::set"));
+        assert!(catalog.contains("cache::invalidate"));
+        assert!(catalog.contains("cache::clear"));
         assert!(!catalog.contains("db::write"));
         assert!(!catalog.contains("fs::read"));
     }

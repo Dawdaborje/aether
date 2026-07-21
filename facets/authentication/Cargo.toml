@@ -4,6 +4,24 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+aether_core = { path = "../core" }
+aether_orm = { path = "../orm" }
+aether_auth_bridge = { path = "../../bridges/auth_and_identity/auth_bridge" }
+google_auth = { path = "../../bridges/auth_and_identity/google_auth" }
+keycloak = { path = "../../bridges/auth_and_identity/keycloak" }
+auth0 = { path = "../../bridges/auth_and_identity/auth0" }
+authentik = { path = "../../bridges/auth_and_identity/authentik" }
+ldap = { path = "../../bridges/auth_and_identity/ldap" }
+microsoft_extra = { path = "../../bridges/auth_and_identity/microsoft_extra" }
+async-trait = "0.1"
 axum = { version = "0.8.9", features = ["tokio", "macros"] }
+axum-extra = { version = "0.10", features = ["cookie"] }
+time = "0.3"
 serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1"
+surrealdb = "3.1.4"
 tokio = { version = "1.52.3", features = ["full"] }
+log = "0.4"
+rand = "0.8"
+sha2 = "0.10"
+url = "2"

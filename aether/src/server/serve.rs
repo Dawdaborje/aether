@@ -1,5 +1,7 @@
-use aether_core::config_manager::models::{self, ServerConfig};
 use aether_core::routes::routes as core_routes;
+use aether_core::state::AppState;
+use aether_core::config_manager::models::{self, ServerConfig};
+use aether_authentication::routes::routes as auth_routes;
 use axum::Router;
 use std::error::Error;
 use surrealdb::Surreal;
@@ -43,22 +45,35 @@ pub fn get_server_host(conf: Option<ServerConfig>, port: Option<u16>) -> String 
     "0.0.0.0:7890".to_string()
 }
 
-#[derive(Clone)]
-pub struct AetherAppState {
-    pub db: Surreal<SurrealClient>,
-}
-
 pub async fn run_server(
     config: models::AetherConfig,
     http_port: Option<u16>,
     db_conn: &'static Surreal<SurrealClient>,
 ) -> Result<(), Box<dyn Error + Send + Sync + '_>> {
-    let _state = AetherAppState {
-        db: db_conn.clone(),
+    let namespace = config
+        .database
+        .as_ref()
+        .map(|d| d.name.clone())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "aether".into());
+
+    let state = match AppState::new(db_conn.clone(), config.clone(), namespace, "core") {
+        Ok(state) => state,
+        Err(err) => {
+            log::error!("Failed to initialize application cache: {err}");
+            return Err(Box::new(err));
+        }
     };
 
-    // Facet routers are composed in core; aether only mounts core.
-    let app = Router::new().merge(core_routes());
+    if let Err(err) = state.use_core().await {
+        log::error!("Failed to select core database: {err}");
+        return Err(Box::new(err));
+    }
+
+    let app = Router::new()
+        .merge(core_routes())
+        .nest("/api/auth", auth_routes())
+        .with_state(state);
 
     let bind_addr = get_server_host(config.server, http_port);
     log::info!("Starting server: http://{bind_addr}");

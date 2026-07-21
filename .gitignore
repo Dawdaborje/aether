@@ -31,3 +31,5 @@ db.conf.toml
 external.plugins.conf
 
 aether.toml
+cargo-check.log
+.cache-test-out.txt

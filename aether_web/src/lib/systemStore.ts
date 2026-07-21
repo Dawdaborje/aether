@@ -15,55 +15,34 @@ export interface SettingTab {
 	iconType: IconType;
 }
 
+/** Fallback tabs when the catalog API is empty / offline. */
 export const settingsTabs: SettingTab[] = [
 	{
 		id: 'general',
 		name: 'General',
 		description: 'General system settings',
-		icon: {
-			size: 20,
-			name: 'rivet-icons:settings'
-		},
+		icon: { size: 20, name: 'rivet-icons:settings' },
 		iconType: 'iconify'
 	},
 	{
-		id: 'appearance',
-		name: 'Appearance',
-		description: 'Theme and display preferences',
-		icon: {
-			size: 20,
-			name: 'rivet-icons:palette'
-		},
+		id: 'security',
+		name: 'Security',
+		description: 'Privacy and security options',
+		icon: { size: 20, name: 'rivet-icons:lock' },
 		iconType: 'iconify'
 	},
 	{
 		id: 'notifications',
 		name: 'Notifications',
 		description: 'Notification settings',
-		icon: {
-			size: 20,
-			name: 'rivet-icons:bell'
-		},
+		icon: { size: 20, name: 'rivet-icons:bell' },
 		iconType: 'iconify'
 	},
 	{
-		id: 'privacy',
-		name: 'Privacy & Security',
-		description: 'Privacy and security options',
-		icon: {
-			size: 20,
-			name: 'rivet-icons:lock'
-		},
-		iconType: 'iconify'
-	},
-	{
-		id: 'account',
-		name: 'Account',
-		description: 'Account management',
-		icon: {
-			size: 20,
-			name: 'rivet-icons:user'
-		},
+		id: 'appearance',
+		name: 'Appearance',
+		description: 'Theme and display preferences',
+		icon: { size: 20, name: 'rivet-icons:palette' },
 		iconType: 'iconify'
 	}
 ];

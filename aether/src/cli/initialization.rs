@@ -6,6 +6,8 @@ use colored::Colorize;
 use surrealdb::{Surreal, engine::remote::ws::Client};
 use thiserror::Error;
 
+use super::seed::seed_system;
+
 #[derive(Debug, Error)]
 pub enum InitError {
     #[error(transparent)]
@@ -23,7 +25,7 @@ pub struct BootstrapResult {
     pub superuser_already_existed: bool,
 }
 
-/// Bootstrap the platform core DB: apply migrations and ensure a superuser exists.
+/// Bootstrap the platform core DB: apply migrations, seed settings, ensure superuser.
 pub async fn initialize_system(
     db: &Surreal<Client>,
     namespace: &str,
@@ -46,6 +48,9 @@ pub async fn initialize_system(
             format!("  migrations: applied {}", applied.join(", ")).green()
         );
     }
+
+    println!("{}", "  seeding global settings…".dimmed());
+    seed_system(db, namespace, database).await;
 
     let (superuser, already_existed) = match find_superuser(db).await? {
         Some(existing) => {

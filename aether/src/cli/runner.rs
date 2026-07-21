@@ -103,7 +103,7 @@ async fn dispatch(args: Args) {
 
     if args.seed {
         let ctx = get_prerequisites(&args).await;
-        seed_system(ctx.db).await;
+        seed_system(ctx.db, &ctx.namespace, &ctx.database).await;
     }
 
     if let Some(_host) = &args.serve {

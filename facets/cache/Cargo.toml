@@ -1,0 +1,11 @@
+[package]
+name = "aether_cache"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+log = "0.4"
+moka = { version = "0.12", features = ["sync"] }
+redis = { version = "0.27", default-features = true }

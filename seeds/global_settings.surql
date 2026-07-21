@@ -2,7 +2,6 @@
 -- SEED DATA: SETTINGS GROUPS
 -- =====================================================
 
--- Generate and store group IDs using type::record()
 LET $group_general = type::record("gl_settings_groups", rand::uuid::v7());
 LET $group_security = type::record("gl_settings_groups", rand::uuid::v7());
 LET $group_notifications = type::record("gl_settings_groups", rand::uuid::v7());
@@ -35,10 +34,12 @@ INSERT INTO gl_settings_groups [
 -- SEED DATA: SETTINGS ITEMS
 -- =====================================================
 
--- Generate and store item IDs using type::record()
 LET $item_app_name = type::record("gl_settings_items", rand::uuid::v7());
 LET $item_mfa = type::record("gl_settings_items", rand::uuid::v7());
 LET $item_alerts = type::record("gl_settings_items", rand::uuid::v7());
+LET $item_auth_primary = type::record("gl_settings_items", rand::uuid::v7());
+LET $item_auth_methods = type::record("gl_settings_items", rand::uuid::v7());
+LET $item_auth_reg = type::record("gl_settings_items", rand::uuid::v7());
 
 INSERT INTO gl_settings_items [
     {
@@ -64,11 +65,35 @@ INSERT INTO gl_settings_items [
         s_value: "daily",
         description: "How often system alert summaries are sent.",
         long_description: "Choose between 'realtime', 'daily', or 'weekly' summaries for system-level event logging."
+    },
+    {
+        id: $item_auth_primary,
+        label: "Primary Auth Method",
+        s_key: "auth.primary_method",
+        s_value: "local",
+        description: "Default login method shown first.",
+        long_description: "Use `local` for username/password, or a bridge name such as `google`, `keycloak`, etc."
+    },
+    {
+        id: $item_auth_methods,
+        label: "Enabled Auth Methods",
+        s_key: "auth.enabled_methods",
+        s_value: ["local"],
+        description: "Auth methods exposed on the login page and /api/auth/methods.",
+        long_description: "Array of method ids. Always include `local` unless the instance is IdP-only."
+    },
+    {
+        id: $item_auth_reg,
+        label: "Allow Local Registration",
+        s_key: "auth.allow_registration",
+        s_value: false,
+        description: "Permit self-service local account creation.",
+        long_description: "When false, only administrators (or IdP provisioning) can create users."
     }
 ];
 
 -- =====================================================
--- SEED DATA: GROUP ↔ ITEM RELATION TABLE
+-- GROUP ↔ ITEM RELATION TABLE
 -- =====================================================
 
 INSERT INTO gl_settings_group_items [
@@ -84,7 +109,40 @@ INSERT INTO gl_settings_group_items [
     },
     {
         id: type::record("gl_settings_group_items", rand::uuid::v7()),
+        group: $group_security,
+        item: $item_auth_primary
+    },
+    {
+        id: type::record("gl_settings_group_items", rand::uuid::v7()),
+        group: $group_security,
+        item: $item_auth_methods
+    },
+    {
+        id: type::record("gl_settings_group_items", rand::uuid::v7()),
+        group: $group_security,
+        item: $item_auth_reg
+    },
+    {
+        id: type::record("gl_settings_group_items", rand::uuid::v7()),
         group: $group_notifications,
         item: $item_alerts
     }
 ];
+
+-- =====================================================
+-- Default Google auth provider row (disabled until configured)
+-- =====================================================
+
+INSERT INTO auth_providers {
+    name: "google",
+    label: "Google",
+    provider_type: "oauth2",
+    issuer_url: "https://accounts.google.com",
+    scopes: ["openid", "email", "profile"],
+    enabled: false,
+    config: {
+        authorize_url: "https://accounts.google.com/o/oauth2/v2/auth",
+        token_url: "https://oauth2.googleapis.com/token",
+        userinfo_url: "https://openidconnect.googleapis.com/v1/userinfo"
+    }
+};

@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "aether",
+    "bridges/auth_and_identity/auth_bridge",
     "bridges/auth_and_identity/auth0",
     "bridges/auth_and_identity/authentik",
     "bridges/auth_and_identity/google_auth",
@@ -32,6 +33,7 @@ members = [
     # facets
     "facets/core",
     "facets/authentication",
+    "facets/cache",
     "facets/security",
     "facets/communication",
     "facets/event_bus",
