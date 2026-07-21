@@ -1,0 +1,12 @@
+{
+  "id": "plugins",
+  "name": "Plugins",
+  "description": "Cross-plugin calls mediated by the kernel.",
+  "capabilities": [
+    {
+      "id": "call",
+      "name": "Call Plugin",
+      "description": "Invoke an exported handler on another installed plugin. Maps to kernel command plugins::call."
+    }
+  ]
+}

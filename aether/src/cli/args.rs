@@ -1,41 +1,39 @@
 use clap::Parser;
 
-
 #[derive(Parser, Debug)]
+#[command(name = "aether", about = "Aether kernel CLI")]
 pub struct Args {
     #[arg(short, long)]
     pub verbose: bool,
 
     #[arg(short, long, default_missing_value = "aether.toml")]
-    // aether configuration
+    /// Path to aether.toml
     pub config_file: Option<String>,
 
     #[arg(short = 'q', long)]
-    // aether configuration
+    /// Write a default config template to this filename
     pub generate_config_file: Option<String>,
 
     #[arg(short = 'y', long, default_missing_value = "config")]
-    // aether configuration
     pub get_plugins: Option<String>,
 
     #[arg(long = "gen", num_args = 0..=1, default_missing_value = "workspace")]
-    /// Generate a plugin scaffold. Value determines the target (e.g. `workspace`)
+    /// Generate a scaffold: `workspace`, `plugin`, or `aether_config`
     pub generate: Option<String>,
 
     #[arg(long, default_missing_value = "7890")]
-    // port
     pub http_port: Option<u16>,
 
     #[arg(short, long, default_missing_value = "0.0.0.0:7890", num_args = 0..=1)]
-    // Server address to bind to (e.g., 0.0.0.0:7890)
+    /// Bind address for the HTTP server (e.g. 0.0.0.0:7890)
     pub serve: Option<String>,
 
     #[arg(short = 'k', long, action = clap::ArgAction::SetTrue)]
-    // Serves the event listener outside the even bus like
+    /// Serve the event listener outside the event bus
     pub serve_listener: bool,
 
     #[arg(short = 'w', long, action = clap::ArgAction::SetTrue)]
-    // Watches the plugin plugins for changes and reloads the plugins
+    /// Watch plugins for changes and reload them
     pub watch: bool,
 
     #[arg(short = 'l', long = "log", default_value = "debug")]
@@ -46,41 +44,44 @@ pub struct Args {
     /// Environment mode: `dev` or `prod`
     pub environment: String,
 
-    #[arg(short, long, action = clap::ArgAction::SetTrue)]
-    // Generate a default configuration for the system and exit
-    pub initialize: bool,
+    #[arg(
+        short = 'i',
+        long = "init",
+        alias = "initialize",
+        action = clap::ArgAction::SetTrue
+    )]
+    /// Bootstrap the platform: apply core migrations and create the initial superuser
+    pub init: bool,
 
     #[arg(long, action = clap::ArgAction::SetTrue)]
-    // Generate a default configuration for the system and exit
+    /// Seed reference data into the core database
     pub seed: bool,
 
     #[arg(short, long)]
-    // Plugins to upgrade (e.g., `--upgrade plugin1 plugin2`)
+    /// Plugins to upgrade (e.g. `--upgrade plugin1 plugin2`)
     pub upgrade: Option<Vec<String>>,
 
-    // database
-    // these are the args for the database
     #[arg(long)]
-    // Surreal db namespace
+    /// SurrealDB namespace (default: from config, or `aether`)
     pub db_namespace: Option<String>,
 
     #[arg(long)]
-    // Surreal db namespace
+    /// SurrealDB database name (default: `core`)
     pub db_name: Option<String>,
 
     #[arg(long)]
-    // Surreal db user
+    /// SurrealDB user
     pub db_user: Option<String>,
 
     #[arg(long)]
-    // Surreal db user password
+    /// SurrealDB password
     pub db_password: Option<String>,
 
     #[arg(long)]
-    // Surreal db host
+    /// SurrealDB host
     pub db_host: Option<String>,
 
     #[arg(long, default_value = "8000")]
-    // Surreal db port
+    /// SurrealDB port
     pub db_port: Option<u16>,
 }

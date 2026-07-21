@@ -16,3 +16,14 @@ dev-serve-web:
 help:
     {{aether}} --help
 
+# Build both the frontend and app in release mode and install the aether binary
+install:
+    ./scripts/install.sh
+
+# Build only the frontend (aether_web) in release mode
+install-web:
+    ./scripts/install.sh --web
+
+# Build only the Rust app in release mode and install the aether binary
+install-app:
+    ./scripts/install.sh --app

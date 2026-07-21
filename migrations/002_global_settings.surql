@@ -31,7 +31,7 @@ DEFINE FIELD IF NOT EXISTS date_created ON TABLE gl_settings_items TYPE datetime
 DEFINE FIELD IF NOT EXISTS date_updated ON TABLE gl_settings_items TYPE datetime VALUE time::now();
 
 DEFINE INDEX IF NOT EXISTS gl_setting_items_label ON TABLE gl_settings_items COLUMNS label UNIQUE;
-DEFINE INDEX IF NOT EXISTS gl_setting_items_key ON TABLE gl_settings_items COLUMNS key UNIQUE;
+DEFINE INDEX IF NOT EXISTS gl_setting_items_key ON TABLE gl_settings_items COLUMNS s_key UNIQUE;
 
 
 -- =====================================================

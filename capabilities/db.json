@@ -1,32 +1,22 @@
-[
+{
+  "id": "db",
+  "name": "Database",
+  "description": "SurrealDB access mediated by the kernel. Plugins never open a DB connection themselves; the kernel scopes every query to the active org.",
+  "capabilities": [
     {
-        "id": "write",
-        "name": "Write Access",
-        "description": "Write access to the database"
+      "id": "query",
+      "name": "Query",
+      "description": "Read data with SELECT / graph queries. Maps to kernel command db::query."
     },
     {
-        "id": "read",
-        "name": "Read Access",
-        "description": "Read access to the database"
+      "id": "mutate",
+      "name": "Mutate",
+      "description": "Create, update, or delete records. Maps to kernel command db::mutate."
     },
     {
-        "id": "delete",
-        "name": "Delete Access",
-        "description": "Delete access to the database"
-    },
-    {
-        "id": "update",
-        "name": "Update Access",
-        "description": "Update access to the database"
-    },
-    {
-        "id": "transaction",
-        "name": "Transaction Access",
-        "description": "Transaction access to the database"
-    },
-    {
-        "id": "query",
-        "name": "Query Access",
-        "description": "Query access to the database"
+      "id": "transaction",
+      "name": "Transaction",
+      "description": "Run a batch of queries inside a single transaction."
     }
-]
+  ]
+}

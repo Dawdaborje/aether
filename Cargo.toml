@@ -30,7 +30,7 @@ members = [
     "bridges/storage_and_cdn/local_storage",
     "bridges/storage_and_cdn/s3_storage",
     # facets
-    "facets/aether_core",
+    "facets/core",
     "facets/authentication",
     "facets/security",
     "facets/communication",
@@ -42,5 +42,6 @@ members = [
     "facets/report",
     "facets/storage",
     "facets/web",
+    "facets/document",
 ]
 resolver = "2"

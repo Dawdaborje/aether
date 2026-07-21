@@ -1,0 +1,12 @@
+{
+  "id": "bridge",
+  "name": "Bridges",
+  "description": "Invoke first-party integrations (Stripe, Paystack, Mayan, …) through kernel commands. Credentials stay in the kernel.",
+  "capabilities": [
+    {
+      "id": "call",
+      "name": "Call Bridge",
+      "description": "Invoke a named bridge command, e.g. stripe::charge, via the kernel. Maps to kernel command bridge::call."
+    }
+  ]
+}

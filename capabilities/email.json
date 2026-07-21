@@ -1,0 +1,12 @@
+{
+  "id": "email",
+  "name": "Email",
+  "description": "Transactional email sent through kernel bridges (Resend, Mailgun, Postmark, Brevo, …).",
+  "capabilities": [
+    {
+      "id": "send",
+      "name": "Send Email",
+      "description": "Send an email via the configured email bridge. Maps to kernel command email::send."
+    }
+  ]
+}

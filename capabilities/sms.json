@@ -1,0 +1,12 @@
+{
+  "id": "sms",
+  "name": "SMS",
+  "description": "SMS messaging through kernel bridges (Africa's Talking, Twilio, Termii, …).",
+  "capabilities": [
+    {
+      "id": "send",
+      "name": "Send SMS",
+      "description": "Send an SMS via the configured SMS bridge. Maps to kernel command sms::send."
+    }
+  ]
+}

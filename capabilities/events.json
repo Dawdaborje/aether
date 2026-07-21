@@ -1,0 +1,17 @@
+{
+  "id": "events",
+  "name": "Events",
+  "description": "Cross-plugin event bus mediated by the kernel.",
+  "capabilities": [
+    {
+      "id": "emit",
+      "name": "Emit Event",
+      "description": "Publish an event other plugins may handle. Maps to kernel command events::emit."
+    },
+    {
+      "id": "subscribe",
+      "name": "Subscribe",
+      "description": "Register handlers for events emitted by this or other plugins."
+    }
+  ]
+}

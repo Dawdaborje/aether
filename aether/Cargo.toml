@@ -12,8 +12,9 @@ log = "0.4"
 env_logger = "0.10"
 surrealdb = "3.1.4"
 thiserror = "2.0.18"
+colored = "3"
 # Aether modules
-aether_core = { path = "../facets/aether_core" }
+aether_core = { path = "../facets/core" }
 aether_orm = { path = "../facets/orm" }
 include_dir = "0.7.4"
 directories = "6.0.0"

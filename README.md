@@ -67,7 +67,7 @@ Read the full [Architecture Document](./docs/architecture/README.md).
 | **Facet** | A core module built into the kernel — Auth, Tenancy, Scheduler, Cache, Audit Log. Always available, never reimplemented by plugins. |
 | **Bridge** | A first-party integration with a third-party service — Stripe, Paystack, Mayan EDMS, Resend, Africa's Talking. Compiled into the kernel as optional Cargo features. |
 | **Capability** | A named permission a plugin declares it needs — `db::query`, `email::send`, `storage::write`. The kernel enforces these at runtime. |
-| **DSL** | An XML-based UI definition language (`.ae` files) that compiles to a SvelteKit component tree. Plugin authors define pages declaratively without writing frontend code. |
+| **DSL** | An XML-based UI definition language (`.xml` files) that compiles to a SvelteKit component tree. Plugin authors define pages declaratively without writing frontend code. |
 
 ---
 

@@ -1,7 +1,7 @@
 -- ================================================
--- Schema migrations (org)
--- Tracks which org migration files have been applied
--- to this tenant database.
+-- Schema migrations (core)
+-- Tracks which core migration files have been applied
+-- so `aether --initialize` / `--upgrade` are idempotent.
 -- ================================================
 
 DEFINE TABLE IF NOT EXISTS schema_migrations;
