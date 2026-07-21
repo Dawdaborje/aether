@@ -52,6 +52,11 @@ authors = [{name = "Your Name", email = "your.email@example.com"}]
 website = "https://your.website.com"
 categories = []
 dependencies = []
+
+# Register each addon plugin directory here.
+# [[addons]]
+# name = "my_addon"
+# path = "./my_addon"
 "#;
 
 /// Writes `content` to `file_path`, creating parent directories as needed.

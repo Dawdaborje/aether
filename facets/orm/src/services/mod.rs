@@ -1,7 +1,12 @@
 pub mod migrations;
+pub mod plugins;
 pub mod users;
 
 pub use migrations::{migrate_core, migrate_org, run_migrations, MigrationError};
+pub use plugins::{
+    get_dependencies, get_dependents, resolve_install_order, sync_plugin_dependencies,
+    PluginGraphError,
+};
 pub use users::{
     create_superuser, find_superuser, generate_password, hash_password, ExistingSuperUser,
     SuperUserCredentials, UserServiceError,

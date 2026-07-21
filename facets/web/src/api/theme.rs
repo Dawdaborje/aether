@@ -45,11 +45,38 @@ async fn get_theme() -> Json<ThemeResponse> {
 
 async fn list_themes() -> Json<ThemeListResponse> {
     Json(ThemeListResponse {
-        themes: vec![ThemeListItem {
-            name: "enterprise".into(),
-            label: "Enterprise".into(),
-            is_system: true,
-        }],
+        themes: vec![
+            ThemeListItem {
+                name: "enterprise".into(),
+                label: "Enterprise".into(),
+                is_system: true,
+            },
+            ThemeListItem {
+                name: "nordic".into(),
+                label: "Nordic".into(),
+                is_system: true,
+            },
+            ThemeListItem {
+                name: "graphite".into(),
+                label: "Graphite".into(),
+                is_system: true,
+            },
+            ThemeListItem {
+                name: "ocean".into(),
+                label: "Ocean".into(),
+                is_system: true,
+            },
+            ThemeListItem {
+                name: "forest".into(),
+                label: "Forest".into(),
+                is_system: true,
+            },
+            ThemeListItem {
+                name: "midnight".into(),
+                label: "Midnight".into(),
+                is_system: true,
+            },
+        ],
         active: "enterprise".into(),
         source: "fallback".into(),
     })
