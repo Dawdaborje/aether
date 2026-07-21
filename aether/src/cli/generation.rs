@@ -21,24 +21,65 @@ password = "root"
 namespace = "aether"
 "#;
 
-const DEFAULT_PLUGIN_CONFIG_TEMPLATE: &str = 
+const DEFAULT_PLUGIN_CONFIG_TEMPLATE: &str =
 r#"[plugin]
 name = "{plugin_name}"
 label = "{plugin_label}"
 version = "0.0.1"
 description = "{plugin_description}"
 long_description = "{plugin_long_description}"
-authors = [{name = "Your Name", email = "your.email@example.com"}]
+authors = [{ name = "Your Name", email = "your.email@example.com" }]
 website = "https://your.website.com"
 categories = []
 dependencies = []
-
-#security
 capabilities = ["db::query", "db::mutate"]
 access_models = [
-    { name = "user", permissions = ["read", "write"]},
+    { name = "user", permissions = ["read", "write"] },
 ]
+is_builtin = false
 
+# Contract version — bump only when breaking required keys.
+# See plugins/base/docs/PLUGIN_API.md
+[plugin.api]
+version = "0.1"
+
+[plugin.meta]
+kind = "addon"
+workspace = ""
+
+[communication]
+# Planned channels: events | email | sms | http | plugins
+channels = []
+
+# [[models]]
+# name = "example"
+# table = "example"
+# file = "./models/example.surql"
+
+# [[pages]]
+# route = "/example"
+# title = "Example"
+# file = "./pages/example.xml"
+
+# [[menus]]
+# name = "example"
+# label = "Example"
+# url = "/example"
+# order = 10
+
+# [[hooks]]
+# name = "on_install"
+# phase = "install"
+# handler = "hooks.on_install"
+
+# [[events]]
+# name = "example.created"
+# direction = "emit"
+# payload = "id"
+
+# [[permissions]]
+# key = "example.read"
+# label = "Read example"
 "#;
 
 const DEFAULT_PLUGIN_WORKSPACE_TEMPLATE: &str = 
@@ -121,11 +162,45 @@ pub async fn generate_plugin_workspace(path: String) {
 }
 
 pub async fn generate_plugin_config(path: String, name: &str) {
-    let config_path = PathBuf::from(path).join("config.toml");
+    let root = PathBuf::from(&path);
+    let config_path = root.join("plugin.toml");
 
     log::info!("Generating plugin config at: {:?}", config_path);
 
     write_file(config_path, &render_plugin_config(name)).await;
+
+    // Scaffold folders expected by the evolving plugin API (pages, hooks, …).
+    for dir in [
+        "models",
+        "migrations",
+        "pages",
+        "components",
+        "hooks",
+        "events",
+        "security",
+        "i18n",
+    ] {
+        let dir_path = root.join(dir);
+        fs::create_dir_all(&dir_path)
+            .await
+            .unwrap_or_else(|err| {
+                log::error!("Failed to create {:?}: {err}", dir_path);
+                exit(1);
+            });
+    }
+
+    write_file(
+        root.join("hooks/hooks.toml"),
+        "[[hook]]\nname = \"on_install\"\nphase = \"install\"\n",
+    )
+    .await;
+    write_file(
+        root.join("security/permissions.toml"),
+        &format!(
+            "[[permission]]\nkey = \"{name}.read\"\nlabel = \"Read {name}\"\n"
+        ),
+    )
+    .await;
 }
 
 fn check_if_extism_cli_is_installed() -> bool {
