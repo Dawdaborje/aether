@@ -10,6 +10,14 @@ export default defineConfig({
 		sveltekit(),
 		paraglideVitePlugin({ project: './project.inlang', outdir: './src/lib/paraglide' })
 	],
+	server: {
+		proxy: {
+			'/api': {
+				target: 'http://127.0.0.1:7890',
+				changeOrigin: true
+			}
+		}
+	},
 	test: {
 		expect: { requireAssertions: true },
 		projects: [

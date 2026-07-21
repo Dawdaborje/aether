@@ -34,7 +34,7 @@ categories = []
 dependencies = []
 
 #security
-capabilities = ["db:read", "db:write"]
+capabilities = ["db::query", "db::mutate"]
 access_models = [
     { name = "user", permissions = ["read", "write"]},
 ]

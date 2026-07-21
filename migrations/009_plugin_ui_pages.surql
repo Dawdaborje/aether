@@ -1,6 +1,6 @@
 -- ================================================
 -- Plugin UI pages
--- Pages declared by a plugin (XML / .ae DSL),
+-- Pages declared by a plugin (XML DSL),
 -- registered in the platform catalog.
 -- ================================================
 
@@ -13,9 +13,9 @@ DEFINE FIELD IF NOT EXISTS title ON TABLE plugin_ui_pages TYPE string;
 DEFINE FIELD IF NOT EXISTS model ON TABLE plugin_ui_pages TYPE option<string | NONE>;
 -- "list" | "form" | "kanban" | "dashboard" | "custom"
 DEFINE FIELD IF NOT EXISTS view_type ON TABLE plugin_ui_pages TYPE option<string | NONE>;
--- Compiled component tree JSON from `ae build`
+-- Compiled component tree JSON from XML page definitions
 DEFINE FIELD IF NOT EXISTS component_tree ON TABLE plugin_ui_pages TYPE option<object | NONE>;
--- Source path of the .xml / .ae file inside the package
+-- Source path of the .xml file inside the package
 DEFINE FIELD IF NOT EXISTS source_path ON TABLE plugin_ui_pages TYPE option<string | NONE>;
 DEFINE FIELD IF NOT EXISTS icon ON TABLE plugin_ui_pages TYPE option<string | NONE>;
 DEFINE FIELD IF NOT EXISTS menu_group ON TABLE plugin_ui_pages TYPE option<string | NONE>;

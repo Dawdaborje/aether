@@ -15,7 +15,7 @@ Aether is a modular, plugin-driven Business Suite framework built on a Rust kern
 | Plugin isolation | WebAssembly sandboxing + capability system |
 | Multi-tenancy | SurrealDB namespace/database isolation per org |
 | Plugin language | Any language that compiles to WASM (Rust, Python, Go, TypeScript) and support for rhai and lua |
-| UI extensibility | XML DSL compiled to a SvelteKit component tree at build time |
+| UI extensibility | XML DSL (`.xml`) compiled to a SvelteKit component tree at build time |
 | Performance | Rust kernel, compiled WASM modules cached at startup |
 | Deployment | Single binary, minimal infrastructure |
 | Developer experience | CLI toolchain, typed SDK per language, live dev server |
@@ -147,7 +147,7 @@ UI pages are defined in XML files:
 </page>
 ```
 
-The `ae build` CLI compiles `.ae` files into a component tree JSON and WASM into a single distributable archive.
+The `aether` CLI compiles `.xml` page definitions into a component tree JSON and packages WASM into a single distributable archive.
 
 ---
 
@@ -258,7 +258,7 @@ Read [CONTRIBUTING.md](./CONTRIBUTING.md) for setup instructions, code style, an
 
 Good first contributions:
 - Implement a new Bridge (Twilio, Flutterwave, Africa's Talking)
-- Add a new built-in `.ae` DSL tag
+- Add a new built-in `.xml` DSL tag
 - Write a sample plugin in Python or Go
 - Improve CLI error messages
 - Write documentation

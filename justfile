@@ -8,6 +8,10 @@ default: dev-serve
 dev-serve:
     {{aether}} --serve --verbose -l debug
 
+# Bootstrap core DB: migrations + initial superuser
+init:
+    {{aether}} --init --verbose -l info
+
 # Run the SvelteKit web app in development mode
 dev-serve-web:
     cd {{web_dir}} && pnpm run dev

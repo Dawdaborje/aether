@@ -5,7 +5,6 @@ import Separator from './breadcrumb-separator.svelte';
 import Link from './breadcrumb-link.svelte';
 import List from './breadcrumb-list.svelte';
 import Page from './breadcrumb-page.svelte';
-import Nav from './breadcrumb-nav.svelte';
 
 export {
 	Root,
@@ -15,7 +14,6 @@ export {
 	Link,
 	List,
 	Page,
-	Nav,
 	//
 	Root as Breadcrumb,
 	Ellipsis as BreadcrumbEllipsis,
@@ -23,6 +21,5 @@ export {
 	Separator as BreadcrumbSeparator,
 	Link as BreadcrumbLink,
 	List as BreadcrumbList,
-	Page as BreadcrumbPage,
-	Nav as BreadcrumbNav
+	Page as BreadcrumbPage
 };
