@@ -104,7 +104,7 @@ fn build_database_conf(database_value: &Value) -> Result<DatabaseConfig, ConfigE
         host: require_str(database_value, "host")?,
         user: require_str(database_value, "user")?,
         password: require_str(database_value, "password")?,
-        name: require_str(database_value, "namespace")?,
+        namespace: require_str(database_value, "namespace")?,
         port: require_port(database_value, "port")?,
 
         db_filter: Some(String::new()),
@@ -229,19 +229,14 @@ fn parse_org_resolution(raw: &str) -> Result<OrgResolutionMode, ConfigError> {
         "path" => Ok(OrgResolutionMode::Path),
         other => Err(ConfigError::InvalidType {
             field: "tenancy.org_resolution".to_string(),
-            expected: format!(
-                "session_only | header | subdomain | path (got `{other}`)"
-            ),
+            expected: format!("session_only | header | subdomain | path (got `{other}`)"),
         }),
     }
 }
 
 fn build_tenancy_conf(tenancy_value: &Value) -> Result<TenancyConfig, ConfigError> {
     let mut config = TenancyConfig::default();
-    if let Some(mode) = tenancy_value
-        .get("org_resolution")
-        .and_then(|v| v.as_str())
-    {
+    if let Some(mode) = tenancy_value.get("org_resolution").and_then(|v| v.as_str()) {
         config.org_resolution = parse_org_resolution(mode)?;
     }
     if let Some(header) = tenancy_value.get("org_header").and_then(|v| v.as_str()) {
@@ -339,6 +334,21 @@ namespace = "aether"
 "#;
 
     #[test]
+    fn loads_database_namespace_from_toml() {
+        let body = format!(
+            r#"{BASE}
+[cache]
+backend = "moka"
+"#
+        );
+        let file = write_toml(&body);
+
+        let conf = gen_aether_conf_from_config_file(file.path().to_str().unwrap()).unwrap();
+        let database = conf.database.expect("database");
+        assert_eq!(database.namespace, "aether");
+    }
+
+    #[test]
     fn loads_moka_cache_section() {
         let body = format!(
             r#"{BASE}
@@ -421,9 +431,6 @@ backend = "moka"
         let cache = conf.build_cache().expect("build moka cache");
         assert_eq!(cache.backend(), CacheBackendKind::Moka);
         cache.set("ns", "k", "v", None).unwrap();
-        assert_eq!(
-            cache.get("ns", "k").unwrap().unwrap().as_slice(),
-            b"v"
-        );
+        assert_eq!(cache.get("ns", "k").unwrap().unwrap().as_slice(), b"v");
     }
 }

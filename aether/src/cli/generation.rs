@@ -53,6 +53,8 @@ website = "https://your.website.com"
 categories = []
 dependencies = []
 capabilities = ["db::query", "db::mutate"]
+# Optional high privilege — only if the plugin must run custom SurQL:
+# "db::surql"
 access_models = [
     { name = "user", permissions = ["read", "write"] },
 ]

@@ -5,13 +5,13 @@ edition = "2024"
 
 [dependencies]
 axum = { version = "0.8.9", features = ["tokio", "macros"] }
-serde = { version = "1.0.228", features = ["derive"] }
-tokio = { version = "1.52.3", features = ["full"] }
-clap = { version = "4.6.1", features = ["env", "derive", "string"] }
+serde = { version = "1.0.229", features = ["derive"] }
+tokio = { version = "1.53.1", features = ["full"] }
+clap = { version = "4.6.6", features = ["env", "derive", "string"] }
 log = "0.4"
-env_logger = "0.10"
-surrealdb = "3.1.4"
-thiserror = "2.0.18"
+env_logger = "0.11"
+surrealdb = "3.2.4"
+thiserror = "2.0.20"
 colored = "3"
 # Aether modules
 aether_core = { path = "../facets/core" }

@@ -1,9 +1,10 @@
+use aether_authentication::routes::routes as auth_routes;
+use aether_core::config_manager::models::{self, ServerConfig};
 use aether_core::routes::routes as core_routes;
 use aether_core::state::AppState;
-use aether_core::config_manager::models::{self, ServerConfig};
-use aether_authentication::routes::routes as auth_routes;
 use axum::Router;
 use std::error::Error;
+use std::net::UdpSocket;
 use surrealdb::Surreal;
 use surrealdb::engine::remote::ws::Client as SurrealClient;
 
@@ -35,6 +36,15 @@ mod error {
     }
 }
 
+fn get_local_ip() -> String {
+    UdpSocket::bind("0.0.0.0:0")
+        .ok()
+        .and_then(|s| s.connect("8.8.8.8:80").ok().map(|_| s))
+        .and_then(|s| s.local_addr().ok())
+        .map(|a| a.ip().to_string())
+        .unwrap_or_else(|| "127.0.0.1".to_string())
+}
+
 pub fn get_server_host(conf: Option<ServerConfig>, port: Option<u16>) -> String {
     if let Some(port) = port {
         return format!("0.0.0.0:{port}");
@@ -53,7 +63,7 @@ pub async fn run_server(
     let namespace = config
         .database
         .as_ref()
-        .map(|d| d.name.clone())
+        .map(|d| d.namespace.clone())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "aether".into());
 
@@ -76,7 +86,6 @@ pub async fn run_server(
         .with_state(state);
 
     let bind_addr = get_server_host(config.server, http_port);
-    log::info!("Starting server: http://{bind_addr}");
 
     let listener = match tokio::net::TcpListener::bind(&bind_addr).await {
         Ok(l) => l,
@@ -85,6 +94,20 @@ pub async fn run_server(
             return Err(Box::new(e));
         }
     };
+
+    let actual_addr = listener.local_addr()?;
+    let port = actual_addr.port();
+
+    if actual_addr.ip().is_unspecified() {
+        let local_ip = get_local_ip();
+        log::info!("Starting server: http://localhost:{port}");
+        log::info!("Starting server: http://{local_ip}:{port}");
+        log::info!("Starting server: http://localhost:{port}/web");
+        log::info!("Starting server: http://{local_ip}:{port}/web");
+    } else {
+        log::info!("Starting server: http://{actual_addr}");
+        log::info!("Starting server: http://{actual_addr}/web");
+    }
 
     if let Err(e) = axum::serve(listener, app).await {
         log::error!("Server error: {e}");

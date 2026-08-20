@@ -5,19 +5,20 @@ edition = "2024"
 
 [dependencies]
 axum = { version = "0.8.9", features = ["tokio", "macros"] }
-serde = { version = "1.0.228", features = ["derive"] }
+serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1.52.3", features = ["full"] }
-toml = "1.1.2"
-thiserror = "2.0.18"
-surrealdb = "3.1.4"
+tokio = { version = "1.53.1", features = ["full"] }
+toml = "1.1.4"
+thiserror = "2.0.20"
+surrealdb = "3.2.4"
 # facets
 aether_cache = { path = "../cache" }
 aether_organization = { path = "../organization" }
 aether_orm = { path = "../orm" }
+aether_security = { path = "../security" }
 aether_web = { path = "../web" }
 aether_event_bus = { path = "../event_bus" }
-log = "0.4.32"
+log = "0.4.33"
 directories = "6.0.0"
 
 [dev-dependencies]

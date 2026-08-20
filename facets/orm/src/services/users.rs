@@ -2,7 +2,7 @@ use argon2::{
     Argon2,
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
 };
-use rand::Rng;
+use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use surrealdb::{Surreal, engine::remote::ws::Client, types::RecordId, types::SurrealValue};
 use thiserror::Error;
@@ -49,7 +49,7 @@ pub struct AuthUser {
 pub fn hash_password(plain: &str) -> Result<String, UserServiceError> {
     // Avoid SaltString::generate(OsRng): argon2's password-hash pulls
     // rand_core 0.6, while the workspace also has newer rand_core versions.
-    let salt_bytes: [u8; 16] = rand::thread_rng().r#gen();
+    let salt_bytes: [u8; 16] = rand::rng().random();
     let salt = SaltString::encode_b64(&salt_bytes)
         .map_err(|e| UserServiceError::PasswordHash(e.to_string()))?;
     Argon2::default()
@@ -69,10 +69,10 @@ pub fn verify_password(plain: &str, hashed: &str) -> Result<bool, UserServiceErr
 pub fn generate_password(length: usize) -> String {
     const CHARSET: &[u8] =
         b"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%";
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     (0..length)
         .map(|_| {
-            let idx = rng.r#gen_range(0..CHARSET.len());
+            let idx = rng.random_range(0..CHARSET.len());
             CHARSET[idx] as char
         })
         .collect()

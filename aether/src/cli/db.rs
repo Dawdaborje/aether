@@ -56,16 +56,16 @@ pub async fn get_prerequisites(args: &Args) -> DbContext {
     }
 }
 
-/// Config `database.namespace` is stored on [`DatabaseConfig::name`].
+/// Config `database.namespace` is stored on [`DatabaseConfig::namespace`].
 fn resolve_namespace(args: &Args, db_config: &DatabaseConfig) -> String {
     args.db_namespace
         .clone()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| {
-            if db_config.name.is_empty() {
+            if db_config.namespace.is_empty() {
                 "aether".to_string()
             } else {
-                db_config.name.clone()
+                db_config.namespace.clone()
             }
         })
 }

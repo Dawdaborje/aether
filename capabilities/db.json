@@ -1,22 +1,27 @@
 {
   "id": "db",
   "name": "Database",
-  "description": "SurrealDB access mediated by the kernel. Plugins never open a DB connection themselves; the kernel scopes every query to the active org.",
+  "description": "SurrealDB access mediated by the kernel. Plugins never open a DB connection or supply free-form SurQL by default; the kernel scopes every call to the active org and the plugin's allowed models.",
   "capabilities": [
     {
       "id": "query",
       "name": "Query",
-      "description": "Read data with SELECT / graph queries. Maps to kernel command db::query."
+      "description": "Structured reads: get / find by model name. The kernel builds parameterized SurQL — plugins do not send raw queries."
     },
     {
       "id": "mutate",
       "name": "Mutate",
-      "description": "Create, update, or delete records. Maps to kernel command db::mutate."
+      "description": "Structured writes: create / update / delete by model name and field map. Kernel builds parameterized SurQL."
     },
     {
       "id": "transaction",
       "name": "Transaction",
-      "description": "Run a batch of queries inside a single transaction."
+      "description": "Run a batch of structured db::* ops inside a single transaction."
+    },
+    {
+      "id": "surql",
+      "name": "Raw SurQL",
+      "description": "Execute custom SurQL supplied by the plugin. High privilege — requires explicit grant. Still scoped to the org DB and subject to keyword denylist + optional model table binding."
     }
   ]
 }

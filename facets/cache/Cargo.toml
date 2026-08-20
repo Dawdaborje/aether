@@ -8,4 +8,4 @@ serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 log = "0.4"
 moka = { version = "0.12", features = ["sync"] }
-redis = { version = "0.27", default-features = true }
+redis = { version = "1.6", default-features = true }

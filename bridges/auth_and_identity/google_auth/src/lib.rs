@@ -111,9 +111,7 @@ impl AuthBridge for GoogleAuthBridge {
             display_name: info.name,
             access_token: Some(token.access_token),
             refresh_token: token.refresh_token,
-            raw_claims: token
-                .id_token
-                .map(|t| serde_json::json!({ "id_token": t })),
+            raw_claims: token.id_token.map(|t| serde_json::json!({ "id_token": t })),
         })
     }
 }

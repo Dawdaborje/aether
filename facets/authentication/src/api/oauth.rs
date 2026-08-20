@@ -187,9 +187,9 @@ fn default_callback_uri(headers: &HeaderMap, provider: &str) -> String {
 }
 
 fn rand_hex(n: usize) -> String {
-    use rand::RngCore;
+    use rand::RngExt;
     let mut bytes = vec![0u8; n];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill(&mut bytes);
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 

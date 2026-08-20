@@ -6,7 +6,7 @@ pub struct DatabaseConfig {
     pub user: String,
     pub password: String,
     /// Surreal namespace (from TOML `database.namespace`).
-    pub name: String,
+    pub namespace: String,
     pub host: String,
     pub port: u16,
     pub pool_size: Option<u32>,
@@ -19,7 +19,7 @@ impl Default for DatabaseConfig {
         Self {
             user: "root".to_string(),
             password: "root".to_string(),
-            name: "aether".to_string(),
+            namespace: "aether".to_string(),
             host: "127.0.0.1".to_string(),
             port: 8000,
             pool_size: Some(10),
@@ -180,10 +180,7 @@ impl AetherConfig {
             }
         }
 
-        log::info!(
-            "Tenancy org_resolution={:?}",
-            self.tenancy.org_resolution
-        );
+        log::info!("Tenancy org_resolution={:?}", self.tenancy.org_resolution);
     }
 
     pub fn display_server_start(&self) {

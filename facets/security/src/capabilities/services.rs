@@ -33,6 +33,9 @@ pub enum CapabilityError {
 
     #[error("unknown capability `{0}`")]
     UnknownCapability(String),
+
+    #[error("capability `{0}` is not granted to this plugin")]
+    Denied(String),
 }
 
 /// In-memory catalog of all capability groups loaded from `capabilities/`.
@@ -153,7 +156,7 @@ pub fn require_capability(
     if plugin_has_capability(granted, required) {
         Ok(())
     } else {
-        Err(CapabilityError::UnknownCapability(required.to_string()))
+        Err(CapabilityError::Denied(required.to_string()))
     }
 }
 
@@ -184,6 +187,7 @@ mod tests {
         assert!(catalog.contains("cache::set"));
         assert!(catalog.contains("cache::invalidate"));
         assert!(catalog.contains("cache::clear"));
+        assert!(catalog.contains("db::surql"));
         assert!(!catalog.contains("db::write"));
         assert!(!catalog.contains("fs::read"));
     }
