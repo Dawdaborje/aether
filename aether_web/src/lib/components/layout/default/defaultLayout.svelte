@@ -4,7 +4,7 @@
 	let { children } = $props();
 </script>
 
-<div class="flex flex-col">
+<div class="flex w-full flex-col">
 	<DefaultNavbar />
 	{@render children()}
 </div>

@@ -23,8 +23,10 @@
 	});
 </script>
 
-{#if ready}
-	<DefaultLayout>
-		{@render children()}
-	</DefaultLayout>
-{/if}
+<div class="flex w-full flex-col">
+	{#if ready}
+		<DefaultLayout>
+			{@render children()}
+		</DefaultLayout>
+	{/if}
+</div>

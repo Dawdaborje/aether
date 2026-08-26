@@ -58,8 +58,12 @@ pub struct Args {
     pub seed: bool,
 
     #[arg(short, long)]
-    /// Plugins to upgrade (e.g. `--upgrade plugin1 plugin2`)
-    pub upgrade: Option<Vec<String>>,
+    /// Plugins to upgrade (e.g. `--upgrade-plugin plugin1 plugin2`)
+    pub upgrade_plugin: Option<Vec<String>>,
+
+    #[arg(short, long)]
+    /// Plugins to install (e.g. `--install-plugin plugin1 plugin2`)
+    pub install_plugin: Option<Vec<String>>,
 
     #[arg(long)]
     /// SurrealDB namespace (default: from config, or `aether`)
@@ -84,4 +88,17 @@ pub struct Args {
     #[arg(long, default_value = "8000")]
     /// SurrealDB port
     pub db_port: Option<u16>,
+
+    // User space
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub create_user: bool,
+
+    #[arg(long)]
+    pub username: Option<String>,
+
+    #[arg(long)]
+    pub email: Option<String>,
+
+    #[arg(long)]
+    pub password: Option<String>,
 }

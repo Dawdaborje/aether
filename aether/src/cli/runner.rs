@@ -29,10 +29,7 @@ fn init_logger(args: &Args) {
     let level = match LevelFilter::from_str(&args.log) {
         Ok(l) => l,
         Err(_) => {
-            eprintln!(
-                "Invalid log level '{}', defaulting to 'debug'",
-                args.log
-            );
+            eprintln!("Invalid log level '{}', defaulting to 'debug'", args.log);
             LevelFilter::Debug
         }
     };
@@ -55,7 +52,7 @@ fn init_logger(args: &Args) {
 async fn dispatch(args: Args) {
     let current_path = env::current_dir().expect("Failed to get current working directory");
 
-    if let Some(plugins_to_upgrade) = &args.upgrade {
+    if let Some(plugins_to_upgrade) = &args.upgrade_plugin {
         for plugin_name in plugins_to_upgrade {
             log::info!("{plugin_name}");
         }
