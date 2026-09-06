@@ -61,12 +61,12 @@ pub struct Args {
     /// Plugins to upgrade (e.g. `--upgrade-plugin plugin1 plugin2`)
     pub upgrade_plugin: Option<Vec<String>>,
 
-    #[arg(short, long)]
+    #[arg(short = 'r', long)]
     /// Plugins to install (e.g. `--install-plugin plugin1 plugin2`)
     pub install_plugin: Option<Vec<String>>,
 
     #[arg(long)]
-    /// SurrealDB namespace (default: from config, or `aether`)
+    /// SurrealDB namespace (default: from config, or `main`)
     pub db_namespace: Option<String>,
 
     #[arg(long)]
@@ -101,4 +101,8 @@ pub struct Args {
 
     #[arg(long)]
     pub password: Option<String>,
+
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    /// changes the password of a user (e.g. `--change-password username`)
+    pub change_password: bool,
 }

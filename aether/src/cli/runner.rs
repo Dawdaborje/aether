@@ -1,5 +1,6 @@
 use std::{env, path::Path, str::FromStr};
 
+use aether_core::application::services::change_user_password;
 use clap::Parser;
 use log::LevelFilter;
 
@@ -85,6 +86,20 @@ async fn dispatch(args: Args) {
                 );
             }
         }
+    }
+
+    if args.change_password {
+        let username = &args
+            .password
+            .as_ref()
+            .expect("Password must be provided when changing password");
+        let new_password = &args
+            .password
+            .as_ref()
+            .expect("Password must be provided when changing password");
+
+        let ctx = get_prerequisites(&args).await;
+        change_user_password(username, new_password, &ctx.db).await;
     }
 
     if args.init {

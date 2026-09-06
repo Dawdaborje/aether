@@ -2,12 +2,12 @@ use aether_core::config_manager::{
     models::{AetherConfig, DatabaseConfig},
     services::generate_aether_config,
 };
+use std::sync::LazyLock;
 use surrealdb::{
     Surreal,
     engine::remote::ws::{Client as SurrealClient, Ws},
     opt::auth::Root,
 };
-use std::sync::LazyLock;
 
 use super::args::Args;
 
@@ -30,11 +30,7 @@ pub async fn get_prerequisites(args: &Args) -> DbContext {
         }
     };
 
-    let db_config = configuration
-        .database
-        .as_ref()
-        .cloned()
-        .unwrap_or_default();
+    let db_config = configuration.database.as_ref().cloned().unwrap_or_default();
 
     let db = build_db_conn(
         &db_config,
@@ -47,6 +43,12 @@ pub async fn get_prerequisites(args: &Args) -> DbContext {
 
     let namespace = resolve_namespace(args, &db_config);
     let database = resolve_database(args);
+    db.use_ns(namespace.clone())
+        .await
+        .expect("Failed to set namespace");
+    db.use_db(database.clone())
+        .await
+        .expect("Failed to set database");
 
     DbContext {
         config: configuration,

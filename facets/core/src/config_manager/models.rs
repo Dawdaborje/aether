@@ -19,7 +19,7 @@ impl Default for DatabaseConfig {
         Self {
             user: "root".to_string(),
             password: "root".to_string(),
-            namespace: "aether".to_string(),
+            namespace: "main".to_string(),
             host: "127.0.0.1".to_string(),
             port: 8000,
             pool_size: Some(10),

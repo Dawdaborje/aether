@@ -83,7 +83,3 @@ Good first contributions:
 ## License
 
 MIT — see [LICENSE](./LICENSE).
-
----
-
-> Built by [@Dawdaborje](https://github.com/Dawdaborje) in The Gambia.
