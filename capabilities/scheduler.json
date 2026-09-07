@@ -1,15 +1,15 @@
 {
-  "id": "scheduler",
+  "code": "scheduler",
   "name": "Scheduler",
   "description": "Cron and deferred tasks registered with the kernel scheduler.",
   "capabilities": [
     {
-      "id": "register",
+      "code": "register",
       "name": "Register Task",
       "description": "Register a cron or deferred task defined by the plugin."
     },
     {
-      "id": "cancel",
+      "code": "cancel",
       "name": "Cancel Task",
       "description": "Cancel a previously registered task."
     }

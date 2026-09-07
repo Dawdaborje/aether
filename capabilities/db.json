@@ -1,27 +1,37 @@
 {
-  "id": "db",
+  "code": "db",
   "name": "Database",
   "description": "SurrealDB access mediated by the kernel. Plugins never open a DB connection or supply free-form SurQL by default; the kernel scopes every call to the active org and the plugin's allowed models.",
   "capabilities": [
     {
-      "id": "query",
+      "code": "query",
       "name": "Query",
       "description": "Structured reads: get / find by model name. The kernel builds parameterized SurQL — plugins do not send raw queries."
     },
     {
-      "id": "mutate",
+      "code": "create",
+      "name": "Create",
+      "description": "Structured write."
+    },
+    {
+      "code": "update",
+      "name": "Update",
+      "description": "Structured Update."
+    },
+    {
+      "code": "delete",
       "name": "Mutate",
-      "description": "Structured writes: create / update / delete by model name and field map. Kernel builds parameterized SurQL."
+      "description": "Structured Delete."
     },
     {
-      "id": "transaction",
+      "code": "bulk_mutation",
+      "name": "Bulk Mutation",
+      "description": "Capability for running multiple create, update or delete at once."
+    },
+    {
+      "code": "transaction",
       "name": "Transaction",
-      "description": "Run a batch of structured db::* ops inside a single transaction."
-    },
-    {
-      "id": "surql",
-      "name": "Raw SurQL",
-      "description": "Execute custom SurQL supplied by the plugin. High privilege — requires explicit grant. Still scoped to the org DB and subject to keyword denylist + optional model table binding."
+      "description": "Run a batch of structured db::* ops inscodee a single transaction."
     }
   ]
 }

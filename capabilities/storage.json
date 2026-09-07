@@ -1,25 +1,25 @@
 {
-  "id": "storage",
+  "code": "storage",
   "name": "Object Storage",
   "description": "File and object storage through the kernel (local, S3/Garage, etc.). Plugins never touch the host filesystem.",
   "capabilities": [
     {
-      "id": "read",
+      "code": "read",
       "name": "Read",
       "description": "Read or download objects from configured storage backends."
     },
     {
-      "id": "write",
+      "code": "write",
       "name": "Write",
       "description": "Upload or write objects to configured storage backends."
     },
     {
-      "id": "delete",
+      "code": "delete",
       "name": "Delete",
       "description": "Delete objects from configured storage backends."
     },
     {
-      "id": "list",
+      "code": "list",
       "name": "List",
       "description": "List objects under a prefix in a storage backend."
     }

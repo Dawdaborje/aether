@@ -1,25 +1,25 @@
 {
-  "id": "cache",
+  "code": "cache",
   "name": "Cache",
   "description": "Kernel-mediated key/value cache. Plugins never own a cache client; the kernel scopes keys to the active org and enforces TTL/size limits.",
   "capabilities": [
     {
-      "id": "get",
+      "code": "get",
       "name": "Get",
       "description": "Read a cached value by key. Maps to kernel command cache::get."
     },
     {
-      "id": "set",
+      "code": "set",
       "name": "Set",
       "description": "Write or overwrite a cached value with an optional TTL. Maps to kernel command cache::set."
     },
     {
-      "id": "invalidate",
+      "code": "invalidate",
       "name": "Invalidate",
       "description": "Delete one key or all keys under a prefix. Maps to kernel command cache::invalidate."
     },
     {
-      "id": "clear",
+      "code": "clear",
       "name": "Clear",
       "description": "Clear the caller's cache namespace (typically the active org). Maps to kernel command cache::clear."
     }
