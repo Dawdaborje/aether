@@ -41,7 +41,7 @@ Aether is a modular, plugin-driven Business Suite framework built on a Rust kern
 | Layer | Technology |
 |---|---|
 | Kernel | Rust · Axum · Tokio |
-| WASM Runtime | Wasmtime (Component Model) |
+| WASM Runtime | Extism |
 | Database | SurrealDB |
 | Object Storage | Garage (S3-compatible) |
 | Frontend | SvelteKit · TypeScript |

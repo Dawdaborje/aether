@@ -35,8 +35,6 @@ pub struct ServerConfig {
     pub host: String,
     #[serde(default = "default_port")]
     pub port: u16,
-    #[serde(default)]
-    pub addon_paths: Vec<String>,
 }
 
 fn default_host() -> String {
@@ -52,7 +50,6 @@ impl Default for ServerConfig {
         Self {
             host: default_host(),
             port: default_port(),
-            addon_paths: Vec::new(),
         }
     }
 }

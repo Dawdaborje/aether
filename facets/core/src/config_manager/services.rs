@@ -212,12 +212,6 @@ fn build_server_conf(server_value: &Value) -> Result<ServerConfig, ConfigError> 
     if server_value.get("port").is_some() {
         config.port = require_port(server_value, "port")?;
     }
-    if let Some(paths) = server_value.get("addon_paths").and_then(|v| v.as_array()) {
-        config.addon_paths = paths
-            .iter()
-            .filter_map(|v| v.as_str().map(str::to_string))
-            .collect();
-    }
     Ok(config)
 }
 

@@ -8,7 +8,7 @@ members = [
     "bridges/auth_and_identity/keycloak",
     "bridges/auth_and_identity/ldap",
     "bridges/auth_and_identity/microsoft_extra",
-    # bridges   
+    # bridges
     "bridges/communications/africas_talking",
     "bridges/communications/bravo",
     "bridges/communications/mailgun",
@@ -47,3 +47,6 @@ members = [
     "facets/document",
 ]
 resolver = "2"
+
+[workspace.dependencies]
+extism = "1.30.0"
