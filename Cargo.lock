@@ -43,6 +43,7 @@ dependencies = [
  "include_dir",
  "log",
  "serde",
+ "serde_json",
  "surrealdb",
  "thiserror 2.0.20",
  "tokio",

@@ -98,7 +98,39 @@ pub struct Args {
     #[arg(long)]
     pub password: Option<String>,
 
+    #[arg(long)]
+    /// Initial superuser username used by `--init` (default: `admin`)
+    pub admin_username: Option<String>,
+
+    #[arg(long)]
+    /// Initial superuser email used by `--init` (default: `admin@localhost`)
+    pub admin_email: Option<String>,
+
+    #[arg(long)]
+    /// Initial superuser password used by `--init`; generated when omitted
+    pub admin_password: Option<String>,
+
     #[arg(long, value_name = "USERNAME")]
     /// Change a user's password (e.g. `--change-password admin --password new-secret`)
     pub change_password: Option<String>,
+
+    #[arg(long, value_name = "NAME")]
+    /// Create an organization, company, user, and their memberships
+    pub create_org: Option<String>,
+
+    #[arg(long)]
+    /// Database name for the new organization; defaults to a slug from its name
+    pub org_db_name: Option<String>,
+
+    #[arg(long)]
+    /// Company name for `--create-org`
+    pub company_name: Option<String>,
+
+    #[arg(long)]
+    /// Company email for `--create-org`
+    pub company_email: Option<String>,
+
+    #[arg(long, value_name = "LOGIN")]
+    /// Assign an existing user by username or email to an organization and company
+    pub assign_user: Option<String>,
 }

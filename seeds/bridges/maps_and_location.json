@@ -1,0 +1,13 @@
+{
+	"code": "maps_and_locations",
+	"name": "Maps and Locations",
+	"description": "Maps and geolocation providers",
+	"icon": "map",
+	"icon_type": "lucide",
+	"color": "teal",
+	"color_type": "lucide",
+	"items": [
+		{ "feature_key": "google_map", "name": "Google Maps", "label": "Google Maps", "description": "Google Maps", "version": null, "is_builtin": true, "enabled_globally": false, "config_schema": null },
+		{ "feature_key": "open_street_map", "name": "OpenStreetMap", "label": "OpenStreetMap", "description": "OpenStreetMap", "version": null, "is_builtin": true, "enabled_globally": false, "config_schema": null }
+	]
+}

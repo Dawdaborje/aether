@@ -7,23 +7,10 @@
     "color": "blue",
     "color_type": "lucide",
     "items": [
-        {
-            "code": "auth0",
-            "name": "Auth0",
-            "description": "Auth0",
-            "icon": "auth0",
-            "icon_type": "lucide",
-            "color": "blue",
-            "color_type": "lucide"
-        },
-        {
-            "code": "authentik",
-            "name": "Authentik",
-            "description": "Authentik",
-            "icon": "authentik",
-            "icon_type": "lucide",
-            "color": "blue",
-            "color_type": "lucide"
-        }
+        { "feature_key": "auth0", "name": "Auth0", "label": "Auth0", "description": "Auth0", "version": null, "is_builtin": true, "enabled_globally": false, "config_schema": null },
+        { "feature_key": "authentik", "name": "Authentik", "label": "Authentik", "description": "Authentik", "version": null, "is_builtin": true, "enabled_globally": false, "config_schema": null },
+        { "feature_key": "keycloak", "name": "Keycloak", "label": "Keycloak", "description": "Keycloak", "version": null, "is_builtin": true, "enabled_globally": false, "config_schema": null },
+        { "feature_key": "ldap", "name": "LDAP", "label": "LDAP", "description": "LDAP", "version": null, "is_builtin": true, "enabled_globally": false, "config_schema": null },
+        { "feature_key": "microsoft_extra", "name": "Microsoft", "label": "Microsoft", "description": "Microsoft identity", "version": null, "is_builtin": true, "enabled_globally": false, "config_schema": null }
     ]
 }

@@ -1,0 +1,19 @@
+{
+	"code": "communications",
+	"name": "Communications",
+	"description": "Communication and messaging providers",
+	"icon": "message-circle",
+	"icon_type": "lucide",
+	"color": "green",
+	"color_type": "lucide",
+	"items": [
+		{ "feature_key": "africas_talking", "name": "Africa's Talking", "label": "Africa's Talking", "description": "Africa's Talking", "version": null, "is_builtin": true, "enabled_globally": false, "config_schema": null },
+		{ "feature_key": "bravo", "name": "Bravo", "label": "Bravo", "description": "Bravo", "version": null, "is_builtin": true, "enabled_globally": false, "config_schema": null },
+		{ "feature_key": "mailgun", "name": "Mailgun", "label": "Mailgun", "description": "Mailgun", "version": null, "is_builtin": true, "enabled_globally": false, "config_schema": null },
+		{ "feature_key": "postmark", "name": "Postmark", "label": "Postmark", "description": "Postmark", "version": null, "is_builtin": true, "enabled_globally": false, "config_schema": null },
+		{ "feature_key": "resend", "name": "Resend", "label": "Resend", "description": "Resend", "version": null, "is_builtin": true, "enabled_globally": false, "config_schema": null },
+		{ "feature_key": "termii", "name": "Termii", "label": "Termii", "description": "Termii", "version": null, "is_builtin": true, "enabled_globally": false, "config_schema": null },
+		{ "feature_key": "twilio", "name": "Twilio", "label": "Twilio", "description": "Twilio", "version": null, "is_builtin": true, "enabled_globally": false, "config_schema": null },
+		{ "feature_key": "whatsapp", "name": "WhatsApp", "label": "WhatsApp", "description": "WhatsApp", "version": null, "is_builtin": true, "enabled_globally": false, "config_schema": null }
+	]
+}

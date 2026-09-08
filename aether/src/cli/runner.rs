@@ -13,6 +13,7 @@ use super::{
         generate_default_config_template, generate_plugin_config, generate_plugin_workspace,
     },
     initialization::{initialize_system, print_bootstrap_summary},
+    organization::{assign_user, create_organization},
     seed::seed_system,
 };
 
@@ -101,9 +102,86 @@ async fn dispatch(args: Args) {
         return;
     }
 
+    if let Some(organization_name) = &args.create_org {
+        let Some(company_name) = &args.company_name else {
+            log::error!("--company-name must be provided when creating an organization");
+            return;
+        };
+        let Some(username) = &args.username else {
+            log::error!("--username must be provided when creating an organization");
+            return;
+        };
+        let Some(email) = &args.email else {
+            log::error!("--email must be provided when creating an organization");
+            return;
+        };
+        let Some(password) = &args.password else {
+            log::error!("--password must be provided when creating an organization");
+            return;
+        };
+
+        let ctx = get_prerequisites(&args).await;
+        match create_organization(
+            ctx.db,
+            &ctx.namespace,
+            organization_name,
+            args.org_db_name.as_deref(),
+            company_name,
+            args.company_email.as_deref(),
+            username,
+            email,
+            password,
+        )
+        .await
+        {
+            Ok(db_name) => println!(
+                "Created organization '{organization_name}', company '{company_name}', user '{username}' in database '{db_name}'."
+            ),
+            Err(err) => log::error!("Failed to create organization: {err}"),
+        }
+        return;
+    }
+
+    if let Some(user_login) = &args.assign_user {
+        let Some(org_db_name) = &args.org_db_name else {
+            log::error!("--org-db-name must be provided when assigning a user");
+            return;
+        };
+        let Some(company_name) = &args.company_name else {
+            log::error!("--company-name must be provided when assigning a user");
+            return;
+        };
+
+        let ctx = get_prerequisites(&args).await;
+        match assign_user(
+            ctx.db,
+            &ctx.namespace,
+            user_login,
+            org_db_name,
+            company_name,
+        )
+        .await
+        {
+            Ok(()) => println!(
+                "Assigned user '{user_login}' to organization '{org_db_name}' and company '{company_name}'."
+            ),
+            Err(err) => log::error!("Failed to assign user '{user_login}': {err}"),
+        }
+        return;
+    }
+
     if args.init {
         let ctx = get_prerequisites(&args).await;
-        match initialize_system(ctx.db, &ctx.namespace, &ctx.database).await {
+        match initialize_system(
+            ctx.db,
+            &ctx.namespace,
+            &ctx.database,
+            args.admin_username.as_deref(),
+            args.admin_email.as_deref(),
+            args.admin_password.as_deref(),
+        )
+        .await
+        {
             Ok(result) => print_bootstrap_summary(&result),
             Err(err) => {
                 log::error!("Init failed: {err}");
@@ -114,7 +192,10 @@ async fn dispatch(args: Args) {
 
     if args.seed {
         let ctx = get_prerequisites(&args).await;
-        seed_system(ctx.db, &ctx.namespace, &ctx.database).await;
+        if let Err(err) = seed_system(ctx.db, &ctx.namespace, &ctx.database).await {
+            log::error!("Seeding failed: {err}");
+            std::process::exit(1);
+        }
     }
 
     if let Some(_host) = &args.serve {

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use include_dir::{Dir, include_dir};
 use serde::Deserialize;
@@ -19,11 +19,16 @@ pub enum MigrationError {
 
     #[error("migration `{version}` failed: {message}")]
     ApplyFailed { version: String, message: String },
+
+    #[error("migration `{version}` has changed since it was applied")]
+    ChecksumMismatch { version: String },
 }
 
 #[derive(Debug, Deserialize, SurrealValue)]
 struct AppliedMigration {
     version: String,
+    filename: String,
+    checksum: Option<String>,
 }
 
 /// Apply all pending core migrations to `namespace` / `database`
@@ -66,7 +71,7 @@ async fn apply_migrations(
     let mut newly_applied = Vec::new();
 
     let mut files: Vec<_> = dir.files().collect();
-    files.sort_by_key(|f| f.path().to_path_buf());
+    files.sort_by_key(|file| migration_number(file.path()));
 
     for file in files {
         let filename = file
@@ -82,14 +87,22 @@ async fn apply_migrations(
 
         let version = filename.trim_end_matches(".surql").to_string();
 
-        if applied.contains(&version) {
-            log::debug!("Skipping already-applied migration {version}");
-            continue;
-        }
-
         let content = file
             .contents_utf8()
             .ok_or_else(|| MigrationError::InvalidUtf8(filename.clone()))?;
+        let checksum = sha256_hex(content);
+
+        if let Some(applied_migration) = applied.get(&version) {
+            if applied_migration
+                .checksum
+                .as_deref()
+                .is_some_and(|stored| stored != checksum)
+            {
+                return Err(MigrationError::ChecksumMismatch { version });
+            }
+            log::debug!("Skipping already-applied migration {version}");
+            continue;
+        }
 
         if content.trim().is_empty() {
             log::warn!("Migration {version} is empty — recording without SQL");
@@ -108,7 +121,6 @@ async fn apply_migrations(
             });
         }
 
-        let checksum = sha256_hex(content);
         record_migration(db, &version, &filename, &checksum).await?;
         newly_applied.push(version);
     }
@@ -131,14 +143,19 @@ DEFINE INDEX IF NOT EXISTS schema_migrations_filename ON TABLE schema_migrations
     Ok(())
 }
 
-async fn load_applied_versions(db: &Surreal<Client>) -> Result<HashSet<String>, MigrationError> {
+async fn load_applied_versions(
+    db: &Surreal<Client>,
+) -> Result<HashMap<String, AppliedMigration>, MigrationError> {
     let mut response = db
-        .query("SELECT version FROM schema_migrations;")
+        .query("SELECT version, filename, checksum FROM schema_migrations;")
         .await?
         .check()?;
 
     let rows: Vec<AppliedMigration> = response.take(0)?;
-    Ok(rows.into_iter().map(|r| r.version).collect())
+    Ok(rows
+        .into_iter()
+        .map(|migration| (migration.version.clone(), migration))
+        .collect())
 }
 
 async fn record_migration(
@@ -173,4 +190,16 @@ async fn record_migration(
 fn sha256_hex(content: &str) -> String {
     let digest = Sha256::digest(content.as_bytes());
     digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn migration_number(path: &std::path::Path) -> u64 {
+    path.file_stem()
+        .and_then(|name| name.to_str())
+        .map(|name| {
+            name.chars()
+                .take_while(char::is_ascii_digit)
+                .collect::<String>()
+        })
+        .and_then(|prefix| prefix.parse().ok())
+        .unwrap_or(u64::MAX)
 }

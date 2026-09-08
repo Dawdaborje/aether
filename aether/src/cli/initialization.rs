@@ -1,12 +1,12 @@
 use aether_orm::services::{
-    create_superuser, find_superuser, generate_password, migrate_core, MigrationError,
-    SuperUserCredentials, UserServiceError,
+    MigrationError, SuperUserCredentials, UserServiceError, create_superuser, find_superuser,
+    generate_password, migrate_core,
 };
 use colored::Colorize;
 use surrealdb::{Surreal, engine::remote::ws::Client};
 use thiserror::Error;
 
-use super::seed::seed_system;
+use super::seed::{SeedError, seed_system};
 
 #[derive(Debug, Error)]
 pub enum InitError {
@@ -15,6 +15,9 @@ pub enum InitError {
 
     #[error(transparent)]
     User(#[from] UserServiceError),
+
+    #[error(transparent)]
+    Seed(#[from] SeedError),
 }
 
 pub struct BootstrapResult {
@@ -30,13 +33,12 @@ pub async fn initialize_system(
     db: &Surreal<Client>,
     namespace: &str,
     database: &str,
+    admin_username: Option<&str>,
+    admin_email: Option<&str>,
+    admin_password: Option<&str>,
 ) -> Result<BootstrapResult, InitError> {
     println!("{}", "Bootstrapping Aether…".bold());
-    println!(
-        "  target: {} / {}",
-        namespace.cyan(),
-        database.cyan()
-    );
+    println!("  target: {} / {}", namespace.cyan(), database.cyan());
 
     let applied = migrate_core(db, namespace, database).await?;
 
@@ -50,7 +52,15 @@ pub async fn initialize_system(
     }
 
     println!("{}", "  seeding global settings…".dimmed());
-    seed_system(db, namespace, database).await;
+    let seeded = seed_system(db, namespace, database).await?;
+    if seeded.is_empty() {
+        println!("{}", "  seeds: already up to date".green());
+    } else {
+        println!(
+            "{}",
+            format!("  seeds: applied {}", seeded.join(", ")).green()
+        );
+    }
 
     let (superuser, already_existed) = match find_superuser(db).await? {
         Some(existing) => {
@@ -68,8 +78,12 @@ pub async fn initialize_system(
             (None, true)
         }
         None => {
-            let password = generate_password(20);
-            let creds = create_superuser(db, "admin", "admin@localhost", &password).await?;
+            let username = admin_username.unwrap_or("admin");
+            let email = admin_email.unwrap_or("admin@localhost");
+            let password = admin_password
+                .map(str::to_owned)
+                .unwrap_or_else(|| generate_password(20));
+            let creds = create_superuser(db, username, email, &password).await?;
             println!("{}", "  superuser: created".green());
             (Some(creds), false)
         }
@@ -113,7 +127,11 @@ pub fn print_bootstrap_summary(result: &BootstrapResult) {
     if let Some(creds) = &result.superuser {
         println!();
         println!("{}", "  Superuser credentials (save these):".green().bold());
-        println!("  {}  {}", "Username:".green(), creds.username.bright_white());
+        println!(
+            "  {}  {}",
+            "Username:".green(),
+            creds.username.bright_white()
+        );
         println!("  {}  {}", "Email:".green(), creds.email.bright_white());
         println!(
             "  {}  {}",
@@ -123,8 +141,7 @@ pub fn print_bootstrap_summary(result: &BootstrapResult) {
         println!();
         println!(
             "{}",
-            "  This password is shown once. Change it after first login."
-                .yellow()
+            "  This password is shown once. Change it after first login.".yellow()
         );
     } else if result.superuser_already_existed {
         println!(

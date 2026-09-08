@@ -1,0 +1,13 @@
+{
+	"code": "payrolls",
+	"name": "Payrolls",
+	"description": "Payroll providers",
+	"icon": "wallet-cards",
+	"icon_type": "lucide",
+	"color": "red",
+	"color_type": "lucide",
+	"items": [
+		{ "feature_key": "pe_integrator", "name": "Payroll Engine", "label": "Payroll Engine", "description": "Payroll Engine", "version": null, "is_builtin": true, "enabled_globally": false, "config_schema": null },
+		{ "feature_key": "sp_integrator", "name": "Swift Payroll", "label": "Swift Payroll", "description": "Swift Payroll", "version": null, "is_builtin": true, "enabled_globally": false, "config_schema": null }
+	]
+}

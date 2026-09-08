@@ -1,0 +1,14 @@
+{
+	"code": "payments",
+	"name": "Payments",
+	"description": "Payment and billing providers",
+	"icon": "credit-card",
+	"icon_type": "lucide",
+	"color": "purple",
+	"color_type": "lucide",
+	"items": [
+		{ "feature_key": "flutterwave", "name": "Flutterwave", "label": "Flutterwave", "description": "Flutterwave", "version": null, "is_builtin": true, "enabled_globally": false, "config_schema": null },
+		{ "feature_key": "paystack", "name": "Paystack", "label": "Paystack", "description": "Paystack", "version": null, "is_builtin": true, "enabled_globally": false, "config_schema": null },
+		{ "feature_key": "stripe", "name": "Stripe", "label": "Stripe", "description": "Stripe", "version": null, "is_builtin": true, "enabled_globally": false, "config_schema": null }
+	]
+}

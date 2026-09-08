@@ -1,0 +1,13 @@
+{
+	"code": "storage_and_cdn",
+	"name": "Storage and CDN",
+	"description": "Storage and content delivery providers",
+	"icon": "database",
+	"icon_type": "lucide",
+	"color": "indigo",
+	"color_type": "lucide",
+	"items": [
+		{ "feature_key": "local_storage", "name": "Local Storage", "label": "Local Storage", "description": "Local filesystem storage", "version": null, "is_builtin": true, "enabled_globally": false, "config_schema": null },
+		{ "feature_key": "s3_storage", "name": "S3 Storage", "label": "S3 Storage", "description": "S3-compatible object storage", "version": null, "is_builtin": true, "enabled_globally": false, "config_schema": null }
+	]
+}
