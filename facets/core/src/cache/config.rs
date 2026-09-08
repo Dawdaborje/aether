@@ -74,7 +74,7 @@ impl Default for CacheConfig {
 
 impl CacheConfig {
     /// Build a ready-to-use [`crate::Cache`] from this config.
-    pub fn build(&self) -> Result<crate::Cache, crate::CacheError> {
-        crate::Cache::from_config(self)
+    pub fn build(&self) -> Result<super::Cache, super::CacheError> {
+        super::Cache::from_config(self)
     }
 }

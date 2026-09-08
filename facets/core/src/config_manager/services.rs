@@ -1,8 +1,8 @@
+use crate::cache::{CacheBackendKind, CacheConfig, RedisCacheConfig};
 use crate::config_manager::errors::ConfigError;
 use crate::config_manager::models::{
     AetherConfig, CoreConfig, DatabaseConfig, OrgResolutionMode, ServerConfig, TenancyConfig,
 };
-use aether_cache::{CacheBackendKind, CacheConfig, RedisCacheConfig};
 use std::fs;
 use toml::Value;
 
@@ -256,6 +256,8 @@ pub fn gen_aether_conf_from_config_file(conf_file: &str) -> Result<AetherConfig,
     let value: Value = toml::from_str(&content)?;
 
     let db_conf = build_database_conf(get_field(&value, "database")?)?;
+
+    log::info!("Database config: {:?}", db_conf);
 
     let core_conf = CoreConfig {
         is_development_mode: bool_from_root_or_table(

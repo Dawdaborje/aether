@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use aether_cache::Cache;
+use super::cache::Cache;
 use surrealdb::{Surreal, engine::remote::ws::Client as SurrealClient};
 
 use crate::config_manager::models::AetherConfig;
@@ -21,7 +21,7 @@ impl AppState {
         config: AetherConfig,
         namespace: impl Into<String>,
         core_database: impl Into<String>,
-    ) -> Result<Self, aether_cache::CacheError> {
+    ) -> Result<Self, super::cache::CacheError> {
         let cache = config.build_cache()?;
         Ok(Self {
             db,

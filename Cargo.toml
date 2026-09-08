@@ -1,14 +1,13 @@
 [workspace]
 members = [
     "aether",
+    # bridges
     "bridges/auth_and_identity/auth_bridge",
     "bridges/auth_and_identity/auth0",
     "bridges/auth_and_identity/authentik",
-    "bridges/auth_and_identity/google_auth",
     "bridges/auth_and_identity/keycloak",
     "bridges/auth_and_identity/ldap",
     "bridges/auth_and_identity/microsoft_extra",
-    # bridges
     "bridges/communications/africas_talking",
     "bridges/communications/bravo",
     "bridges/communications/mailgun",
@@ -33,7 +32,6 @@ members = [
     # facets
     "facets/core",
     "facets/authentication",
-    "facets/cache",
     "facets/security",
     "facets/communication",
     "facets/event_bus",
@@ -50,3 +48,5 @@ resolver = "2"
 
 [workspace.dependencies]
 extism = "1.30.0"
+moka = {version = "0.12.16", features = ["sync"]}
+surrealdb = "3.2.4"

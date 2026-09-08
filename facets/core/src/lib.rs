@@ -1,4 +1,5 @@
 pub mod application;
+pub mod cache;
 pub mod config_manager;
 pub mod kernel;
 pub mod plugin_manager;

@@ -6,8 +6,8 @@ use sha2::{Digest, Sha256};
 use surrealdb::{Surreal, engine::remote::ws::Client, types::SurrealValue};
 use thiserror::Error;
 
-static CORE_MIGRATIONS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../migrations");
-static ORG_MIGRATIONS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../org_migrations");
+static CORE_MIGRATIONS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../migrations/core");
+static ORG_MIGRATIONS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../migrations/org");
 
 #[derive(Debug, Error)]
 pub enum MigrationError {
@@ -80,9 +80,7 @@ async fn apply_migrations(
             continue;
         }
 
-        let version = filename
-            .trim_end_matches(".surql")
-            .to_string();
+        let version = filename.trim_end_matches(".surql").to_string();
 
         if applied.contains(&version) {
             log::debug!("Skipping already-applied migration {version}");

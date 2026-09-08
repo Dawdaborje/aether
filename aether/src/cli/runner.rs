@@ -88,18 +88,17 @@ async fn dispatch(args: Args) {
         }
     }
 
-    if args.change_password {
-        let username = &args
-            .password
-            .as_ref()
-            .expect("Password must be provided when changing password");
-        let new_password = &args
-            .password
-            .as_ref()
-            .expect("Password must be provided when changing password");
-
+    if let Some(username) = &args.change_password {
+        let Some(new_password) = &args.password else {
+            log::error!("--password must be provided when changing a user's password");
+            return;
+        };
         let ctx = get_prerequisites(&args).await;
-        change_user_password(username, new_password, &ctx.db).await;
+        match change_user_password(username, new_password, ctx.db).await {
+            Ok(()) => println!("Password changed for user '{username}'."),
+            Err(err) => log::error!("Failed to change password for '{username}': {err}"),
+        }
+        return;
     }
 
     if args.init {

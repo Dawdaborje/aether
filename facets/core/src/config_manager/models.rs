@@ -1,4 +1,4 @@
-use aether_cache::CacheConfig;
+use crate::cache::CacheConfig;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -17,9 +17,9 @@ pub struct DatabaseConfig {
 impl Default for DatabaseConfig {
     fn default() -> Self {
         Self {
-            user: "root".to_string(),
-            password: "root".to_string(),
-            namespace: "main".to_string(),
+            user: "".to_string(),
+            password: "".to_string(),
+            namespace: "".to_string(),
             host: "127.0.0.1".to_string(),
             port: 8000,
             pool_size: Some(10),
@@ -148,7 +148,7 @@ impl Default for AetherConfig {
 
 impl AetherConfig {
     /// Build the kernel cache from `[cache]` (defaults to in-process Moka).
-    pub fn build_cache(&self) -> Result<aether_cache::Cache, aether_cache::CacheError> {
+    pub fn build_cache(&self) -> Result<crate::cache::Cache, crate::cache::CacheError> {
         self.cache.clone().unwrap_or_default().build()
     }
 

@@ -1,11 +1,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::config::{CacheBackendKind, CacheConfig};
-use crate::error::CacheError;
-use crate::moka::MokaCache;
-use crate::redis_store::RedisCache;
-use crate::store::{namespaced_key, CacheStore, CacheValue};
+use super::config::{CacheBackendKind, CacheConfig};
+use super::error::CacheError;
+use super::moka::MokaCache;
+use super::redis_store::RedisCache;
+use super::store::{CacheStore, CacheValue, namespaced_key};
 
 /// Kernel-facing cache facade. All plugin access should go through namespaced methods so
 /// org/plugin isolation is enforced by the kernel rather than by callers.
@@ -32,10 +32,13 @@ impl Cache {
         let store: Arc<dyn CacheStore> = match config.backend {
             CacheBackendKind::Moka => Arc::new(MokaCache::new(config)),
             CacheBackendKind::Redis => {
-                let redis = config.redis.as_ref().ok_or(CacheError::MissingBackendConfig {
-                    backend: "redis",
-                    section: "cache.redis",
-                })?;
+                let redis = config
+                    .redis
+                    .as_ref()
+                    .ok_or(CacheError::MissingBackendConfig {
+                        backend: "redis",
+                        section: "cache.redis",
+                    })?;
                 Arc::new(RedisCache::connect(redis, config.max_value_bytes)?)
             }
         };

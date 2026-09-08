@@ -1,11 +1,10 @@
 use include_dir::{Dir, include_dir};
 use surrealdb::{Surreal, engine::remote::ws::Client};
 
-static SEEDS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../seeds");
+static SEEDS_SURQL_FILES: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../seeds/surql");
+static SEEDS_BRIDGES_FILES: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../seeds/bridges");
 
-/// Apply core seed scripts (idempotent best-effort — re-run may duplicate;
-/// prefer running once after `--init`).
-pub async fn seed_system(db: &Surreal<Client>, namespace: &str, database: &str) {
+async fn seed_surql(db: &Surreal<Client>, namespace: &str, database: &str, sql: &str) {
     if let Err(err) = db.use_ns(namespace).await {
         log::error!("seed: failed to use ns `{namespace}`: {err}");
         return;
@@ -15,7 +14,7 @@ pub async fn seed_system(db: &Surreal<Client>, namespace: &str, database: &str) 
         return;
     }
 
-    let mut files: Vec<_> = SEEDS.files().collect();
+    let mut files: Vec<_> = SEEDS_SURQL_FILES.files().collect();
     files.sort_by_key(|f| f.path().to_path_buf());
 
     for file in files {
@@ -43,4 +42,12 @@ pub async fn seed_system(db: &Surreal<Client>, namespace: &str, database: &str) 
             Err(err) => log::error!("seed `{name}` failed: {err}"),
         }
     }
+}
+
+async fn seed_facets(db: &Surreal<Client>, namespace: &str, database: &str) {}
+
+/// Apply core seed scripts (idempotent best-effort — re-run may duplicate;
+/// prefer running once after `--init`).
+pub async fn seed_system(db: &Surreal<Client>, namespace: &str, database: &str) {
+    seed_surql(db, namespace, database, "seeds/surql/0013_company.surql").await;
 }

@@ -51,7 +51,7 @@ Aether is a modular, plugin-driven Business Suite framework built on a Rust kern
 
 ## Plugin System
 
-Plugins are WebAssembly modules. They implement the Aether WIT interface and communicate with the kernel exclusively through typed kernel commands.
+Plugins are WebAssembly modules. They implement the Extism interface and communicate with the kernel exclusively through typed kernel commands.
 
 ```
 Plugin calls Db.query()
@@ -64,19 +64,6 @@ Plugin never touches SurrealDB directly.
 Plugin never touches the filesystem.
 Plugin never makes raw network calls.
 ```
-
-## Contributing
-
-Aether is an open learning project. If you find it interesting, contributions are welcome.
-
-Read [CONTRIBUTING.md](./CONTRIBUTING.md) for setup instructions, code style, and how to write your first plugin.
-
-Good first contributions:
-- Implement a new Bridge (Twilio, Flutterwave, Africa's Talking)
-- Add a new built-in `.xml` DSL tag
-- Write a sample plugin in Python or Go
-- Improve CLI error messages
-- Write documentation
 
 ---
 

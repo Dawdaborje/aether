@@ -1,11 +1,11 @@
 use std::time::{Duration, Instant};
 
-use moka::sync::Cache as MokaInner;
 use moka::Expiry;
+use moka::sync::Cache as MokaInner;
 
-use crate::config::CacheConfig;
-use crate::error::CacheError;
-use crate::store::{CacheStore, CacheValue};
+use super::config::CacheConfig;
+use super::error::CacheError;
+use super::store::{CacheStore, CacheValue};
 
 #[derive(Clone)]
 struct TimedValue {
@@ -72,17 +72,10 @@ impl CacheStore for MokaCache {
         Ok(self.inner.get(key).map(|entry| entry.value))
     }
 
-    fn set(
-        &self,
-        key: &str,
-        value: CacheValue,
-        ttl: Option<Duration>,
-    ) -> Result<(), CacheError> {
+    fn set(&self, key: &str, value: CacheValue, ttl: Option<Duration>) -> Result<(), CacheError> {
         self.validate_value(&value)?;
-        self.inner.insert(
-            key.to_string(),
-            TimedValue { value, ttl },
-        );
+        self.inner
+            .insert(key.to_string(), TimedValue { value, ttl });
         Ok(())
     }
 

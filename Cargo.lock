@@ -71,7 +71,6 @@ dependencies = [
  "authentik",
  "axum",
  "axum-extra",
- "google_auth",
  "keycloak",
  "ldap",
  "log",
@@ -87,17 +86,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aether_cache"
-version = "0.1.0"
-dependencies = [
- "log",
- "moka",
- "redis",
- "serde",
- "thiserror 2.0.20",
-]
-
-[[package]]
 name = "aether_communication"
 version = "0.1.0"
 
@@ -105,7 +93,6 @@ version = "0.1.0"
 name = "aether_core"
 version = "0.1.0"
 dependencies = [
- "aether_cache",
  "aether_event_bus",
  "aether_organization",
  "aether_orm",
@@ -114,6 +101,8 @@ dependencies = [
  "axum",
  "directories",
  "log",
+ "moka",
+ "redis",
  "serde",
  "serde_json",
  "surrealdb",
@@ -2237,18 +2226,6 @@ name = "glob"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
-
-[[package]]
-name = "google_auth"
-version = "0.1.0"
-dependencies = [
- "aether_auth_bridge",
- "async-trait",
- "reqwest 0.13.4",
- "serde",
- "serde_json",
- "url",
-]
 
 [[package]]
 name = "google_drive"

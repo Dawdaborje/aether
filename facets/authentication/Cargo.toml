@@ -7,7 +7,6 @@ edition = "2024"
 aether_core = { path = "../core" }
 aether_orm = { path = "../orm" }
 aether_auth_bridge = { path = "../../bridges/auth_and_identity/auth_bridge" }
-google_auth = { path = "../../bridges/auth_and_identity/google_auth" }
 keycloak = { path = "../../bridges/auth_and_identity/keycloak" }
 auth0 = { path = "../../bridges/auth_and_identity/auth0" }
 authentik = { path = "../../bridges/auth_and_identity/authentik" }

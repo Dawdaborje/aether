@@ -70,10 +70,6 @@ pub struct Args {
     pub db_namespace: Option<String>,
 
     #[arg(long)]
-    /// SurrealDB database name (default: `core`)
-    pub db_name: Option<String>,
-
-    #[arg(long)]
     /// SurrealDB user
     pub db_user: Option<String>,
 
@@ -85,7 +81,7 @@ pub struct Args {
     /// SurrealDB host
     pub db_host: Option<String>,
 
-    #[arg(long, default_value = "8000")]
+    #[arg(long)]
     /// SurrealDB port
     pub db_port: Option<u16>,
 
@@ -102,7 +98,7 @@ pub struct Args {
     #[arg(long)]
     pub password: Option<String>,
 
-    #[arg(long, action = clap::ArgAction::SetTrue)]
-    /// changes the password of a user (e.g. `--change-password username`)
-    pub change_password: bool,
+    #[arg(long, value_name = "USERNAME")]
+    /// Change a user's password (e.g. `--change-password admin --password new-secret`)
+    pub change_password: Option<String>,
 }

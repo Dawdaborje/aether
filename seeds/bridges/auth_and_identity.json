@@ -1,0 +1,29 @@
+{
+    "code": "auth_and_identity",
+    "name": "Auth and Identity",
+    "description": "Auth and Identity",
+    "icon": "auth_and_identity",
+    "icon_type": "lucide",
+    "color": "blue",
+    "color_type": "lucide",
+    "items": [
+        {
+            "code": "auth0",
+            "name": "Auth0",
+            "description": "Auth0",
+            "icon": "auth0",
+            "icon_type": "lucide",
+            "color": "blue",
+            "color_type": "lucide"
+        },
+        {
+            "code": "authentik",
+            "name": "Authentik",
+            "description": "Authentik",
+            "icon": "authentik",
+            "icon_type": "lucide",
+            "color": "blue",
+            "color_type": "lucide"
+        }
+    ]
+}

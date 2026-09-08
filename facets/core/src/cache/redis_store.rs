@@ -3,9 +3,9 @@ use std::time::Duration;
 
 use redis::{Client, Commands, Connection, RedisResult};
 
-use crate::config::RedisCacheConfig;
-use crate::error::CacheError;
-use crate::store::{CacheStore, CacheValue};
+use super::config::RedisCacheConfig;
+use super::error::CacheError;
+use super::store::{CacheStore, CacheValue};
 
 /// External Redis (or Redis-compatible) cache backend.
 pub struct RedisCache {
@@ -99,12 +99,7 @@ impl CacheStore for RedisCache {
         Ok(bytes.map(CacheValue::new))
     }
 
-    fn set(
-        &self,
-        key: &str,
-        value: CacheValue,
-        ttl: Option<Duration>,
-    ) -> Result<(), CacheError> {
+    fn set(&self, key: &str, value: CacheValue, ttl: Option<Duration>) -> Result<(), CacheError> {
         self.validate_value(&value)?;
         let redis_key = self.redis_key(key);
         let bytes = value.bytes;

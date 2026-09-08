@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::error::CacheError;
+use super::error::CacheError;
 
 /// Opaque cached payload. Bytes keep the facet language-agnostic for future WASM hosts.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,12 +72,7 @@ pub fn namespaced_key(namespace: &str, key: &str) -> Result<String, CacheError> 
 /// Low-level store used by [`crate::Cache`]. Backends (Moka, Redis) implement this.
 pub trait CacheStore: Send + Sync {
     fn get(&self, key: &str) -> Result<Option<CacheValue>, CacheError>;
-    fn set(
-        &self,
-        key: &str,
-        value: CacheValue,
-        ttl: Option<Duration>,
-    ) -> Result<(), CacheError>;
+    fn set(&self, key: &str, value: CacheValue, ttl: Option<Duration>) -> Result<(), CacheError>;
     fn delete(&self, key: &str) -> Result<bool, CacheError>;
     /// Delete every key that starts with `prefix` (including the prefix itself).
     fn delete_prefix(&self, prefix: &str) -> Result<usize, CacheError>;
