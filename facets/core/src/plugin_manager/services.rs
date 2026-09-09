@@ -39,9 +39,7 @@ pub async fn get_plugins_from_config_file(file_paths: Vec<PathBuf>) -> Vec<Plugi
     plugins
 }
 
-pub async fn get_manifests_from_config_files(
-    file_paths: Vec<PathBuf>,
-) -> Vec<PluginManifest> {
+pub async fn get_manifests_from_config_files(file_paths: Vec<PathBuf>) -> Vec<PluginManifest> {
     let mut manifests = Vec::new();
     for file_path in file_paths {
         match load_plugin_manifest(file_path).await {
@@ -107,3 +105,5 @@ enabled = true
         assert_eq!(manifest.communication.channels, vec!["events"]);
     }
 }
+
+pub async fn build_plugin_paths_conf() {}

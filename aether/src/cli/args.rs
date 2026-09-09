@@ -21,6 +21,14 @@ pub struct Args {
     /// Generate a scaffold: `workspace`, `plugin`, or `aether_config`
     pub generate: Option<String>,
 
+    #[arg(long, value_name = "PATH")]
+    /// Destination path for generated plugin projects
+    pub plugin_path: Option<String>,
+
+    #[arg(long, default_value = "go", value_name = "LANGUAGE")]
+    /// Plugin language passed to Extism (go, rust, python, javascript, typescript)
+    pub plugin_language: String,
+
     #[arg(long, default_missing_value = "7890")]
     pub http_port: Option<u16>,
 

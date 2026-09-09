@@ -31,7 +31,7 @@ pub async fn get_prerequisites(args: &Args) -> DbContext {
         }
     };
 
-    let db_config = configuration.database.as_ref().cloned().unwrap_or_default();
+    let db_config: DatabaseConfig = configuration.database.as_ref().cloned().unwrap_or_default();
 
     let db = build_db_conn(
         &db_config,

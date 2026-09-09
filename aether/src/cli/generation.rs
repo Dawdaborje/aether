@@ -5,8 +5,7 @@ use std::{
 
 use tokio::fs;
 
-const DEFAULT_CONFIG_TEMPLATE: &str = 
-r#"[core]
+const DEFAULT_CONFIG_TEMPLATE: &str = r#"[core]
 instance_name = "Aether Test"
 
 [server]
@@ -41,8 +40,7 @@ org_header = "X-Org-Slug"
 org_path_prefix = "/o"
 "#;
 
-const DEFAULT_PLUGIN_CONFIG_TEMPLATE: &str =
-r#"[plugin]
+const DEFAULT_PLUGIN_CONFIG_TEMPLATE: &str = r#"[plugin]
 name = "{plugin_name}"
 label = "{plugin_label}"
 version = "0.0.1"
@@ -53,15 +51,13 @@ website = "https://your.website.com"
 categories = []
 dependencies = []
 capabilities = ["db::query", "db::mutate"]
-# Optional high privilege — only if the plugin must run custom SurQL:
-# "db::surql"
+
 access_models = [
     { name = "user", permissions = ["read", "write"] },
 ]
 is_builtin = false
 
 # Contract version — bump only when breaking required keys.
-# See plugins/base/docs/PLUGIN_API.md
 [plugin.api]
 version = "0.1"
 
@@ -73,39 +69,9 @@ workspace = ""
 # Planned channels: events | email | sms | http | plugins
 channels = []
 
-# [[models]]
-# name = "example"
-# table = "example"
-# file = "./models/example.surql"
-
-# [[pages]]
-# route = "/example"
-# title = "Example"
-# file = "./pages/example.xml"
-
-# [[menus]]
-# name = "example"
-# label = "Example"
-# url = "/example"
-# order = 10
-
-# [[hooks]]
-# name = "on_install"
-# phase = "install"
-# handler = "hooks.on_install"
-
-# [[events]]
-# name = "example.created"
-# direction = "emit"
-# payload = "id"
-
-# [[permissions]]
-# key = "example.read"
-# label = "Read example"
 "#;
 
-const DEFAULT_PLUGIN_WORKSPACE_TEMPLATE: &str = 
-r#"[workspace]
+const DEFAULT_PLUGIN_WORKSPACE_TEMPLATE: &str = r#"[workspace]
 name = "example"
 label = "Example Plugin"
 version = "0.0.1"
@@ -192,44 +158,36 @@ pub async fn generate_plugin_config(path: String, name: &str) {
     write_file(config_path, &render_plugin_config(name)).await;
 
     // Scaffold folders expected by the evolving plugin API (pages, hooks, …).
-    for dir in [
-        "models",
-        "migrations",
-        "pages",
-        "components",
-        "hooks",
-        "events",
-        "security",
-        "i18n",
-    ] {
+    for dir in ["models", "pages", "i18n"] {
         let dir_path = root.join(dir);
-        fs::create_dir_all(&dir_path)
-            .await
-            .unwrap_or_else(|err| {
-                log::error!("Failed to create {:?}: {err}", dir_path);
-                exit(1);
-            });
+        fs::create_dir_all(&dir_path).await.unwrap_or_else(|err| {
+            log::error!("Failed to create {:?}: {err}", dir_path);
+            exit(1);
+        });
     }
 
     write_file(
-        root.join("hooks/hooks.toml"),
+        root.join("hooks.toml"),
         "[[hook]]\nname = \"on_install\"\nphase = \"install\"\n",
     )
     .await;
     write_file(
-        root.join("security/permissions.toml"),
-        &format!(
-            "[[permission]]\nkey = \"{name}.read\"\nlabel = \"Read {name}\"\n"
-        ),
+        root.join("permissions.toml"),
+        &format!("[[permission]]\nkey = \"{name}.read\"\nlabel = \"Read {name}\"\n"),
     )
     .await;
+    write_file(root.join("events.toml"), "").await;
 }
 
-fn check_if_extism_cli_is_installed() -> bool {
-    match std::process::Command::new("extism").arg("version").output() {
-        Ok(output) => output.status.success(),
-        Err(_) => false,
+fn find_extism_cli() -> Option<PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+    for directory in std::env::split_paths(&path_var) {
+        let candidate = directory.join("extism");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
     }
+    None
 }
 
 /// Walks up from `start` looking for a `workspace.toml` in an ancestor directory.
@@ -248,19 +206,12 @@ fn find_workspace_manifest(start: &Path) -> Option<PathBuf> {
 }
 
 async fn plugin_final_touches(name: String, project_path: PathBuf) {
-    // A plugin must live inside a workspace, so make sure one exists above it.
-    match find_workspace_manifest(&project_path) {
-        Some(workspace_manifest) => {
-            log::info!("Found plugin workspace at: {:?}", workspace_manifest);
-        }
-        None => {
-            log::error!(
-                "No workspace.toml found in any parent directory of {:?}. \
-                 Run `aether --gen workspace` first.",
-                project_path
-            );
-            exit(1);
-        }
+    // A workspace is optional; standalone plugins are valid projects too.
+    if let Some(workspace_manifest) = find_workspace_manifest(&project_path) {
+        log::info!(
+            "Found optional plugin workspace at: {:?}",
+            workspace_manifest
+        );
     }
 
     // Generate the Aether plugin manifest inside the freshly scaffolded project.
@@ -271,12 +222,35 @@ async fn plugin_final_touches(name: String, project_path: PathBuf) {
 
 pub async fn create_plugin_project(path: String, name: String, language: String) {
     let plugin_path = PathBuf::from(&path);
+    let parent_path = plugin_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
 
     log::info!("Creating plugin project at: {:?}", plugin_path);
 
-    if !check_if_extism_cli_is_installed() {
+    let Some(extism_cli) = find_extism_cli() else {
         log::error!("Extism CLI is not installed. See https://github.com/extism/cli");
         return;
+    };
+
+    match std::process::Command::new(&extism_cli)
+        .arg("--help")
+        .output()
+    {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => {
+            log::error!(
+                "Extism CLI at {:?} could not be executed: {}",
+                extism_cli,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        Err(err) => {
+            log::error!("Failed to execute Extism CLI at {:?}: {err}", extism_cli);
+            return;
+        }
     }
 
     let arg_language = match language.to_lowercase().as_str() {
@@ -284,22 +258,27 @@ pub async fn create_plugin_project(path: String, name: String, language: String)
         "python" => "python",
         "javascript" => "js",
         "typescript" => "ts",
-        _ => "go",
+        "go" => "go",
+        unsupported => {
+            log::error!(
+                "Unsupported plugin language '{unsupported}'. Choose go, rust, python, javascript, or typescript."
+            );
+            return;
+        }
     };
-    let project_id = name.to_lowercase().replace(' ', "_"); // separate spaces with underscores
 
-    // Make sure the destination directory exists so extism can generate into it.
-    fs::create_dir_all(&plugin_path)
+    // Create the destination's parent; Extism creates the project directory.
+    fs::create_dir_all(parent_path)
         .await
-        .expect("Failed to create the plugin directory");
+        .expect("Failed to create the plugin parent directory");
 
-    let output = std::process::Command::new("extism")
+    let output = std::process::Command::new(&extism_cli)
         .arg("gen")
         .arg("plugin")
         .arg("-l")
         .arg(arg_language)
-        .arg(&project_id)
-        .current_dir(&plugin_path)
+        .arg("-o")
+        .arg(&plugin_path)
         .output()
         .expect("Failed to create plugin project");
 
@@ -313,6 +292,5 @@ pub async fn create_plugin_project(path: String, name: String, language: String)
 
     log::info!("Plugin project created successfully");
 
-    let project_path = plugin_path.join(&project_id);
-    plugin_final_touches(name, project_path).await;
+    plugin_final_touches(name, plugin_path).await;
 }

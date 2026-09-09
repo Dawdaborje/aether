@@ -10,7 +10,7 @@ use super::{
     args::Args,
     db::get_prerequisites,
     generation::{
-        generate_default_config_template, generate_plugin_config, generate_plugin_workspace,
+        create_plugin_project, generate_default_config_template, generate_plugin_workspace,
     },
     initialization::{initialize_system, print_bootstrap_summary},
     organization::{assign_user, create_organization},
@@ -72,11 +72,18 @@ async fn dispatch(args: Args) {
                 generate_plugin_workspace(current_dir).await;
             }
             "plugin" => {
-                let plugin_name = current_path
+                let plugin_path = args.plugin_path.clone().unwrap_or_else(|| {
+                    current_path
+                        .join("my_plugin")
+                        .to_string_lossy()
+                        .into_owned()
+                });
+                let plugin_name = Path::new(&plugin_path)
                     .file_name()
                     .and_then(|name| name.to_str())
-                    .unwrap_or("my_plugin");
-                generate_plugin_config(current_dir, plugin_name).await;
+                    .unwrap_or("my_plugin")
+                    .to_string();
+                create_plugin_project(plugin_path, plugin_name, args.plugin_language.clone()).await;
             }
             "aether_config" => {
                 generate_default_config_template(current_path.join("aether.toml")).await;

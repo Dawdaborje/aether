@@ -245,6 +245,34 @@ fn build_tenancy_conf(tenancy_value: &Value) -> Result<TenancyConfig, ConfigErro
     Ok(config)
 }
 
+fn build_plugin_paths_conf(
+    plugin_paths_value: Option<&Value>,
+    config_directory: &std::path::Path,
+) -> Result<Vec<String>, ConfigError> {
+    let Some(plugin_paths_value) = plugin_paths_value else {
+        return Ok(Vec::new());
+    };
+    if !plugin_paths_value.is_array() {
+        return Err(ConfigError::InvalidType {
+            field: "plugin_paths".to_string(),
+            expected: "array".to_string(),
+        });
+    }
+    let mut paths = Vec::new();
+    for item in plugin_paths_value.as_array().unwrap_or(&Vec::new()) {
+        if let Some(path) = item.as_str() {
+            let path = std::path::Path::new(path);
+            let resolved = if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                config_directory.join(path)
+            };
+            paths.push(resolved.to_string_lossy().into_owned());
+        }
+    }
+    Ok(paths)
+}
+
 pub fn gen_aether_conf_from_config_file(conf_file: &str) -> Result<AetherConfig, ConfigError> {
     log::info!("Using this file for configuration: {}", conf_file);
 
@@ -285,12 +313,27 @@ pub fn gen_aether_conf_from_config_file(conf_file: &str) -> Result<AetherConfig,
         None => TenancyConfig::default(),
     };
 
+    let config_directory = std::path::Path::new(conf_file)
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let server_table = optional_table(&value, "server")?;
+    let plugin_paths_value = value
+        .get("plugin_paths")
+        .or_else(|| server_table.and_then(|table| table.get("plugin_paths")))
+        .or_else(|| server_table.and_then(|table| table.get("addon_paths")));
+    let plugin_paths = Some(build_plugin_paths_conf(
+        plugin_paths_value,
+        config_directory,
+    )?);
+
     Ok(AetherConfig {
         database: Some(db_conf),
         configuration: Some(core_conf),
         server,
         cache,
         tenancy,
+        plugin_paths,
         ..Default::default()
     })
 }
@@ -340,6 +383,23 @@ backend = "moka"
         let conf = gen_aether_conf_from_config_file(file.path().to_str().unwrap()).unwrap();
         let database = conf.database.expect("database");
         assert_eq!(database.namespace, "aether");
+    }
+
+    #[test]
+    fn loads_plugin_paths_from_server_addon_paths() {
+        let body = format!(
+            r#"{BASE}
+[server]
+addon_paths = ["plugins/tester", "/opt/aether/plugins"]
+"#
+        );
+        let file = write_toml(&body);
+
+        let conf = gen_aether_conf_from_config_file(file.path().to_str().unwrap()).unwrap();
+        let paths = conf.plugin_paths.expect("plugin paths");
+        assert_eq!(paths.len(), 2);
+        assert!(paths[0].ends_with("plugins/tester"));
+        assert_eq!(paths[1], "/opt/aether/plugins");
     }
 
     #[test]
