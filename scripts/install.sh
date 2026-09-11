@@ -6,7 +6,7 @@
 #   ./scripts/install.sh [--web] [--app] [--bin-dir <path>]
 #
 # Components:
-#   --web        Build only the frontend (aether_web).
+#   --web        Build only the frontend (web).
 #   --app        Build only the Rust application and install the binary.
 # With neither flag, both components are built (the default).
 #
@@ -18,7 +18,7 @@ set -euo pipefail
 
 BIN_NAME="aether"
 BIN_DIR="${HOME}/.local/bin"
-WEB_DIR="aether_web"
+WEB_DIR="web"
 
 BUILD_WEB=false
 BUILD_APP=false

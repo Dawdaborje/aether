@@ -1,4 +1,4 @@
-web_dir := "aether_web"
+web_dir := "web"
 aether := "cargo run --bin aether --"
 
 # Run the backend dev server (default)

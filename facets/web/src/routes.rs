@@ -32,12 +32,12 @@ fn resolve_web_build_dir() -> PathBuf {
         return PathBuf::from(path);
     }
 
-    let from_crate = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../aether_web/build");
+    let from_crate = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../web/build");
     if from_crate.exists() {
         return from_crate;
     }
 
-    for candidate in ["aether_web/build", "../aether_web/build", "../../aether_web/build"] {
+    for candidate in ["web/build", "../web/build", "../../web/build"] {
         let path = PathBuf::from(candidate);
         if path.exists() {
             return path;

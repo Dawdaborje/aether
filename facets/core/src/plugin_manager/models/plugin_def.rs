@@ -85,6 +85,7 @@ pub struct PluginDefinition {
     pub api: Option<PluginApi>,
     #[serde(default)]
     pub meta: Option<PluginMeta>,
+    pub wasm_file: Option<String>,
 }
 
 impl Default for PluginDefinition {
@@ -109,6 +110,7 @@ impl Default for PluginDefinition {
                 version: default_api_version(),
             }),
             meta: None,
+            wasm_file: None,
         }
     }
 }
