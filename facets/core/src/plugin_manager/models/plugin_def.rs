@@ -85,7 +85,10 @@ pub struct PluginDefinition {
     pub api: Option<PluginApi>,
     #[serde(default)]
     pub meta: Option<PluginMeta>,
+    #[serde(default)]
     pub wasm_file: Option<String>,
+    #[serde(default)]
+    pub plugin_base_path: String,
 }
 
 impl Default for PluginDefinition {
@@ -111,6 +114,7 @@ impl Default for PluginDefinition {
             }),
             meta: None,
             wasm_file: None,
+            plugin_base_path: String::new(),
         }
     }
 }

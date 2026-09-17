@@ -1,4 +1,4 @@
-use crate::cache::CacheConfig;
+use crate::{cache::CacheConfig, plugin_manager::models::plugin_def::PluginDefinition};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -121,7 +121,7 @@ pub struct AetherConfig {
     pub configuration: Option<CoreConfig>,
     pub database: Option<DatabaseConfig>,
     pub server: Option<ServerConfig>,
-    pub plugin_paths: Option<Vec<String>>,
+    pub plugins: Option<Vec<PluginDefinition>>,
     pub storages: Option<Vec<StorageConfig>>,
     pub cache: Option<CacheConfig>,
     #[serde(default)]
@@ -138,7 +138,7 @@ impl Default for AetherConfig {
             configuration: Some(CoreConfig::default()),
             database: Some(DatabaseConfig::default()),
             server: Some(ServerConfig::default()),
-            plugin_paths: Some(vec![]),
+            plugins: Some(vec![]),
             storages: Some(storages),
             cache: Some(CacheConfig::default()),
             tenancy: TenancyConfig::default(),

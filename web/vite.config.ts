@@ -13,7 +13,7 @@ export default defineConfig({
 	server: {
 		proxy: {
 			'/api': {
-				target: 'http://127.0.0.1:7890',
+				target: process.env.PUBLIC_API_BASE_URL || 'http://127.0.0.1:7891',
 				changeOrigin: true
 			}
 		}

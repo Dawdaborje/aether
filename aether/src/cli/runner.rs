@@ -101,7 +101,7 @@ async fn dispatch(args: Args) {
             log::error!("--password must be provided when changing a user's password");
             return;
         };
-        let ctx = get_prerequisites(&args).await;
+        let ctx = get_db_context(&args).await;
         match change_user_password(username, new_password, ctx.db).await {
             Ok(()) => println!("Password changed for user '{username}'."),
             Err(err) => log::error!("Failed to change password for '{username}': {err}"),
@@ -127,7 +127,7 @@ async fn dispatch(args: Args) {
             return;
         };
 
-        let ctx = get_prerequisites(&args).await;
+        let ctx = get_db_context(&args).await;
         match create_organization(
             ctx.db,
             &ctx.namespace,
@@ -159,7 +159,7 @@ async fn dispatch(args: Args) {
             return;
         };
 
-        let ctx = get_prerequisites(&args).await;
+        let ctx = get_db_context(&args).await;
         match assign_user(
             ctx.db,
             &ctx.namespace,
@@ -178,7 +178,7 @@ async fn dispatch(args: Args) {
     }
 
     if args.init {
-        let ctx = get_prerequisites(&args).await;
+        let ctx = get_db_context(&args).await;
         match initialize_system(
             ctx.db,
             &ctx.namespace,
@@ -198,7 +198,7 @@ async fn dispatch(args: Args) {
     }
 
     if args.seed {
-        let ctx = get_prerequisites(&args).await;
+        let ctx = get_db_context(&args).await;
         if let Err(err) = seed_system(ctx.db, &ctx.namespace, &ctx.database).await {
             log::error!("Seeding failed: {err}");
             std::process::exit(1);
@@ -206,9 +206,19 @@ async fn dispatch(args: Args) {
     }
 
     if let Some(_host) = &args.serve {
-        let ctx = get_prerequisites(&args).await;
+        let ctx = get_db_context(&args).await;
         if let Err(err) = run_server(ctx.config, args.http_port, ctx.db).await {
             log::error!("Server failed: {err}");
+            std::process::exit(1);
+        }
+    }
+}
+
+async fn get_db_context(args: &Args) -> crate::cli::db::DbContext {
+    match get_prerequisites(args).await {
+        Ok(context) => context,
+        Err(error) => {
+            log::error!("Database setup failed: {error}");
             std::process::exit(1);
         }
     }

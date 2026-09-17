@@ -1,4 +1,5 @@
 import { writable, derived, type Readable, type Writable } from 'svelte/store';
+import type { SystemNav } from './types/sysemNav';
 
 export type IconType = 'iconify' | 'lucide';
 
@@ -60,3 +61,15 @@ export function selectTab(tabId: string) {
 }
 
 export const settingsSideBarsStore: Readable<SettingTab[]> = settingsTabsStore;
+
+export const currentSystemNavParent: Writable<string> = writable('apps');
+
+export const appsNavItems: SystemNav = {
+	header: 'Apps',
+	items: [
+		{
+			href: '/web/settings',
+			label: 'Settings'
+		}
+	]
+};

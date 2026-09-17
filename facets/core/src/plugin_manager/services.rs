@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use std::process::exit;
+use surrealdb::{Surreal, engine::remote::ws::Client};
 
+use crate::plugin_manager::models::plugin_db_def::PluginDbDefinition;
 use crate::plugin_manager::models::plugin_def::{PluginDefinition, PluginManifest};
 use tokio::fs;
 
@@ -54,6 +56,31 @@ pub async fn get_manifests_from_config_files(file_paths: Vec<PathBuf>) -> Vec<Pl
 }
 
 pub async fn reload_plugins(_plugins: Vec<PluginDefinition>) {}
+
+pub async fn get_plugins_from_db(db: &Surreal<Client>) -> Vec<PluginDefinition> {
+    match db.use_db("core").await {
+        Ok(_value) => {
+            log::info!("Successfully selected core database");
+        }
+        Err(err) => {
+            log::error!("Failed to select core database: {err}");
+            return Vec::new();
+        }
+    };
+
+    let db_plugins: Vec<PluginDbDefinition> = match db.select("plugins").await {
+        Ok(plugins) => plugins,
+        Err(err) => {
+            log::error!("Failed to query plugins from database: {err}");
+            return Vec::new();
+        }
+    };
+
+    let plugins = db_plugins.into_iter().map(Into::into).collect::<Vec<_>>();
+
+    log::info!("Loaded {} plugins from the database", plugins.len());
+    plugins
+}
 
 #[cfg(test)]
 mod tests {

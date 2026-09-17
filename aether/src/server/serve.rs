@@ -1,12 +1,11 @@
 use aether_authentication::routes::routes as auth_routes;
 use aether_core::config_manager::models::{self, ServerConfig};
-use aether_core::plugin_manager::models::plugin_def::PluginDefinition;
-use aether_core::plugin_manager::services::load_plugin_manifest;
+use aether_core::plugin_manager::services::get_plugins_from_db;
 use aether_core::routes::routes as core_routes;
 use aether_core::state::AppState;
 use axum::Router;
+use std::error::Error;
 use std::net::UdpSocket;
-use std::{error::Error, path::PathBuf};
 use surrealdb::Surreal;
 use surrealdb::engine::remote::ws::Client as SurrealClient;
 
@@ -57,35 +56,6 @@ pub fn get_server_host(conf: Option<ServerConfig>, port: Option<u16>) -> String 
     "0.0.0.0:7890".to_string()
 }
 
-async fn load_plugins(plugin_paths: Option<&Vec<String>>) -> Vec<PluginDefinition> {
-    let mut plugins = Vec::new();
-
-    let Some(plugin_paths) = plugin_paths else {
-        log::info!("No plugin paths configured");
-        return plugins;
-    };
-
-    for configured_path in plugin_paths {
-        let configured_path = PathBuf::from(configured_path);
-        let manifest_path = if configured_path.is_dir() {
-            configured_path.join("plugin.toml")
-        } else {
-            configured_path.clone()
-        };
-
-        log::info!("Loading plugin manifest: {:?}", manifest_path);
-        match load_plugin_manifest(manifest_path).await {
-            Ok(manifest) => {
-                log::info!("Loaded plugin: {}", manifest.plugin.name);
-                plugins.push(manifest.plugin);
-            }
-            Err(err) => log::error!("Failed to load plugin from {:?}: {err}", configured_path),
-        }
-    }
-
-    plugins
-}
-
 pub async fn run_server(
     config: models::AetherConfig,
     http_port: Option<u16>,
@@ -98,7 +68,9 @@ pub async fn run_server(
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "aether".into());
 
-    let _plugin_defs = load_plugins(config.plugin_paths.as_ref()).await;
+    let _plugin_defs = get_plugins_from_db(db_conn).await;
+
+    let server_config = config.server.clone();
 
     let state = match AppState::new(db_conn.clone(), config.clone(), namespace, "core") {
         Ok(state) => state,
@@ -118,7 +90,7 @@ pub async fn run_server(
         .nest("/api/auth", auth_routes())
         .with_state(state);
 
-    let bind_addr = get_server_host(config.server, http_port);
+    let bind_addr = get_server_host(server_config, http_port);
 
     let listener = match tokio::net::TcpListener::bind(&bind_addr).await {
         Ok(l) => l,

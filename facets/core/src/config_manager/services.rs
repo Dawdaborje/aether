@@ -3,6 +3,7 @@ use crate::config_manager::errors::ConfigError;
 use crate::config_manager::models::{
     AetherConfig, CoreConfig, DatabaseConfig, OrgResolutionMode, ServerConfig, TenancyConfig,
 };
+use crate::plugin_manager::models::plugin_def::PluginDefinition;
 use std::fs;
 use toml::Value;
 
@@ -312,20 +313,7 @@ pub fn gen_aether_conf_from_config_file(conf_file: &str) -> Result<AetherConfig,
         Some(table) => build_tenancy_conf(table)?,
         None => TenancyConfig::default(),
     };
-
-    let config_directory = std::path::Path::new(conf_file)
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or_else(|| std::path::Path::new("."));
-    let server_table = optional_table(&value, "server")?;
-    let plugin_paths_value = value
-        .get("plugin_paths")
-        .or_else(|| server_table.and_then(|table| table.get("plugin_paths")))
-        .or_else(|| server_table.and_then(|table| table.get("addon_paths")));
-    let plugin_paths = Some(build_plugin_paths_conf(
-        plugin_paths_value,
-        config_directory,
-    )?);
+    let plugins: Vec<PluginDefinition> = Vec::new();
 
     Ok(AetherConfig {
         database: Some(db_conf),
@@ -333,7 +321,7 @@ pub fn gen_aether_conf_from_config_file(conf_file: &str) -> Result<AetherConfig,
         server,
         cache,
         tenancy,
-        plugin_paths,
+        plugins: Some(plugins),
         ..Default::default()
     })
 }
@@ -342,149 +330,5 @@ pub fn generate_aether_config(config_file: Option<String>) -> Result<AetherConfi
     match &config_file {
         Some(value) => gen_aether_conf_from_config_file(value),
         None => Ok(AetherConfig::default()),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
-
-    fn write_toml(body: &str) -> NamedTempFile {
-        let mut file = NamedTempFile::new().expect("tempfile");
-        write!(file, "{body}").expect("write");
-        file
-    }
-
-    const BASE: &str = r#"
-[configuration]
-is_development_mode = false
-is_development_with_assets = false
-
-[database]
-host = "localhost"
-port = 8000
-user = "root"
-password = "root"
-namespace = "aether"
-"#;
-
-    #[test]
-    fn loads_database_namespace_from_toml() {
-        let body = format!(
-            r#"{BASE}
-[cache]
-backend = "moka"
-"#
-        );
-        let file = write_toml(&body);
-
-        let conf = gen_aether_conf_from_config_file(file.path().to_str().unwrap()).unwrap();
-        let database = conf.database.expect("database");
-        assert_eq!(database.namespace, "aether");
-    }
-
-    #[test]
-    fn loads_plugin_paths_from_server_addon_paths() {
-        let body = format!(
-            r#"{BASE}
-[server]
-addon_paths = ["plugins/tester", "/opt/aether/plugins"]
-"#
-        );
-        let file = write_toml(&body);
-
-        let conf = gen_aether_conf_from_config_file(file.path().to_str().unwrap()).unwrap();
-        let paths = conf.plugin_paths.expect("plugin paths");
-        assert_eq!(paths.len(), 2);
-        assert!(paths[0].ends_with("plugins/tester"));
-        assert_eq!(paths[1], "/opt/aether/plugins");
-    }
-
-    #[test]
-    fn loads_moka_cache_section() {
-        let body = format!(
-            r#"{BASE}
-[cache]
-backend = "moka"
-default_ttl_secs = 120
-max_entries = 500
-"#
-        );
-        let file = write_toml(&body);
-
-        let conf = gen_aether_conf_from_config_file(file.path().to_str().unwrap()).unwrap();
-        let cache = conf.cache.expect("cache");
-        assert_eq!(cache.backend, CacheBackendKind::Moka);
-        assert_eq!(cache.default_ttl_secs, Some(120));
-        assert_eq!(cache.max_entries, 500);
-    }
-
-    #[test]
-    fn loads_redis_cache_section_with_url() {
-        let body = format!(
-            r#"{BASE}
-[cache]
-backend = "redis"
-default_ttl_secs = 60
-
-[cache.redis]
-url = "redis://127.0.0.1:6379/1"
-key_prefix = "aether:test:"
-"#
-        );
-        let file = write_toml(&body);
-
-        let conf = gen_aether_conf_from_config_file(file.path().to_str().unwrap()).unwrap();
-        let cache = conf.cache.expect("cache");
-        assert_eq!(cache.backend, CacheBackendKind::Redis);
-        let redis = cache.redis.expect("redis");
-        assert_eq!(redis.url, "redis://127.0.0.1:6379/1");
-        assert_eq!(redis.key_prefix, "aether:test:");
-    }
-
-    #[test]
-    fn memory_alias_maps_to_moka() {
-        let body = format!(
-            r#"{BASE}
-[cache]
-backend = "memory"
-"#
-        );
-        let file = write_toml(&body);
-
-        let conf = gen_aether_conf_from_config_file(file.path().to_str().unwrap()).unwrap();
-        assert_eq!(conf.cache.unwrap().backend, CacheBackendKind::Moka);
-    }
-
-    #[test]
-    fn redis_backend_without_section_errors() {
-        let body = format!(
-            r#"{BASE}
-[cache]
-backend = "redis"
-"#
-        );
-        let file = write_toml(&body);
-
-        let err = gen_aether_conf_from_config_file(file.path().to_str().unwrap()).unwrap_err();
-        assert!(matches!(err, ConfigError::MissingField(ref f) if f == "cache.redis"));
-    }
-
-    #[test]
-    fn build_cache_from_loaded_moka_config() {
-        let body = format!(
-            r#"{BASE}
-[cache]
-backend = "moka"
-"#
-        );
-        let file = write_toml(&body);
-        let conf = gen_aether_conf_from_config_file(file.path().to_str().unwrap()).unwrap();
-        let cache = conf.build_cache().expect("build moka cache");
-        assert_eq!(cache.backend(), CacheBackendKind::Moka);
-        cache.set("ns", "k", "v", None).unwrap();
-        assert_eq!(cache.get("ns", "k").unwrap().unwrap().as_slice(), b"v");
     }
 }

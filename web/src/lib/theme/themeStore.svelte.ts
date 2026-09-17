@@ -3,9 +3,9 @@ import { enterpriseTheme } from './enterprise';
 import type { ThemeApiResponse, ThemeConfig, ThemeColorMode } from './types';
 
 function fromApi(payload: ThemeApiResponse): ThemeConfig {
-	const mode = (['light', 'dark', 'system'].includes(payload.color_mode)
-		? payload.color_mode
-		: 'system') as ThemeColorMode;
+	const mode = (
+		['light', 'dark', 'system'].includes(payload.color_mode) ? payload.color_mode : 'system'
+	) as ThemeColorMode;
 
 	return {
 		name: payload.name,

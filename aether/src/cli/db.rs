@@ -21,14 +21,11 @@ pub struct DbContext {
     pub database: String,
 }
 
-pub async fn get_prerequisites(args: &Args) -> DbContext {
+pub async fn get_prerequisites(args: &Args) -> Result<DbContext, String> {
     let config_file = resolve_config_file(args);
     let configuration: AetherConfig = match generate_aether_config(config_file) {
         Ok(config) => config,
-        Err(err) => {
-            log::error!("Failed to load configuration: {}", err);
-            std::process::exit(1);
-        }
+        Err(err) => return Err(format!("Failed to load configuration: {err}")),
     };
 
     let db_config: DatabaseConfig = configuration.database.as_ref().cloned().unwrap_or_default();
@@ -40,26 +37,26 @@ pub async fn get_prerequisites(args: &Args) -> DbContext {
         args.db_password.clone(),
         args.db_port,
     )
-    .await;
+    .await?;
 
     let namespace = resolve_namespace(args.db_namespace.as_deref(), &db_config);
     let database = resolve_database();
 
     db.use_ns(&namespace)
         .await
-        .expect("Failed to set database namespace");
+        .map_err(|err| format!("Failed to set database namespace: {err}"))?;
     db.use_db(&database)
         .await
-        .expect("Failed to set database name");
+        .map_err(|err| format!("Failed to set database name: {err}"))?;
 
     log::info!("Namespace: {}, Database: {}", namespace, database);
 
-    DbContext {
+    Ok(DbContext {
         config: configuration,
         db,
         namespace,
         database,
-    }
+    })
 }
 
 fn resolve_config_file(args: &Args) -> Option<String> {
@@ -125,7 +122,7 @@ async fn build_db_conn(
     db_user: Option<String>,
     db_password: Option<String>,
     db_port: Option<u16>,
-) -> &'static Surreal<SurrealClient> {
+) -> Result<&'static Surreal<SurrealClient>, String> {
     let host = db_host.filter(|s| !s.is_empty()).unwrap_or_else(|| {
         if db_config.host.is_empty() {
             "127.0.0.1".to_string()
@@ -158,16 +155,16 @@ async fn build_db_conn(
     let addr = format!("{host}:{port}");
     log::info!("Connecting to SurrealDB: ws://{addr}");
 
-    DB.connect::<Ws>(addr)
+    DB.connect::<Ws>(addr.clone())
         .await
-        .expect("Failed to connect to SurrealDB");
+        .map_err(|err| format!("Failed to connect to SurrealDB at ws://{addr}: {err}"))?;
     DB.signin(Root {
         username: user,
         password,
     })
     .await
-    .expect("Failed to sign in to SurrealDB");
+    .map_err(|err| format!("Failed to sign in to SurrealDB at ws://{addr}: {err}"))?;
     log::info!("Connected to SurrealDB");
 
-    &*DB
+    Ok(&*DB)
 }
