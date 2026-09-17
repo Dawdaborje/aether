@@ -1,5 +1,5 @@
 [package]
-name = "aether_flutterwave_integration"
+name = "aether_modem_pay_integration"
 version = "0.1.0"
 edition = "2024"
 

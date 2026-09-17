@@ -42,7 +42,7 @@ members = [
     "facets/report",
     "facets/storage",
     "facets/web",
-    "facets/document",
+    "facets/document", "facets/payment_integration", "bridges/payments/modem_pay",
 ]
 resolver = "2"
 
