@@ -36,6 +36,10 @@ pub struct Args {
     /// Bind address for the HTTP server (e.g. 0.0.0.0:7890)
     pub serve: Option<String>,
 
+    #[arg(short='o', long, default_missing_value = "0.0.0.0:7895", num_args = 0..=1)]
+    /// Bind address for the Scheduler (e.g. 0.0.0.0:7895)
+    pub start_scheduler: Option<String>,
+
     #[arg(short = 'k', long, action = clap::ArgAction::SetTrue)]
     /// Serve the event listener outside the event bus
     pub serve_listener: bool,
@@ -52,7 +56,7 @@ pub struct Args {
     /// File system for aether to work with, e.g plugins, css files and more
     pub app_dir: String,
 
-    #[arg(short = 'e', long = "environment", default_value = "dev")]
+    #[arg(short = 'e', long = "env", default_value = "dev")]
     /// Environment mode: `dev` or `prod`
     pub environment: String,
 
@@ -68,6 +72,9 @@ pub struct Args {
     #[arg(long, action = clap::ArgAction::SetTrue)]
     /// Seed reference data into the core database
     pub seed: bool,
+
+    #[arg(long, action = clap::ArgAction::SetFalse)]
+    pub no_scheduling: bool,
 
     #[arg(short, long)]
     /// Plugins to upgrade (e.g. `--upgrade-plugin plugin1 plugin2`)

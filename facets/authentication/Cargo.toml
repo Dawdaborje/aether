@@ -13,8 +13,8 @@ authentik = { path = "../../bridges/auth_and_identity/authentik" }
 ldap = { path = "../../bridges/auth_and_identity/ldap" }
 microsoft_extra = { path = "../../bridges/auth_and_identity/microsoft_extra" }
 async-trait = "0.1"
-axum = { version = "0.8.9", features = ["tokio", "macros"] }
-axum-extra = { version = "0.12", features = ["cookie"] }
+axum.workspace = true
+axum-extra.workspace = true
 time = "0.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1"
