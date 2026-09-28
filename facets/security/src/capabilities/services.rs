@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
-use super::models::{parse_capability_key, CapabilityGroup};
+use super::models::{CapabilityGroup, parse_capability_key};
 
 #[derive(Debug, Error)]
 pub enum CapabilityError {
@@ -170,9 +170,8 @@ mod tests {
     }
 
     #[test]
-    fn loads_repo_capabilities() {
-        let catalog = CapabilityCatalog::load_from_dir(repo_capabilities_dir())
-            .expect("load capabilities/");
+    fn loads_repo_capabilities() -> Result<(), CapabilityError> {
+        let catalog = CapabilityCatalog::load_from_dir(repo_capabilities_dir())?;
         assert!(catalog.contains("db::query"));
         assert!(catalog.contains("db::mutate"));
         assert!(catalog.contains("storage::read"));
@@ -190,15 +189,17 @@ mod tests {
         assert!(catalog.contains("db::surql"));
         assert!(!catalog.contains("db::write"));
         assert!(!catalog.contains("fs::read"));
+        Ok(())
     }
 
     #[test]
-    fn validate_declared_rejects_unknown() {
-        let catalog = CapabilityCatalog::load_from_dir(repo_capabilities_dir()).unwrap();
+    fn validate_declared_rejects_unknown() -> Result<(), CapabilityError> {
+        let catalog = CapabilityCatalog::load_from_dir(repo_capabilities_dir())?;
         let err = catalog
             .validate_declared(&["db::query".into()], &["nope::thing".into()])
             .unwrap_err();
         assert!(matches!(err, CapabilityError::UnknownCapability(_)));
+        Ok(())
     }
 
     #[test]

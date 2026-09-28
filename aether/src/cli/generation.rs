@@ -1,11 +1,13 @@
 use std::{
+    io,
     path::{Path, PathBuf},
-    process::exit,
 };
 
 use tokio::fs;
 
-const DEFAULT_CONFIG_TEMPLATE: &str = r#"[core]
+const DEFAULT_CONFIG_TEMPLATE: &str = r#"app_dir = "app_dir"
+
+[core]
 instance_name = "Aether Test"
 
 [server]
@@ -89,21 +91,16 @@ dependencies = []
 "#;
 
 /// Writes `content` to `file_path`, creating parent directories as needed.
-async fn write_file(file_path: PathBuf, content: &str) {
+async fn write_file(file_path: PathBuf, content: &str) -> io::Result<()> {
     log::info!("Generating file at: {:?}", file_path);
 
     if let Some(parent) = file_path.parent() {
         if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent)
-                .await
-                .expect("Failed to create parent directories");
+            fs::create_dir_all(parent).await?;
         }
     }
 
-    fs::write(&file_path, content).await.unwrap_or_else(|err| {
-        log::error!("Failed to write file {:?}: {err}", file_path);
-        exit(1);
-    });
+    fs::write(&file_path, content).await
 }
 
 /// Turns a raw plugin name into a human friendly label, e.g. `my_plugin` -> `My Plugin`.
@@ -135,48 +132,45 @@ fn render_plugin_config(name: &str) -> String {
         )
 }
 
-pub async fn generate_default_config_template(file_name: PathBuf) {
+pub async fn generate_default_config_template(file_name: PathBuf) -> io::Result<()> {
     log::info!("File name: {:?}", file_name);
 
-    write_file(file_name, DEFAULT_CONFIG_TEMPLATE).await;
+    write_file(file_name, DEFAULT_CONFIG_TEMPLATE).await
 }
 
-pub async fn generate_plugin_workspace(path: String) {
+pub async fn generate_plugin_workspace(path: String) -> io::Result<()> {
     let workspace_path = PathBuf::from(path).join("workspace.toml");
 
     log::info!("Generating plugin workspace at: {:?}", workspace_path);
 
-    write_file(workspace_path, DEFAULT_PLUGIN_WORKSPACE_TEMPLATE).await;
+    write_file(workspace_path, DEFAULT_PLUGIN_WORKSPACE_TEMPLATE).await
 }
 
-pub async fn generate_plugin_config(path: String, name: &str) {
+pub async fn generate_plugin_config(path: String, name: &str) -> io::Result<()> {
     let root = PathBuf::from(&path);
     let config_path = root.join("plugin.toml");
 
     log::info!("Generating plugin config at: {:?}", config_path);
 
-    write_file(config_path, &render_plugin_config(name)).await;
+    write_file(config_path, &render_plugin_config(name)).await?;
 
     // Scaffold folders expected by the evolving plugin API (pages, hooks, …).
     for dir in ["models", "pages", "i18n"] {
         let dir_path = root.join(dir);
-        fs::create_dir_all(&dir_path).await.unwrap_or_else(|err| {
-            log::error!("Failed to create {:?}: {err}", dir_path);
-            exit(1);
-        });
+        fs::create_dir_all(&dir_path).await?;
     }
 
     write_file(
         root.join("hooks.toml"),
         "[[hook]]\nname = \"on_install\"\nphase = \"install\"\n",
     )
-    .await;
+    .await?;
     write_file(
         root.join("permissions.toml"),
         &format!("[[permission]]\nkey = \"{name}.read\"\nlabel = \"Read {name}\"\n"),
     )
-    .await;
-    write_file(root.join("events.toml"), "").await;
+    .await?;
+    write_file(root.join("events.toml"), "").await
 }
 
 fn find_extism_cli() -> Option<PathBuf> {
@@ -205,7 +199,7 @@ fn find_workspace_manifest(start: &Path) -> Option<PathBuf> {
     None
 }
 
-async fn plugin_final_touches(name: String, project_path: PathBuf) {
+async fn plugin_final_touches(name: String, project_path: PathBuf) -> io::Result<()> {
     // A workspace is optional; standalone plugins are valid projects too.
     if let Some(workspace_manifest) = find_workspace_manifest(&project_path) {
         log::info!(
@@ -215,12 +209,13 @@ async fn plugin_final_touches(name: String, project_path: PathBuf) {
     }
 
     // Generate the Aether plugin manifest inside the freshly scaffolded project.
-    generate_plugin_config(project_path.to_string_lossy().to_string(), &name).await;
+    generate_plugin_config(project_path.to_string_lossy().to_string(), &name).await?;
 
     log::info!("Plugin project finalized at: {:?}", project_path);
+    Ok(())
 }
 
-pub async fn create_plugin_project(path: String, name: String, language: String) {
+pub async fn create_plugin_project(path: String, name: String, language: String) -> io::Result<()> {
     let plugin_path = PathBuf::from(&path);
     let parent_path = plugin_path
         .parent()
@@ -230,8 +225,10 @@ pub async fn create_plugin_project(path: String, name: String, language: String)
     log::info!("Creating plugin project at: {:?}", plugin_path);
 
     let Some(extism_cli) = find_extism_cli() else {
-        log::error!("Extism CLI is not installed. See https://github.com/extism/cli");
-        return;
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "Extism CLI is not installed. See https://github.com/extism/cli",
+        ));
     };
 
     match std::process::Command::new(&extism_cli)
@@ -240,16 +237,17 @@ pub async fn create_plugin_project(path: String, name: String, language: String)
     {
         Ok(output) if output.status.success() => {}
         Ok(output) => {
-            log::error!(
+            return Err(io::Error::other(format!(
                 "Extism CLI at {:?} could not be executed: {}",
                 extism_cli,
                 String::from_utf8_lossy(&output.stderr)
-            );
-            return;
+            )));
         }
         Err(err) => {
-            log::error!("Failed to execute Extism CLI at {:?}: {err}", extism_cli);
-            return;
+            return Err(io::Error::other(format!(
+                "Failed to execute Extism CLI at {:?}: {err}",
+                extism_cli
+            )));
         }
     }
 
@@ -260,17 +258,17 @@ pub async fn create_plugin_project(path: String, name: String, language: String)
         "typescript" => "ts",
         "go" => "go",
         unsupported => {
-            log::error!(
-                "Unsupported plugin language '{unsupported}'. Choose go, rust, python, javascript, or typescript."
-            );
-            return;
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "Unsupported plugin language '{unsupported}'. Choose go, rust, python, javascript, or typescript."
+                ),
+            ));
         }
     };
 
     // Create the destination's parent; Extism creates the project directory.
-    fs::create_dir_all(parent_path)
-        .await
-        .expect("Failed to create the plugin parent directory");
+    fs::create_dir_all(parent_path).await?;
 
     let output = std::process::Command::new(&extism_cli)
         .arg("gen")
@@ -279,18 +277,16 @@ pub async fn create_plugin_project(path: String, name: String, language: String)
         .arg(arg_language)
         .arg("-o")
         .arg(&plugin_path)
-        .output()
-        .expect("Failed to create plugin project");
+        .output()?;
 
     if !output.status.success() {
-        log::error!(
+        return Err(io::Error::other(format!(
             "Failed to create plugin project: {}",
             String::from_utf8_lossy(&output.stderr)
-        );
-        return;
+        )));
     }
 
     log::info!("Plugin project created successfully");
 
-    plugin_final_touches(name, plugin_path).await;
+    plugin_final_touches(name, plugin_path).await
 }

@@ -2,7 +2,7 @@ use aether_core::config_manager::{
     models::{AetherConfig, DatabaseConfig},
     services::generate_aether_config,
 };
-use std::{env, path::PathBuf, sync::LazyLock};
+use std::{env, path::PathBuf, process::exit, sync::LazyLock};
 use surrealdb::{
     Surreal,
     engine::remote::ws::{Client as SurrealClient, Ws},
@@ -23,10 +23,20 @@ pub struct DbContext {
 
 pub async fn get_prerequisites(args: &Args) -> Result<DbContext, String> {
     let config_file = resolve_config_file(args);
-    let configuration: AetherConfig = match generate_aether_config(config_file) {
+    let mut configuration: AetherConfig = match generate_aether_config(config_file) {
         Ok(config) => config,
         Err(err) => return Err(format!("Failed to load configuration: {err}")),
     };
+    if let Some(app_dir) = &args.app_dir {
+        let path = PathBuf::from(app_dir);
+        configuration.app_dir = if path.is_absolute() {
+            path
+        } else {
+            env::current_dir()
+                .map_err(|err| format!("Failed to resolve --app-dir: {err}"))?
+                .join(path)
+        };
+    }
 
     let db_config: DatabaseConfig = configuration.database.as_ref().cloned().unwrap_or_default();
 
@@ -60,7 +70,13 @@ pub async fn get_prerequisites(args: &Args) -> Result<DbContext, String> {
 }
 
 fn resolve_config_file(args: &Args) -> Option<String> {
-    let current_dir = env::current_dir().expect("Failed to get current working directory");
+    let current_dir = match env::current_dir() {
+        Ok(value) => value,
+        Err(err) => {
+            log::error!("Failed to get current directory: {err}");
+            exit(1)
+        }
+    };
     let configured_path = args.config_file.as_ref().map(PathBuf::from);
     let path = configured_path.or_else(|| {
         let default_path = current_dir.join("aether.toml");

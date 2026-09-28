@@ -376,14 +376,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bridge_catalogs_are_valid_and_globally_unique() {
+    fn bridge_catalogs_are_valid_and_globally_unique() -> Result<(), Box<dyn std::error::Error>> {
         let mut codes = HashSet::new();
         let files: Vec<_> = SEEDS_BRIDGE_FILES.files().collect();
 
         assert!(!files.is_empty());
         for file in files {
-            let category: BridgeCategory =
-                serde_json::from_slice(file.contents()).expect("valid bridge catalog");
+            let category: BridgeCategory = serde_json::from_slice(file.contents())?;
             assert!(!category.code.is_empty());
             for bridge in category.items {
                 assert!(!bridge.feature_key.is_empty());
@@ -395,15 +394,15 @@ mod tests {
                 assert!(!bridge.label.is_empty());
             }
         }
+        Ok(())
     }
 
     #[test]
-    fn global_settings_catalog_is_valid_json() {
+    fn global_settings_catalog_is_valid_json() -> Result<(), Box<dyn std::error::Error>> {
         let file = SEEDS_SETTINGS_FILES
             .get_file("global_settings.json")
-            .expect("global settings seed");
-        let seed: GlobalSettingsSeed =
-            serde_json::from_slice(file.contents()).expect("valid global settings JSON");
+            .ok_or("global settings seed is missing")?;
+        let seed: GlobalSettingsSeed = serde_json::from_slice(file.contents())?;
 
         assert_eq!(seed.groups.len(), 3);
         assert_eq!(seed.auth_providers.len(), 1);
@@ -413,5 +412,6 @@ mod tests {
                 .flat_map(|group| group.items.iter())
                 .all(|item| !item.s_key.is_empty())
         );
+        Ok(())
     }
 }

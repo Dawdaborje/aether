@@ -6,6 +6,24 @@ use crate::plugin_manager::models::plugin_db_def::PluginDbDefinition;
 use crate::plugin_manager::models::plugin_def::{PluginDefinition, PluginManifest};
 use tokio::fs;
 
+/// Fetch one active catalog version. Caller must already be on the core database.
+pub async fn fetch_active_plugin_version(
+    db: &Surreal<Client>,
+    name: &str,
+    version: &str,
+) -> Result<Option<PluginDbDefinition>, surrealdb::Error> {
+    let mut response = db
+        .query(
+            "SELECT * FROM plugins WHERE name = $name AND version = $version AND is_active = true LIMIT 1;",
+        )
+        .bind(("name", name.to_string()))
+        .bind(("version", version.to_string()))
+        .await?
+        .check()?;
+    let records: Vec<PluginDbDefinition> = response.take(0)?;
+    Ok(records.into_iter().next())
+}
+
 pub fn get_core_plugins() {}
 
 /// Parse a `plugin.toml` into a full manifest (pages, hooks, events, …).
@@ -87,7 +105,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_forward_compatible_manifest() {
+    fn parses_forward_compatible_manifest() -> Result<(), toml::de::Error> {
         let toml = r#"
 [plugin]
 name = "partner"
@@ -121,7 +139,7 @@ handler = "hooks.on_install"
 [plugin.future_thing]
 enabled = true
 "#;
-        let mut manifest: PluginManifest = toml::from_str(toml).expect("parse");
+        let mut manifest: PluginManifest = toml::from_str(toml)?;
         manifest.normalize();
         assert_eq!(manifest.plugin.name, "partner");
         assert_eq!(manifest.plugin.api_version(), "0.1");
@@ -130,6 +148,7 @@ enabled = true
         assert_eq!(manifest.pages.len(), 1);
         assert_eq!(manifest.hooks.len(), 1);
         assert_eq!(manifest.communication.channels, vec!["events"]);
+        Ok(())
     }
 }
 

@@ -52,9 +52,9 @@ pub struct Args {
     /// Logging level (error, warn, info, debug, trace)
     pub log: String,
 
-    #[arg(long, default_value = "/opt/aether")]
+    #[arg(long, value_name = "PATH")]
     /// File system for aether to work with, e.g plugins, css files and more
-    pub app_dir: String,
+    pub app_dir: Option<String>,
 
     #[arg(short = 'e', long = "env", default_value = "dev")]
     /// Environment mode: `dev` or `prod`

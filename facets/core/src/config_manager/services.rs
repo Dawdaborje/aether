@@ -283,6 +283,24 @@ pub fn gen_aether_conf_from_config_file(conf_file: &str) -> Result<AetherConfig,
     })?;
 
     let value: Value = toml::from_str(&content)?;
+    let config_directory = std::path::Path::new(conf_file)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let app_dir = match value.get("app_dir") {
+        Some(value) => {
+            let raw = value.as_str().ok_or_else(|| ConfigError::InvalidType {
+                field: "app_dir".to_string(),
+                expected: "path string".to_string(),
+            })?;
+            let path = std::path::Path::new(raw);
+            if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                config_directory.join(path)
+            }
+        }
+        None => AetherConfig::default().app_dir,
+    };
 
     let db_conf = build_database_conf(get_field(&value, "database")?)?;
 
@@ -316,6 +334,7 @@ pub fn gen_aether_conf_from_config_file(conf_file: &str) -> Result<AetherConfig,
     let plugins: Vec<PluginDefinition> = Vec::new();
 
     Ok(AetherConfig {
+        app_dir,
         database: Some(db_conf),
         configuration: Some(core_conf),
         server,

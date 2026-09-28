@@ -1,6 +1,5 @@
 use aether_authentication::routes::routes as auth_routes;
 use aether_core::config_manager::models::{self, ServerConfig};
-use aether_core::plugin_manager::services::get_plugins_from_db;
 use aether_core::routes::routes as core_routes;
 use aether_core::state::AppState;
 use axum::Router;
@@ -68,8 +67,6 @@ pub async fn run_server(
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "aether".into());
 
-    let _plugin_defs = get_plugins_from_db(db_conn).await;
-
     let server_config = config.server.clone();
 
     let state = match AppState::new(db_conn.clone(), config.clone(), namespace, "core") {
@@ -82,6 +79,11 @@ pub async fn run_server(
 
     if let Err(err) = state.use_core().await {
         log::error!("Failed to select core database: {err}");
+        return Err(Box::new(err));
+    }
+
+    if let Err(err) = state.plugin_runtime.load_catalog(&state.db).await {
+        log::error!("Failed to load and compile active plugins: {err}");
         return Err(Box::new(err));
     }
 

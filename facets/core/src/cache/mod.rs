@@ -27,7 +27,7 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    fn test_cache(max_entries: usize) -> Cache {
+    fn test_cache(max_entries: usize) -> Result<Cache, CacheError> {
         let config = CacheConfig {
             backend: CacheBackendKind::Moka,
             default_ttl_secs: None,
@@ -35,12 +35,12 @@ mod tests {
             max_value_bytes: 1024,
             redis: None,
         };
-        Cache::from_config(&config).expect("moka backend")
+        Cache::from_config(&config)
     }
 
     #[test]
     fn set_get_invalidate() {
-        let cache = test_cache(100);
+        let cache = test_cache(100).unwrap();
         cache.set("org_a", "user:1", "alice", None).unwrap();
         assert_eq!(
             cache.get("org_a", "user:1").unwrap().unwrap().as_slice(),
@@ -52,7 +52,7 @@ mod tests {
 
     #[test]
     fn namespaces_are_isolated() {
-        let cache = test_cache(100);
+        let cache = test_cache(100).unwrap();
         cache.set("org_a", "k", "a", None).unwrap();
         cache.set("org_b", "k", "b", None).unwrap();
         assert_eq!(cache.get("org_a", "k").unwrap().unwrap().as_slice(), b"a");
@@ -64,7 +64,7 @@ mod tests {
 
     #[test]
     fn ttl_expires_entries() {
-        let cache = test_cache(100);
+        let cache = test_cache(100).unwrap();
         cache
             .set("ns", "ephemeral", "x", Some(Duration::from_millis(30)))
             .unwrap();
@@ -75,7 +75,7 @@ mod tests {
 
     #[test]
     fn invalidate_prefix() {
-        let cache = test_cache(100);
+        let cache = test_cache(100).unwrap();
         cache.set("ns", "inv:1", "1", None).unwrap();
         cache.set("ns", "inv:2", "2", None).unwrap();
         cache.set("ns", "other", "3", None).unwrap();
@@ -85,7 +85,7 @@ mod tests {
 
     #[test]
     fn rejects_empty_namespace_and_key() {
-        let cache = test_cache(100);
+        let cache = test_cache(100).unwrap();
         assert!(matches!(
             cache.get("", "k"),
             Err(CacheError::EmptyNamespace)
@@ -95,7 +95,7 @@ mod tests {
 
     #[test]
     fn rejects_oversized_values() {
-        let cache = test_cache(100);
+        let cache = test_cache(100).unwrap();
         let big = vec![0u8; 2048];
         let err = cache.set("ns", "big", big, None).unwrap_err();
         assert!(matches!(err, CacheError::ValueTooLarge { .. }));
@@ -103,7 +103,7 @@ mod tests {
 
     #[test]
     fn respects_max_capacity() {
-        let cache = test_cache(2);
+        let cache = test_cache(2).unwrap();
         cache.set("ns", "a", "1", None).unwrap();
         cache.set("ns", "b", "2", None).unwrap();
         cache.set("ns", "c", "3", None).unwrap();

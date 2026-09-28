@@ -1,6 +1,6 @@
 use aether::cli::run;
 
 #[tokio::main]
-async fn main() {
-    run().await;
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    run().await
 }

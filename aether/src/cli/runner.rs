@@ -18,13 +18,13 @@ use super::{
 };
 
 /// Parse CLI args, configure logging, and dispatch commands.
-pub async fn run() {
+pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     init_logger(&args);
 
     log::warn!("Starting in '{}' environment", args.environment);
 
-    dispatch(args).await;
+    dispatch(args).await
 }
 
 fn init_logger(args: &Args) {
@@ -51,8 +51,8 @@ fn init_logger(args: &Args) {
     builder.init();
 }
 
-async fn dispatch(args: Args) {
-    let current_path = env::current_dir().expect("Failed to get current working directory");
+async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
+    let current_path = env::current_dir()?;
 
     if let Some(plugins_to_upgrade) = &args.upgrade_plugin {
         for plugin_name in plugins_to_upgrade {
@@ -62,14 +62,14 @@ async fn dispatch(args: Args) {
 
     if let Some(config_file_name) = &args.generate_config_file {
         let full_path = Path::new(&current_path).join(config_file_name);
-        generate_default_config_template(full_path).await;
+        generate_default_config_template(full_path).await?;
     }
 
     if let Some(gen_target) = &args.generate {
         let current_dir = current_path.to_string_lossy().to_string();
         match gen_target.as_str() {
             "workspace" => {
-                generate_plugin_workspace(current_dir).await;
+                generate_plugin_workspace(current_dir).await?;
             }
             "plugin" => {
                 let plugin_path = args.plugin_path.clone().unwrap_or_else(|| {
@@ -83,10 +83,11 @@ async fn dispatch(args: Args) {
                     .and_then(|name| name.to_str())
                     .unwrap_or("my_plugin")
                     .to_string();
-                create_plugin_project(plugin_path, plugin_name, args.plugin_language.clone()).await;
+                create_plugin_project(plugin_path, plugin_name, args.plugin_language.clone())
+                    .await?;
             }
             "aether_config" => {
-                generate_default_config_template(current_path.join("aether.toml")).await;
+                generate_default_config_template(current_path.join("aether.toml")).await?;
             }
             other => {
                 log::error!(
@@ -99,32 +100,32 @@ async fn dispatch(args: Args) {
     if let Some(username) = &args.change_password {
         let Some(new_password) = &args.password else {
             log::error!("--password must be provided when changing a user's password");
-            return;
+            return Ok(());
         };
         let ctx = get_db_context(&args).await;
         match change_user_password(username, new_password, ctx.db).await {
             Ok(()) => println!("Password changed for user '{username}'."),
             Err(err) => log::error!("Failed to change password for '{username}': {err}"),
         }
-        return;
+        return Ok(());
     }
 
     if let Some(organization_name) = &args.create_org {
         let Some(company_name) = &args.company_name else {
             log::error!("--company-name must be provided when creating an organization");
-            return;
+            return Ok(());
         };
         let Some(username) = &args.username else {
             log::error!("--username must be provided when creating an organization");
-            return;
+            return Ok(());
         };
         let Some(email) = &args.email else {
             log::error!("--email must be provided when creating an organization");
-            return;
+            return Ok(());
         };
         let Some(password) = &args.password else {
             log::error!("--password must be provided when creating an organization");
-            return;
+            return Ok(());
         };
 
         let ctx = get_db_context(&args).await;
@@ -146,17 +147,17 @@ async fn dispatch(args: Args) {
             ),
             Err(err) => log::error!("Failed to create organization: {err}"),
         }
-        return;
+        return Ok(());
     }
 
     if let Some(user_login) = &args.assign_user {
         let Some(org_db_name) = &args.org_db_name else {
             log::error!("--org-db-name must be provided when assigning a user");
-            return;
+            return Ok(());
         };
         let Some(company_name) = &args.company_name else {
             log::error!("--company-name must be provided when assigning a user");
-            return;
+            return Ok(());
         };
 
         let ctx = get_db_context(&args).await;
@@ -174,7 +175,7 @@ async fn dispatch(args: Args) {
             ),
             Err(err) => log::error!("Failed to assign user '{user_login}': {err}"),
         }
-        return;
+        return Ok(());
     }
 
     if args.init {
@@ -212,6 +213,8 @@ async fn dispatch(args: Args) {
             std::process::exit(1);
         }
     }
+
+    Ok(())
 }
 
 async fn get_db_context(args: &Args) -> crate::cli::db::DbContext {

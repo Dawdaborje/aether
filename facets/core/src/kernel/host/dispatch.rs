@@ -51,7 +51,11 @@ pub async fn kernel_command(
             ctx.require_cap(command)?;
             Err(HostError::NotImplemented(command.into()))
         }
-        "events::emit" | "events::subscribe" => {
+        "events::emit" => {
+            ctx.require_cap(command)?;
+            emit_ui_event(ctx, &payload)
+        }
+        "events::subscribe" => {
             ctx.require_cap(command)?;
             Err(HostError::NotImplemented(command.into()))
         }
@@ -81,6 +85,38 @@ pub async fn kernel_command(
     }
 }
 
+fn emit_ui_event(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
+    let event = payload
+        .get("event")
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|event| !event.is_empty() && event.len() <= 128)
+        .ok_or_else(|| {
+            HostError::InvalidPayload(
+                "events::emit requires a non-empty event (max 128 bytes)".into(),
+            )
+        })?;
+    let data = payload.get("payload").cloned().unwrap_or(JsonValue::Null);
+    let serialized = serde_json::to_vec(&data)
+        .map_err(|err| HostError::InvalidPayload(format!("invalid event payload: {err}")))?;
+    if serialized.len() > 65_536 {
+        return Err(HostError::InvalidPayload(
+            "event payload exceeds 65536 bytes".into(),
+        ));
+    }
+
+    ctx.notifications.publish(
+        ctx.database.clone(),
+        crate::websocket::UiNotification {
+            plugin: ctx.plugin_name.clone(),
+            event: event.to_string(),
+            payload: data,
+        },
+    );
+
+    Ok(serde_json::json!({ "ok": true }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,7 +126,10 @@ mod tests {
     use surrealdb::engine::remote::ws::Client;
 
     fn dummy_ctx(caps: &[&str]) -> PluginHostContext {
-        let granted = caps.iter().map(|s| (*s).to_string()).collect::<HashSet<_>>();
+        let granted = caps
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect::<HashSet<_>>();
         let mut models = HashMap::new();
         models.insert(
             "partner".into(),
@@ -103,7 +142,15 @@ mod tests {
         );
         // Surreal::init is fine for constructing context; we only test cap denial paths.
         let db: Surreal<Client> = Surreal::init();
-        PluginHostContext::new("test", granted, models, db, "aether", "core")
+        PluginHostContext::new(
+            "test",
+            granted,
+            models,
+            db,
+            "aether",
+            "core",
+            crate::websocket::NotificationHub::default(),
+        )
     }
 
     #[tokio::test]
@@ -117,6 +164,27 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, HostError::Capability(_)));
+    }
+
+    #[tokio::test]
+    async fn emits_events_to_the_plugin_database_scope() {
+        let mut ctx = dummy_ctx(&["events::emit"]);
+        ctx.database = "org_acme".into();
+        let mut receiver = ctx.notifications.subscribe();
+
+        let result = kernel_command(
+            &ctx,
+            "events::emit",
+            serde_json::json!({ "event": "toast", "payload": { "message": "Saved" } }),
+        )
+        .await;
+        assert_eq!(result.unwrap(), serde_json::json!({ "ok": true }));
+
+        let message = receiver.recv().await.unwrap();
+        assert_eq!(message.org_database, "org_acme");
+        assert_eq!(message.notification.plugin, "test");
+        assert_eq!(message.notification.event, "toast");
+        assert_eq!(message.notification.payload["message"], "Saved");
     }
 
     #[tokio::test]
@@ -144,9 +212,6 @@ mod tests {
         .unwrap_err();
         // Will fail at model check before DB — or capability passed then model denied.
         // Without live DB, use_scoped_db may fail first if we get past model — model is checked first.
-        assert!(
-            matches!(err, HostError::ModelDenied(_))
-                || matches!(err, HostError::Db(_))
-        );
+        assert!(matches!(err, HostError::ModelDenied(_)) || matches!(err, HostError::Db(_)));
     }
 }

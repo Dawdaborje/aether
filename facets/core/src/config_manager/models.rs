@@ -1,5 +1,6 @@
-use crate::{cache::CacheConfig, plugin_manager::models::plugin_def::PluginDefinition};
+use crate::plugin_manager::runtime::DEFAULT_MAX_COMPILED_PLUGINS;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct DatabaseConfig {
@@ -116,12 +117,37 @@ impl Default for TenancyConfig {
     }
 }
 
+/// In-process Extism compile cache. Only `CompiledPlugin` objects are retained;
+/// a fresh `Plugin` instance is created for every call.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PluginRuntimeConfig {
+    #[serde(default = "default_max_compiled_plugins")]
+    pub max_compiled: u64,
+}
+
+fn default_max_compiled_plugins() -> u64 {
+    DEFAULT_MAX_COMPILED_PLUGINS
+}
+
+impl Default for PluginRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            max_compiled: default_max_compiled_plugins(),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct AetherConfig {
+    pub app_dir: PathBuf,
     pub configuration: Option<CoreConfig>,
     pub database: Option<DatabaseConfig>,
     pub server: Option<ServerConfig>,
     pub plugins: Option<Vec<PluginDefinition>>,
+    /// Bounded Extism `CompiledPlugin` cache. New catalog versions compile on
+    /// first use; LRU eviction keeps RAM from growing with every installed plugin.
+    #[serde(default)]
+    pub plugin_runtime: PluginRuntimeConfig,
     pub storages: Option<Vec<StorageConfig>>,
     pub cache: Option<CacheConfig>,
     #[serde(default)]
@@ -135,10 +161,12 @@ impl Default for AetherConfig {
             storage_type: StorageType::Local,
         });
         Self {
+            app_dir: PathBuf::from("/opt/aether"),
             configuration: Some(CoreConfig::default()),
             database: Some(DatabaseConfig::default()),
             server: Some(ServerConfig::default()),
             plugins: Some(vec![]),
+            plugin_runtime: PluginRuntimeConfig::default(),
             storages: Some(storages),
             cache: Some(CacheConfig::default()),
             tenancy: TenancyConfig::default(),
@@ -178,6 +206,7 @@ impl AetherConfig {
         }
 
         log::info!("Tenancy org_resolution={:?}", self.tenancy.org_resolution);
+        log::info!("Application directory: {}", self.app_dir.display());
     }
 
     pub fn display_server_start(&self) {

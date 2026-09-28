@@ -3,6 +3,8 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 use surrealdb::{Surreal, engine::remote::ws::Client};
 
+use crate::websocket::NotificationHub;
+
 /// Per-model access granted to a plugin (from `access_models` / plugin.toml).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelGrant {
@@ -51,6 +53,7 @@ pub struct PluginHostContext {
     pub namespace: String,
     pub database: String,
     pub db: Surreal<Client>,
+    pub notifications: NotificationHub,
 }
 
 impl PluginHostContext {
@@ -61,6 +64,7 @@ impl PluginHostContext {
         db: Surreal<Client>,
         namespace: impl Into<String>,
         database: impl Into<String>,
+        notifications: NotificationHub,
     ) -> Self {
         Self {
             plugin_name: plugin_name.into(),
@@ -69,6 +73,7 @@ impl PluginHostContext {
             namespace: namespace.into(),
             database: database.into(),
             db,
+            notifications,
         }
     }
 
@@ -78,7 +83,10 @@ impl PluginHostContext {
         Ok(())
     }
 
-    pub fn require_cap(&self, key: &str) -> Result<(), aether_security::capabilities::CapabilityError> {
+    pub fn require_cap(
+        &self,
+        key: &str,
+    ) -> Result<(), aether_security::capabilities::CapabilityError> {
         aether_security::capabilities::require_capability(&self.granted_capabilities, key)
     }
 

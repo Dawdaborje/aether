@@ -1,4 +1,6 @@
+pub mod api;
 pub mod models;
+pub mod runtime;
 pub mod services;
 
 pub fn get_core_plugins() -> Vec<models::plugin_def::PluginDefinition> {
