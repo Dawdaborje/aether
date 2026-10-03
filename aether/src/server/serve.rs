@@ -69,27 +69,37 @@ pub async fn run_server(
 
     let server_config = config.server.clone();
 
-    let state = match AppState::new(db_conn.clone(), config.clone(), namespace, "core") {
+    let state = match AppState::new(db_conn.clone(), config.clone(), namespace, "core").await {
         Ok(state) => state,
         Err(err) => {
-            log::error!("Failed to initialize application cache: {err}");
+            log::error!("Failed to initialize application state: {err}");
             return Err(Box::new(err));
         }
     };
 
-    if let Err(err) = state.use_core().await {
-        log::error!("Failed to select core database: {err}");
-        return Err(Box::new(err));
-    }
+    let core = match state.core().await {
+        Ok(core) => core,
+        Err(err) => {
+            log::error!("Failed to select core database: {err}");
+            return Err(Box::new(err));
+        }
+    };
 
-    if let Err(err) = state.plugin_runtime.load_catalog(&state.db).await {
+    if let Err(err) = state.plugin_runtime.load_catalog(&core).await {
         log::error!("Failed to load and compile active plugins: {err}");
         return Err(Box::new(err));
     }
 
+    let retention_task = aether_core::access::audit::spawn_retention_task(&state);
+
     let app = Router::new()
         .merge(core_routes())
         .nest("/api/auth", auth_routes())
+        .fallback(aether_core::error_pages::not_found)
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            aether_core::request_log::log_requests,
+        ))
         .with_state(state);
 
     let bind_addr = get_server_host(server_config, http_port);
@@ -116,10 +126,88 @@ pub async fn run_server(
         log::info!("Starting server: http://{actual_addr}/web");
     }
 
-    if let Err(e) = axum::serve(listener, app).await {
-        log::error!("Server error: {e}");
-        return Err(Box::new(e));
-    }
+    // Ctrl+C or SIGTERM starts a graceful shutdown: stop accepting connections
+    // and let in-flight requests finish, but only for `SHUTDOWN_GRACE`; open
+    // connections such as the notifications websocket would otherwise keep the
+    // server alive forever.
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(async move {
+        wait_for_shutdown_signal().await;
+        log::info!("Shutdown requested: no longer accepting connections, draining in-flight requests");
+        // Ignored: there is no receiver left only if the server already ended.
+        let _ = shutdown_tx.send(true);
+    });
 
-    Ok(())
+    let mut drain_rx = shutdown_rx.clone();
+    let server = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        // Resolves when the flag flips, or when the sender is gone.
+        let _ = drain_rx.wait_for(|stopping| *stopping).await;
+    });
+
+    let outcome = tokio::select! {
+        result = server => result.map_err(|error| {
+            log::error!("Server error: {error}");
+            error
+        }),
+        () = async {
+            let _ = shutdown_rx.wait_for(|stopping| *stopping).await;
+            tokio::time::sleep(SHUTDOWN_GRACE).await;
+        } => {
+            log::warn!(
+                "Some connections were still open after {}s; closing them",
+                SHUTDOWN_GRACE.as_secs()
+            );
+            Ok(())
+        }
+    };
+
+    if let Some(task) = retention_task {
+        task.abort();
+    }
+    // End the database session cleanly. The connection itself closes when the
+    // process exits, which follows immediately.
+    match db_conn.invalidate().await {
+        Ok(()) => log::info!("Database session closed"),
+        Err(error) => log::warn!("Could not sign out of the database cleanly: {error}"),
+    }
+    log::info!("Aether stopped");
+
+    outcome.map_err(|error| Box::new(error) as Box<dyn Error + Send + Sync>)
+}
+
+/// How long in-flight requests get to finish after a shutdown request.
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Resolves on Ctrl+C, or on SIGTERM on Unix (what service managers send).
+async fn wait_for_shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            log::error!("Could not listen for Ctrl+C: {error}");
+            std::future::pending::<()>().await;
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(error) => {
+                log::error!("Could not listen for SIGTERM: {error}");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => {}
+        () = terminate => {}
+    }
 }

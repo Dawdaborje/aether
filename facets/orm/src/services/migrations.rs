@@ -51,6 +51,56 @@ pub async fn migrate_org(
     apply_migrations(db, namespace, org_database, &ORG_MIGRATIONS).await
 }
 
+/// Whether a core database has had its migrations applied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SchemaStatus {
+    /// No migration has ever been applied (`aether --init` has not been run).
+    Uninitialized,
+    /// Some migrations shipped with this build have not been applied yet.
+    Pending(Vec<String>),
+    UpToDate,
+}
+
+/// Report whether the core database at `namespace` / `database` is initialized
+/// and current, without changing anything.
+pub async fn core_schema_status(
+    db: &Surreal<Client>,
+    namespace: &str,
+    database: &str,
+) -> Result<SchemaStatus, MigrationError> {
+    db.use_ns(namespace).await?;
+    db.use_db(database).await?;
+
+    let applied = match load_applied_versions(db).await {
+        Ok(applied) => applied,
+        // The tracking table does not exist: nothing was ever migrated.
+        Err(MigrationError::Surreal(error)) if error.is_not_found() => {
+            return Ok(SchemaStatus::Uninitialized);
+        }
+        Err(error) => return Err(error),
+    };
+    if applied.is_empty() {
+        return Ok(SchemaStatus::Uninitialized);
+    }
+
+    let mut shipped: Vec<_> = CORE_MIGRATIONS
+        .files()
+        .filter_map(|file| file.path().file_name()?.to_str())
+        .filter_map(|name| name.strip_suffix(".surql"))
+        .map(str::to_string)
+        .collect();
+    shipped.sort_by_key(|version| migration_number(std::path::Path::new(version)));
+    let pending: Vec<String> = shipped
+        .into_iter()
+        .filter(|version| !applied.contains_key(version))
+        .collect();
+    Ok(if pending.is_empty() {
+        SchemaStatus::UpToDate
+    } else {
+        SchemaStatus::Pending(pending)
+    })
+}
+
 /// Convenience: run core migrations against the default `aether` / `core` pair.
 pub async fn run_migrations(db: &Surreal<Client>) -> Result<Vec<String>, MigrationError> {
     migrate_core(db, "aether", "core").await

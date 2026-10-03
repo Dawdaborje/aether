@@ -11,8 +11,9 @@ pub async fn logout(
     jar: CookieJar,
 ) -> Result<(CookieJar, Json<JsonValue>), (StatusCode, Json<JsonValue>)> {
     if let Some(token) = read_session_token(&jar) {
-        let _ = state.use_core().await;
-        let _ = revoke_session_by_token(&state.db, &token).await;
+        if let Ok(core) = state.core().await {
+            let _ = revoke_session_by_token(&core, &token).await;
+        }
     }
     let jar = clear_session_cookie(jar);
     Ok((jar, Json(json!({ "ok": true }))))

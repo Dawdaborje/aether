@@ -146,10 +146,18 @@ mod tests {
             "test",
             granted,
             models,
-            db,
-            "aether",
-            "core",
+            std::sync::Arc::new(db),
+            crate::kernel::DbScope::new("aether", "core"),
             crate::websocket::NotificationHub::default(),
+            crate::kernel::CallInfo::new(
+                crate::access::audit::AuditContext {
+                    actor: crate::access::audit::Actor::Anonymous,
+                    request_id: "test-request".into(),
+                    ip: None,
+                    user_agent: None,
+                },
+                "test_function",
+            ),
         )
     }
 

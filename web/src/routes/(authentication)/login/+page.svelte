@@ -1,7 +1,9 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
+	import { page } from '$app/state';
 	import { onMount } from 'svelte';
+	import { gotoPluginPage, landingPath, nextSlug } from '$lib/auth/landing';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import {
@@ -18,10 +20,20 @@
 	let error = $state('');
 	let loading = $state(false);
 
+	/** After login: the page they were trying to open, else the landing area for their role. */
+	async function afterLogin(user: { is_developer: boolean }) {
+		const slug = nextSlug(page.url.searchParams.get('next'));
+		if (slug !== null) {
+			await gotoPluginPage(slug);
+			return;
+		}
+		await goto(resolve(landingPath(user)));
+	}
+
 	onMount(async () => {
 		const me = await fetchMe();
 		if (me) {
-			goto(resolve('/apps'));
+			await afterLogin(me.user);
 			return;
 		}
 		methods = await fetchAuthMethods();
@@ -32,8 +44,8 @@
 		error = '';
 		loading = true;
 		try {
-			await loginLocal(username, password);
-			goto(resolve('/apps'));
+			const user = await loginLocal(username, password);
+			await afterLogin(user);
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Login failed';
 		} finally {

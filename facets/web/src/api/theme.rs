@@ -1,4 +1,3 @@
-use axum::{Json, Router, routing::get};
 use serde::Serialize;
 use std::collections::HashMap;
 
@@ -17,6 +16,12 @@ pub struct ThemeResponse {
     pub color_mode: String,
     pub source: String,
     pub tokens: ThemeTokens,
+    /// Which layout component renders the app (`default`, `desk`, `custom`, …).
+    pub layout: String,
+    /// Which set of error pages (404, 403, error cards, …) the app shows.
+    pub error_pages: String,
+    /// Navigation for the layout's navbar; `None` uses the layout's built-in one.
+    pub nav: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -33,58 +38,6 @@ pub struct ThemeListResponse {
     pub source: String,
 }
 
-pub fn router<S>() -> Router<S>
-where
-    S: Clone + Send + Sync + 'static,
-{
-    Router::new()
-        .route("/theme", get(get_theme))
-        .route("/themes", get(list_themes))
-}
-
-async fn get_theme() -> Json<ThemeResponse> {
-    Json(enterprise_theme("fallback"))
-}
-
-async fn list_themes() -> Json<ThemeListResponse> {
-    Json(ThemeListResponse {
-        themes: vec![
-            ThemeListItem {
-                name: "enterprise".into(),
-                label: "Enterprise".into(),
-                is_system: true,
-            },
-            ThemeListItem {
-                name: "nordic".into(),
-                label: "Nordic".into(),
-                is_system: true,
-            },
-            ThemeListItem {
-                name: "graphite".into(),
-                label: "Graphite".into(),
-                is_system: true,
-            },
-            ThemeListItem {
-                name: "ocean".into(),
-                label: "Ocean".into(),
-                is_system: true,
-            },
-            ThemeListItem {
-                name: "forest".into(),
-                label: "Forest".into(),
-                is_system: true,
-            },
-            ThemeListItem {
-                name: "midnight".into(),
-                label: "Midnight".into(),
-                is_system: true,
-            },
-        ],
-        active: "enterprise".into(),
-        source: "fallback".into(),
-    })
-}
-
 pub fn enterprise_theme(source: &str) -> ThemeResponse {
     ThemeResponse {
         name: "enterprise".into(),
@@ -97,6 +50,9 @@ pub fn enterprise_theme(source: &str) -> ThemeResponse {
             radius: "0.375rem".into(),
             font_sans: "\"Noto Sans Variable\", \"Segoe UI\", system-ui, sans-serif".into(),
         },
+        layout: "default".into(),
+        error_pages: "default".into(),
+        nav: None,
     }
 }
 

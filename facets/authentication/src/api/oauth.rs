@@ -39,8 +39,14 @@ pub async fn oauth_start(
     let org = org_from_headers(&state, &headers, None);
     ensure_method_enabled(&state, &provider, org.as_ref()).await?;
 
-    let _ = state.use_core().await;
-    let bridge = resolve_bridge(&state.db, registry(), &provider)
+    let core = state.core().await.map_err(|err| {
+        log::error!("oauth core database: {err}");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "database error" })),
+        )
+    })?;
+    let bridge = resolve_bridge(&core, registry(), &provider)
         .await
         .ok_or_else(|| {
             (
@@ -98,8 +104,14 @@ pub async fn oauth_callback(
     let org = org_from_headers(&state, &headers, None);
     ensure_method_enabled(&state, &provider, org.as_ref()).await?;
 
-    let _ = state.use_core().await;
-    let bridge = resolve_bridge(&state.db, registry(), &provider)
+    let core = state.core().await.map_err(|err| {
+        log::error!("oauth core database: {err}");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "database error" })),
+        )
+    })?;
+    let bridge = resolve_bridge(&core, registry(), &provider)
         .await
         .ok_or_else(|| {
             (
@@ -130,7 +142,7 @@ pub async fn oauth_callback(
         .await?;
 
     let org_db = org.as_ref().map(|o| o.db_name.clone());
-    let session = create_session(&state.db, user_id, &provider, org_db, 24)
+    let session = create_session(&core, user_id, &provider, org_db, 24)
         .await
         .map_err(|err| {
             log::error!("oauth session: {err}");
@@ -204,8 +216,14 @@ async fn upsert_oauth_user(
     provider_user_id: &str,
     identity: &aether_auth_bridge::ExternalIdentity,
 ) -> Result<RecordId, (StatusCode, Json<JsonValue>)> {
-    let mut existing = state
-        .db
+    let core = state.core().await.map_err(|e| {
+        log::error!("oauth core database: {e}");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "database error" })),
+        )
+    })?;
+    let mut existing = core
         .query(
             r#"
             SELECT user AS id FROM user_identities
@@ -245,8 +263,7 @@ async fn upsert_oauth_user(
         .or_else(|| email.clone())
         .unwrap_or_else(|| format!("{provider}:{provider_user_id}"));
 
-    let created = state
-        .db
+    let created = core
         .query(
             r#"
             LET $u = (CREATE users SET
@@ -277,8 +294,7 @@ async fn upsert_oauth_user(
 
     let _: Result<(), _> = created.check().map(|_| ());
 
-    let mut lookup = state
-        .db
+    let mut lookup = core
         .query(
             r#"
             SELECT user AS id FROM user_identities

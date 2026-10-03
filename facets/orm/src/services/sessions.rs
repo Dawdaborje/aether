@@ -163,3 +163,18 @@ pub async fn revoke_session_by_token(
     .check()?;
     Ok(())
 }
+
+/// Remember which organization a session is working in.
+pub async fn set_session_org(
+    db: &Surreal<Client>,
+    session_id: &RecordId,
+    org_database_id: &str,
+) -> Result<(), SessionError> {
+    // `$session` is a reserved variable in SurrealQL, hence `$target`.
+    db.query("UPDATE $target SET org_database_id = $org;")
+        .bind(("target", session_id.clone()))
+        .bind(("org", org_database_id.to_string()))
+        .await?
+        .check()?;
+    Ok(())
+}

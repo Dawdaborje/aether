@@ -19,6 +19,9 @@ pub enum HostError {
     #[error("model `{0}` does not allow {1}")]
     ModelPermission(String, &'static str),
 
+    #[error("table `{0}` belongs to the kernel and cannot be used as a model")]
+    ReservedTable(String),
+
     #[error("raw SurQL rejected: {0}")]
     SurqlRejected(String),
 
@@ -40,7 +43,7 @@ impl HostError {
                 Self::Capability(_) => "capability",
                 Self::UnknownCommand(_) => "unknown_command",
                 Self::InvalidPayload(_) => "invalid_payload",
-                Self::ModelDenied(_) | Self::ModelPermission(_, _) => "model",
+                Self::ModelDenied(_) | Self::ModelPermission(_, _) | Self::ReservedTable(_) => "model",
                 Self::SurqlRejected(_) => "surql",
                 Self::Db(_) => "db",
                 Self::NotImplemented(_) => "not_implemented",

@@ -74,12 +74,12 @@ pub async fn notifications_ws(
         .filter(|token| !token.is_empty())
         .ok_or((StatusCode::UNAUTHORIZED, "not authenticated"))?;
 
-    state.use_core().await.map_err(|err| {
+    let core = state.core().await.map_err(|err| {
         log::error!("notification websocket database selection failed: {err}");
         (StatusCode::INTERNAL_SERVER_ERROR, "database error")
     })?;
 
-    let session = aether_orm::find_session_by_token(&state.db, token)
+    let session = aether_orm::find_session_by_token(&core, token)
         .await
         .map_err(|err| {
             log::error!("notification websocket session lookup failed: {err}");

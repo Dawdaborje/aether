@@ -1,22 +1,20 @@
 import type { ThemeConfig, ThemeTokenMap } from './types';
 
-function setVars(el: HTMLElement, tokens: ThemeTokenMap, prefix = '') {
-	for (const [key, value] of Object.entries(tokens)) {
-		el.style.setProperty(`--${prefix}${key}`, value);
-	}
-}
-
-/** Apply theme CSS variables to :root (light) and prepare dark via class-scoped vars. */
+/**
+ * Apply a theme: both palettes go into one stylesheet (`:root` for light, `.dark` for
+ * dark). They must not be inline styles on <html>: those would beat the `.dark` rule and
+ * leave dark mode half light.
+ */
 export function applyTheme(theme: ThemeConfig) {
 	if (typeof document === 'undefined') return;
 
 	const root = document.documentElement;
-	setVars(root, theme.tokens.light);
-	root.style.setProperty('--radius', theme.tokens.radius);
-	root.style.setProperty('--font-sans', theme.tokens.fontSans);
+	// Clear anything an earlier version of the app wrote inline.
+	for (const key of [...Object.keys(theme.tokens.light), 'radius', 'font-sans']) {
+		root.style.removeProperty(`--${key}`);
+	}
 
-	// Persist dark tokens on a style tag so `.dark` can resolve them.
-	const styleId = 'aether-theme-dark';
+	const styleId = 'aether-theme';
 	let style = document.getElementById(styleId) as HTMLStyleElement | null;
 	if (!style) {
 		style = document.createElement('style');
@@ -24,10 +22,12 @@ export function applyTheme(theme: ThemeConfig) {
 		document.head.appendChild(style);
 	}
 
-	const darkRules = Object.entries(theme.tokens.dark)
-		.map(([key, value]) => `--${key}: ${value};`)
-		.join('');
-	style.textContent = `.dark { ${darkRules} --radius: ${theme.tokens.radius}; --font-sans: ${theme.tokens.fontSans}; }`;
+	const rules = (tokens: ThemeTokenMap) =>
+		Object.entries(tokens)
+			.map(([key, value]) => `--${key}: ${value};`)
+			.join('');
+	const shared = `--radius: ${theme.tokens.radius}; --font-sans: ${theme.tokens.fontSans};`;
+	style.textContent = `:root { ${rules(theme.tokens.light)} ${shared} } .dark { ${rules(theme.tokens.dark)} ${shared} }`;
 }
 
 export function resolveColorMode(mode: ThemeConfig['colorMode']): 'light' | 'dark' {

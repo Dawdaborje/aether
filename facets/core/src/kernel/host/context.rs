@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
-use surrealdb::{Surreal, engine::remote::ws::Client};
 
+use crate::access::audit::AuditContext;
 use crate::websocket::NotificationHub;
 
 /// Per-model access granted to a plugin (from `access_models` / plugin.toml).
@@ -44,6 +44,39 @@ impl ModelGrant {
     }
 }
 
+/// Which SurrealDB namespace and database a plugin invocation works in
+/// (always an organization's database).
+#[derive(Debug, Clone)]
+pub struct DbScope {
+    pub namespace: String,
+    pub database: String,
+}
+
+impl DbScope {
+    pub fn new(namespace: impl Into<String>, database: impl Into<String>) -> Self {
+        Self {
+            namespace: namespace.into(),
+            database: database.into(),
+        }
+    }
+}
+
+/// Who is calling which plugin function, for the audit trail.
+#[derive(Debug, Clone)]
+pub struct CallInfo {
+    pub audit: AuditContext,
+    pub function: String,
+}
+
+impl CallInfo {
+    pub fn new(audit: AuditContext, function: impl Into<String>) -> Self {
+        Self {
+            audit,
+            function: function.into(),
+        }
+    }
+}
+
 /// Execution context for one plugin invocation.
 #[derive(Clone)]
 pub struct PluginHostContext {
@@ -52,8 +85,14 @@ pub struct PluginHostContext {
     pub models: HashMap<String, ModelGrant>,
     pub namespace: String,
     pub database: String,
-    pub db: Surreal<Client>,
+    /// The organization database's session (shared; never switched).
+    pub db: crate::state::Db,
     pub notifications: NotificationHub,
+    /// Who is calling and for which request; every database access is
+    /// recorded against it.
+    pub audit: AuditContext,
+    /// The plugin function being run.
+    pub function: String,
 }
 
 impl PluginHostContext {
@@ -61,26 +100,22 @@ impl PluginHostContext {
         plugin_name: impl Into<String>,
         granted: HashSet<String>,
         models: HashMap<String, ModelGrant>,
-        db: Surreal<Client>,
-        namespace: impl Into<String>,
-        database: impl Into<String>,
+        db: crate::state::Db,
+        scope: DbScope,
         notifications: NotificationHub,
+        call: CallInfo,
     ) -> Self {
         Self {
             plugin_name: plugin_name.into(),
             granted_capabilities: granted,
             models,
-            namespace: namespace.into(),
-            database: database.into(),
+            namespace: scope.namespace,
+            database: scope.database,
             db,
             notifications,
+            audit: call.audit,
+            function: call.function,
         }
-    }
-
-    pub async fn use_scoped_db(&self) -> Result<(), surrealdb::Error> {
-        self.db.use_ns(&self.namespace).await?;
-        self.db.use_db(&self.database).await?;
-        Ok(())
     }
 
     pub fn require_cap(

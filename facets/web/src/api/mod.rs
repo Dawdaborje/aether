@@ -1,13 +1,4 @@
-mod pages;
-mod theme;
+//! UI data types shared with the web app. The endpoints that serve them need the
+//! database and live in `aether_core` (`theme_api`, `pages_api`).
 
-use axum::Router;
-
-pub fn router<S>() -> Router<S>
-where
-    S: Clone + Send + Sync + 'static,
-{
-    Router::new()
-        .merge(theme::router())
-        .merge(pages::router())
-}
+pub mod theme;

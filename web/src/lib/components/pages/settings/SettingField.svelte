@@ -1,9 +1,9 @@
 <script lang="ts">
+	import CheckIcon from '@lucide/svelte/icons/check';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
-	import { Label } from '$lib/components/ui/label';
 	import { Textarea } from '$lib/components/ui/textarea';
-	import { Badge } from '$lib/components/ui/badge';
+	import Switch from '$lib/components/settings/Switch.svelte';
 	import { updateSetting, type CatalogItem } from '$lib/settings/api';
 
 	let {
@@ -14,123 +14,174 @@
 		onsaved?: (item: CatalogItem) => void;
 	} = $props();
 
-	let draft = $state(cloneValue(item.value));
+	const isBoolean = $derived(item.value_type === 'boolean');
+
+	/**
+	 * What the control shows. It starts as the saved value, follows it when it
+	 * changes (after a save, or on reload), and can be edited in between.
+	 */
+	let draft = $derived<string | boolean>(toDraft(item.value));
 	let saving = $state(false);
 	let error = $state('');
-	let savedFlash = $state(false);
+	let justSaved = $state(false);
 
-	$effect(() => {
-		draft = cloneValue(item.value);
-	});
+	function toDraft(value: unknown): string | boolean {
+		if (item.value_type === 'boolean') return Boolean(value);
+		if (item.value_type === 'list') return Array.isArray(value) ? value.map(String).join(', ') : String(value ?? '');
+		if (item.value_type === 'json') return JSON.stringify(value ?? null, null, 2);
+		return value == null ? '' : String(value);
+	}
 
-	function cloneValue(value: unknown): unknown {
-		if (Array.isArray(value)) return [...value];
-		if (value && typeof value === 'object') return structuredClone(value);
+	/** The typed value the draft stands for; throws a readable error when it is invalid. */
+	function parse(value: string | boolean): unknown {
+		if (typeof value === 'boolean') return value;
+		if (item.value_type === 'list') {
+			return value
+				.split(',')
+				.map((part) => part.trim())
+				.filter(Boolean);
+		}
+		if (item.value_type === 'json') {
+			try {
+				return JSON.parse(value);
+			} catch {
+				throw new Error('This is not valid JSON.');
+			}
+		}
+		if (item.value_type === 'number') {
+			const number = Number(value);
+			if (value.trim() === '' || Number.isNaN(number)) throw new Error('Enter a number.');
+			return number;
+		}
 		return value;
 	}
 
-	function listAsText(value: unknown): string {
-		if (Array.isArray(value)) return value.map(String).join(', ');
-		return String(value ?? '');
-	}
+	const problem = $derived.by(() => {
+		try {
+			parse(draft);
+			return '';
+		} catch (err) {
+			return err instanceof Error ? err.message : 'Invalid value.';
+		}
+	});
+	const dirty = $derived(!isBoolean && JSON.stringify(draft) !== JSON.stringify(toDraft(item.value)));
+	const listPreview = $derived(
+		item.value_type === 'list' && typeof draft === 'string' && !problem
+			? (parse(draft) as string[])
+			: []
+	);
 
-	function parseList(text: string): string[] {
-		return text
-			.split(',')
-			.map((s) => s.trim())
-			.filter(Boolean);
-	}
-
-	async function save() {
+	async function save(next: string | boolean = draft) {
 		error = '';
 		saving = true;
 		try {
-			let value = draft;
-			if (item.value_type === 'list' && typeof draft === 'string') {
-				value = parseList(draft);
-			}
-			if (item.value_type === 'json' && typeof draft === 'string') {
-				value = JSON.parse(draft);
-			}
-			if (item.value_type === 'number' && typeof draft === 'string') {
-				value = Number(draft);
-			}
-			const updated = await updateSetting(item.key, value);
-			onsaved?.({ ...item, ...updated, label: item.label });
-			savedFlash = true;
-			setTimeout(() => (savedFlash = false), 1500);
+			const updated = await updateSetting(item.key, parse(next));
+			onsaved?.({ ...item, ...updated, label: item.label, value_type: item.value_type });
+			justSaved = true;
+			setTimeout(() => (justSaved = false), 2000);
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Save failed';
+			draft = toDraft(item.value);
 		} finally {
 			saving = false;
 		}
 	}
+
+	function toggle(checked: boolean) {
+		draft = checked;
+		void save(checked);
+	}
 </script>
 
-<div class="space-y-3 border-b border-border py-6 last:border-b-0">
-	<div class="flex flex-wrap items-start justify-between gap-3">
-		<div class="min-w-0 space-y-1">
-			<div class="flex flex-wrap items-center gap-2">
-				<h3 class="text-sm font-semibold tracking-tight">{item.label}</h3>
-				<Badge variant="outline" class="text-[10px] uppercase tracking-wider">
-					{item.source}
-				</Badge>
-			</div>
-			<p class="font-mono text-[11px] text-muted-foreground">{item.key}</p>
-			{#if item.description}
-				<p class="text-sm text-muted-foreground">{item.description}</p>
-			{/if}
+<div class="grid gap-4 p-5 md:grid-cols-[minmax(0,1fr)_minmax(0,24rem)] md:gap-8">
+	<div class="min-w-0 space-y-1.5">
+		<div class="flex flex-wrap items-center gap-2">
+			<h3 class="text-sm font-semibold tracking-tight">{item.label}</h3>
+			<span
+				class="rounded-sm px-1.5 py-0.5 text-[10px] font-semibold tracking-wider uppercase {item.source ===
+				'org'
+					? 'bg-primary/10 text-primary'
+					: 'bg-muted text-muted-foreground'}"
+			>
+				{item.source === 'org' ? 'Organization' : 'Default'}
+			</span>
 		</div>
-		<Button size="sm" variant="outline" disabled={saving} onclick={save}>
-			{saving ? 'Saving…' : savedFlash ? 'Saved' : 'Save'}
-		</Button>
+		{#if item.description}
+			<p class="text-sm text-muted-foreground">{item.description}</p>
+		{/if}
+		{#if item.long_description}
+			<p class="text-xs text-muted-foreground">{item.long_description}</p>
+		{/if}
+		<p class="font-mono text-[11px] text-muted-foreground/70">{item.key}</p>
 	</div>
 
-	{#if item.value_type === 'boolean'}
-		<label class="flex items-center gap-3 text-sm">
-			<input
-				type="checkbox"
-				class="size-4 accent-primary"
-				checked={Boolean(draft)}
-				onchange={(e) => (draft = e.currentTarget.checked)}
-			/>
-			<span>{draft ? 'Enabled' : 'Disabled'}</span>
-		</label>
-	{:else if item.value_type === 'list'}
-		<div class="space-y-2">
-			<Label for={item.key}>Comma-separated values</Label>
-			<Input
-				id={item.key}
-				value={typeof draft === 'string' ? draft : listAsText(draft)}
-				oninput={(e) => (draft = e.currentTarget.value)}
-			/>
-		</div>
-	{:else if item.value_type === 'json'}
-		<div class="space-y-2">
-			<Label for={item.key}>JSON</Label>
+	<form
+		class="space-y-2"
+		onsubmit={(event) => {
+			event.preventDefault();
+			if (dirty && !problem) void save();
+		}}
+	>
+		{#if isBoolean}
+			<div class="flex items-center gap-3">
+				<Switch
+					checked={Boolean(draft)}
+					disabled={saving}
+					label={item.label}
+					onchange={toggle}
+				/>
+				<span class="text-sm text-muted-foreground">{draft ? 'Enabled' : 'Disabled'}</span>
+			</div>
+		{:else if item.value_type === 'json'}
 			<Textarea
-				id={item.key}
-				rows={5}
-				value={typeof draft === 'string' ? draft : JSON.stringify(draft, null, 2)}
-				oninput={(e) => (draft = e.currentTarget.value)}
+				rows={6}
+				class="rounded-sm border border-input bg-card px-3 py-2 font-mono text-xs shadow-xs focus-visible:border-ring"
+				aria-label={item.label}
+				value={String(draft)}
+				oninput={(event) => (draft = event.currentTarget.value)}
 			/>
-		</div>
-	{:else}
-		<div class="space-y-2">
-			<Label for={item.key}>Value</Label>
+		{:else}
 			<Input
-				id={item.key}
+				class="rounded-sm border-input bg-card px-3 shadow-xs focus-visible:border-ring"
+				aria-label={item.label}
 				type={item.value_type === 'number' ? 'number' : 'text'}
-				value={draft == null ? '' : String(draft)}
-				oninput={(e) => (draft = e.currentTarget.value)}
+				placeholder={item.value_type === 'list' ? 'one, two, three' : ''}
+				value={String(draft)}
+				oninput={(event) => (draft = event.currentTarget.value)}
 			/>
-		</div>
-	{/if}
+			{#if listPreview.length > 0}
+				<ul class="flex flex-wrap gap-1.5" aria-label="Values">
+					{#each listPreview as value (value)}
+						<li class="rounded-sm bg-muted px-2 py-0.5 text-xs">{value}</li>
+					{/each}
+				</ul>
+			{/if}
+		{/if}
 
-	{#if item.long_description}
-		<p class="text-xs text-muted-foreground">{item.long_description}</p>
-	{/if}
-	{#if error}
-		<p class="text-sm text-destructive">{error}</p>
-	{/if}
+		{#if problem && dirty}
+			<p class="text-xs text-destructive" role="alert">{problem}</p>
+		{/if}
+		{#if error}
+			<p class="text-sm text-destructive" role="alert">{error}</p>
+		{/if}
+
+		<div class="flex h-8 items-center gap-2">
+			{#if dirty}
+				<Button type="submit" size="sm" disabled={saving || !!problem}>
+					{saving ? 'Saving…' : 'Save changes'}
+				</Button>
+				<Button
+					type="button"
+					size="sm"
+					variant="ghost"
+					disabled={saving}
+					onclick={() => (draft = toDraft(item.value))}>Discard</Button
+				>
+			{:else if justSaved}
+				<span class="flex items-center gap-1 text-xs font-medium text-primary">
+					<CheckIcon class="size-3.5" /> Saved
+				</span>
+			{/if}
+		</div>
+	</form>
 </div>

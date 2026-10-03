@@ -1,8 +1,8 @@
 use aether_core::config_manager::{
     models::{AetherConfig, DatabaseConfig},
-    services::generate_aether_config,
+    services::{ConfigOverrides, load_config},
 };
-use std::{env, path::PathBuf, process::exit, sync::LazyLock};
+use std::{env, path::PathBuf, sync::LazyLock};
 use surrealdb::{
     Surreal,
     engine::remote::ws::{Client as SurrealClient, Ws},
@@ -17,40 +17,45 @@ pub struct DbContext {
     pub config: AetherConfig,
     pub db: &'static Surreal<SurrealClient>,
     pub namespace: String,
-    /// Core database name (default `core`).
+    /// Core database name.
     pub database: String,
 }
 
+/// Load the configuration and connect to SurrealDB.
+///
+/// Nothing is assumed: the connection details and `app_dir` must come from the
+/// config file or from flags. Anything missing is reported together, naming the
+/// key to set and the flag that can supply it.
 pub async fn get_prerequisites(args: &Args) -> Result<DbContext, String> {
-    let config_file = resolve_config_file(args);
-    let mut configuration: AetherConfig = match generate_aether_config(config_file) {
-        Ok(config) => config,
-        Err(err) => return Err(format!("Failed to load configuration: {err}")),
+    let config_file = resolve_config_file(args)?;
+    let overrides = ConfigOverrides {
+        app_dir: args
+            .app_dir
+            .as_deref()
+            .map(|raw| absolute_from_cwd(raw, "--app-dir"))
+            .transpose()?,
+        db_host: args.db_host.clone(),
+        db_port: args.db_port,
+        db_user: args.db_user.clone(),
+        db_password: args.db_password.clone(),
+        db_namespace: args.db_namespace.clone(),
     };
-    if let Some(app_dir) = &args.app_dir {
-        let path = PathBuf::from(app_dir);
-        configuration.app_dir = if path.is_absolute() {
-            path
-        } else {
-            env::current_dir()
-                .map_err(|err| format!("Failed to resolve --app-dir: {err}"))?
-                .join(path)
-        };
+    let mut configuration = load_config(config_file.as_deref(), &overrides)
+        .map_err(|err| format!("Failed to load configuration: {err}"))?;
+    if let Some(media_dir) = &args.media_dir {
+        configuration
+            .media
+            .override_local_dir(absolute_from_cwd(media_dir, "--media-dir")?)?;
     }
 
-    let db_config: DatabaseConfig = configuration.database.as_ref().cloned().unwrap_or_default();
+    let db_config = configuration
+        .database
+        .clone()
+        .ok_or_else(|| "Failed to load configuration: the [database] section is missing".to_string())?;
+    let db = connect(&db_config).await?;
 
-    let db = build_db_conn(
-        &db_config,
-        args.db_host.clone(),
-        args.db_user.clone(),
-        args.db_password.clone(),
-        args.db_port,
-    )
-    .await?;
-
-    let namespace = resolve_namespace(args.db_namespace.as_deref(), &db_config);
-    let database = resolve_database();
+    let namespace = db_config.namespace.clone();
+    let database = CORE_DATABASE.to_string();
 
     db.use_ns(&namespace)
         .await
@@ -69,19 +74,34 @@ pub async fn get_prerequisites(args: &Args) -> Result<DbContext, String> {
     })
 }
 
-fn resolve_config_file(args: &Args) -> Option<String> {
-    let current_dir = match env::current_dir() {
-        Ok(value) => value,
-        Err(err) => {
-            log::error!("Failed to get current directory: {err}");
-            exit(1)
-        }
-    };
+/// The kernel's own database inside the configured namespace.
+const CORE_DATABASE: &str = "core";
+
+/// Resolve a CLI path flag against the current directory.
+fn absolute_from_cwd(raw: &str, flag: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(raw);
+    if path.is_absolute() {
+        return Ok(path);
+    }
+    env::current_dir()
+        .map(|cwd| cwd.join(path))
+        .map_err(|err| format!("Failed to resolve {flag}: {err}"))
+}
+
+/// The config file to use: `--config-file`, else `./aether.toml` when it exists.
+/// `None` means there is no file, which the loader reports unless flags cover
+/// every required setting.
+fn resolve_config_file(args: &Args) -> Result<Option<String>, String> {
+    let current_dir =
+        env::current_dir().map_err(|err| format!("Failed to get current directory: {err}"))?;
     let configured_path = args.config_file.as_ref().map(PathBuf::from);
     let path = configured_path.or_else(|| {
         let default_path = current_dir.join("aether.toml");
         default_path.is_file().then_some(default_path)
-    })?;
+    });
+    let Some(path) = path else {
+        return Ok(None);
+    };
     let absolute_path = if path.is_absolute() {
         path
     } else {
@@ -90,20 +110,33 @@ fn resolve_config_file(args: &Args) -> Option<String> {
     let full_path = absolute_path.canonicalize().unwrap_or(absolute_path);
 
     log::info!("Using configuration file: {}", full_path.display());
-    Some(full_path.to_string_lossy().into_owned())
+    Ok(Some(full_path.to_string_lossy().into_owned()))
 }
 
-/// Config `database.namespace` is stored on [`DatabaseConfig::namespace`].
-fn resolve_namespace(cli_namespace: Option<&str>, db_config: &DatabaseConfig) -> String {
-    cli_namespace
-        .map(String::from)
-        .filter(|namespace| !namespace.is_empty())
-        .or_else(|| (!db_config.namespace.is_empty()).then(|| db_config.namespace.clone()))
-        .unwrap_or_else(|| "aether".to_string())
-}
+/// Connect and sign in with exactly the configured details.
+async fn connect(db_config: &DatabaseConfig) -> Result<&'static Surreal<SurrealClient>, String> {
+    let addr = format!("{}:{}", db_config.host, db_config.port);
+    log::info!("Connecting to SurrealDB: ws://{addr}");
 
-fn resolve_database() -> String {
-    "core".to_string()
+    DB.connect::<Ws>(addr.clone()).await.map_err(|err| {
+        format!(
+            "Failed to connect to SurrealDB at ws://{addr}: {err}\nIs SurrealDB running there? The address comes from `host` and `port` under [database] (or --db-host / --db-port)."
+        )
+    })?;
+    DB.signin(Root {
+        username: db_config.user.clone(),
+        password: db_config.password.clone(),
+    })
+    .await
+    .map_err(|err| {
+        format!(
+            "Failed to sign in to SurrealDB at ws://{addr} as `{}`: {err}\nCheck `user` and `password` under [database] (or --db-user / --db-password).",
+            db_config.user
+        )
+    })?;
+    log::info!("Connected to SurrealDB");
+
+    Ok(&*DB)
 }
 
 #[cfg(test)]
@@ -111,76 +144,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn configured_namespace_is_used_without_cli_override() {
-        let config = DatabaseConfig {
-            namespace: "configured_namespace".to_string(),
-            ..DatabaseConfig::default()
-        };
-
-        assert_eq!(resolve_namespace(None, &config), "configured_namespace");
+    fn the_core_database_is_always_core() {
+        assert_eq!(CORE_DATABASE, "core");
     }
-
-    #[test]
-    fn database_is_always_core() {
-        let config = DatabaseConfig::default();
-
-        assert_eq!(
-            resolve_namespace(Some("cli_namespace"), &config),
-            "cli_namespace"
-        );
-        assert_eq!(resolve_database(), "core");
-    }
-}
-
-async fn build_db_conn(
-    db_config: &DatabaseConfig,
-    db_host: Option<String>,
-    db_user: Option<String>,
-    db_password: Option<String>,
-    db_port: Option<u16>,
-) -> Result<&'static Surreal<SurrealClient>, String> {
-    let host = db_host.filter(|s| !s.is_empty()).unwrap_or_else(|| {
-        if db_config.host.is_empty() {
-            "127.0.0.1".to_string()
-        } else {
-            db_config.host.clone()
-        }
-    });
-    let port = db_port.unwrap_or_else(|| {
-        if db_config.port != 0 {
-            db_config.port
-        } else {
-            8000
-        }
-    });
-    let user = db_user.filter(|s| !s.is_empty()).unwrap_or_else(|| {
-        if db_config.user.is_empty() {
-            "root".to_string()
-        } else {
-            db_config.user.clone()
-        }
-    });
-    let password = db_password.filter(|s| !s.is_empty()).unwrap_or_else(|| {
-        if db_config.password.is_empty() {
-            "root".to_string()
-        } else {
-            db_config.password.clone()
-        }
-    });
-
-    let addr = format!("{host}:{port}");
-    log::info!("Connecting to SurrealDB: ws://{addr}");
-
-    DB.connect::<Ws>(addr.clone())
-        .await
-        .map_err(|err| format!("Failed to connect to SurrealDB at ws://{addr}: {err}"))?;
-    DB.signin(Root {
-        username: user,
-        password,
-    })
-    .await
-    .map_err(|err| format!("Failed to sign in to SurrealDB at ws://{addr}: {err}"))?;
-    log::info!("Connected to SurrealDB");
-
-    Ok(&*DB)
 }

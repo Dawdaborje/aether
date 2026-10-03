@@ -120,10 +120,9 @@ pub async fn get_setting(
     key: &str,
     org: Option<&OrgRef>,
 ) -> Result<Option<SettingValue>, SettingsError> {
-    state.use_core().await?;
+    let core = state.core().await?;
 
-    let mut response = state
-        .db
+    let mut response = core
         .query("SELECT s_key, s_value FROM gl_settings_items WHERE s_key = $key LIMIT 1;")
         .bind(("key", key.to_string()))
         .await?
@@ -132,30 +131,28 @@ pub async fn get_setting(
     let global = global_rows.into_iter().next();
 
     if let Some(org) = org {
-        if let Err(err) = state.use_org(&org.db_name).await {
-            log::warn!(
+        match state.org(&org.db_name).await {
+            Err(err) => log::warn!(
                 "org DB `{}` unavailable for settings override: {err}",
                 org.db_name
-            );
-        } else {
-            let mut org_response = state
-                .db
-                .query("SELECT s_key, s_value FROM settings_items WHERE s_key = $key LIMIT 1;")
-                .bind(("key", key.to_string()))
-                .await?
-                .check()?;
-            let org_rows: Vec<SettingRow> = org_response.take(0)?;
-            if let Some(row) = org_rows.into_iter().next() {
-                let _ = state.use_core().await;
-                return Ok(Some(SettingValue {
-                    key: row.s_key,
-                    value: row.s_value,
-                    source: "org".into(),
-                    org: Some(org.slug.clone()),
-                }));
+            ),
+            Ok(org_db) => {
+                let mut org_response = org_db
+                    .query("SELECT s_key, s_value FROM settings_items WHERE s_key = $key LIMIT 1;")
+                    .bind(("key", key.to_string()))
+                    .await?
+                    .check()?;
+                let org_rows: Vec<SettingRow> = org_response.take(0)?;
+                if let Some(row) = org_rows.into_iter().next() {
+                    return Ok(Some(SettingValue {
+                        key: row.s_key,
+                        value: row.s_value,
+                        source: "org".into(),
+                        org: Some(org.slug.clone()),
+                    }));
+                }
             }
         }
-        let _ = state.use_core().await;
     }
 
     Ok(global.map(|row| SettingValue {
@@ -185,24 +182,21 @@ pub async fn list_catalog(
     state: &AppState,
     org: Option<&OrgRef>,
 ) -> Result<Vec<CatalogGroup>, SettingsError> {
-    state.use_core().await?;
+    let core = state.core().await?;
 
-    let mut groups_resp = state
-        .db
+    let mut groups_resp = core
         .query("SELECT id, label, color, icon, icon_type FROM gl_settings_groups ORDER BY label ASC;")
         .await?
         .check()?;
     let groups: Vec<GroupRow> = groups_resp.take(0)?;
 
-    let mut links_resp = state
-        .db
+    let mut links_resp = core
         .query("SELECT group, item FROM gl_settings_group_items;")
         .await?
         .check()?;
     let links: Vec<GroupItemRow> = links_resp.take(0)?;
 
-    let mut items_resp = state
-        .db
+    let mut items_resp = core
         .query(
             r#"
             SELECT id, label, s_key, s_value, description, long_description
@@ -216,23 +210,15 @@ pub async fn list_catalog(
     // Preload org overrides once.
     let mut org_overrides: std::collections::HashMap<String, JsonValue> =
         std::collections::HashMap::new();
-    if let Some(org) = org {
-        if state.use_org(&org.db_name).await.is_ok() {
-            if let Ok(resp) = state
-                .db
-                .query("SELECT s_key, s_value FROM settings_items;")
-                .await
-            {
-                if let Ok(mut checked) = resp.check() {
-                    if let Ok(rows) = checked.take::<Vec<SettingRow>>(0) {
-                        for row in rows {
-                            org_overrides.insert(row.s_key, row.s_value);
-                        }
-                    }
-                }
-            }
+    if let Some(org) = org
+        && let Ok(org_db) = state.org(&org.db_name).await
+        && let Ok(resp) = org_db.query("SELECT s_key, s_value FROM settings_items;").await
+        && let Ok(mut checked) = resp.check()
+        && let Ok(rows) = checked.take::<Vec<SettingRow>>(0)
+    {
+        for row in rows {
+            org_overrides.insert(row.s_key, row.s_value);
         }
-        let _ = state.use_core().await;
     }
 
     let mut catalog = Vec::with_capacity(groups.len());
@@ -287,9 +273,8 @@ pub async fn set_setting(
     org: Option<&OrgRef>,
 ) -> Result<SettingValue, SettingsError> {
     if let Some(org) = org {
-        state.use_core().await?;
-        let mut meta = state
-            .db
+        let core = state.core().await?;
+        let mut meta = core
             .query(
                 r#"
                 SELECT label, description, long_description FROM gl_settings_items
@@ -311,17 +296,15 @@ pub async fn set_setting(
             .next()
             .ok_or_else(|| SettingsError::NotFound(key.into()))?;
 
-        state.use_org(&org.db_name).await?;
-        let mut existing = state
-            .db
+        let org_db = state.org(&org.db_name).await?;
+        let mut existing = org_db
             .query("SELECT s_key, s_value FROM settings_items WHERE s_key = $key LIMIT 1;")
             .bind(("key", key.to_string()))
             .await?
             .check()?;
         let rows: Vec<SettingRow> = existing.take(0).unwrap_or_default();
         if rows.is_empty() {
-            state
-                .db
+            org_db
                 .query(
                     r#"
                     CREATE settings_items SET
@@ -340,8 +323,7 @@ pub async fn set_setting(
                 .await?
                 .check()?;
         } else {
-            state
-                .db
+            org_db
                 .query("UPDATE settings_items SET s_value = $value WHERE s_key = $key;")
                 .bind(("key", key.to_string()))
                 .bind(("value", value.clone()))
@@ -349,7 +331,6 @@ pub async fn set_setting(
                 .check()?;
         }
 
-        let _ = state.use_core().await;
         return Ok(SettingValue {
             key: key.into(),
             value,
@@ -358,9 +339,8 @@ pub async fn set_setting(
         });
     }
 
-    state.use_core().await?;
-    let mut updated = state
-        .db
+    let core = state.core().await?;
+    let mut updated = core
         .query(
             r#"
             UPDATE gl_settings_items SET s_value = $value WHERE s_key = $key RETURN AFTER;

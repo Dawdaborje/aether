@@ -22,10 +22,64 @@ long_description = """
 This is the long description of an example
 """
 
+[workspace.plugins]
+company = { path = "./company" }
 ```
 
+Member plugins are declared in `[workspace.plugins]`, as `name = { path = "..." }`
+with the path relative to `workspace.toml`. This is the only supported form;
+`[[addons]]` is rejected.
+
+## Creating a plugin
+
+```sh
+aether --gen plugin --plugin-path company --plugin-language rust
+```
+
+The last segment of `--plugin-path` is the plugin name (lowercase letters,
+digits and `_`). Languages: `go`, `rust`, `typescript`, `javascript`, `python`.
+No Extism CLI is needed. The command writes `plugin.toml`, a sample source file
+(`src/main.go`, `src/lib.rs`, `src/main.ts`, `src/main.js` or `src/main.py`),
+a `Makefile` (`make` builds `out/plugin.wasm`), `README.md`, `.gitignore` and an
+MIT `LICENSE`. Generated plugins declare no dependencies yet: the per-language
+SDKs will be added to the templates once they exist.
+
+Pages are XML files under `pages/`; see [Visitors, public pages and the audit
+trail](../architecture/access.md).
+
+A plugin becomes a tile on the Apps launcher by declaring `[app]`; see
+[Organizations, switching, and the Apps launcher](../architecture/organizations.md).
+A page can name its layout with `layout="bare"` on `<page>`, and a plugin can be
+a theme that decides the app's colours, layout and navigation; see
+[Themes, layouts and navigation](../architecture/themes.md).
+
+When an ancestor directory holds a `workspace.toml`, the plugin is also added to
+its `[workspace.plugins]` table, like `cargo new` does for a Cargo workspace, and
+`[plugin.meta] workspace` is set to the workspace name.
 
 # Plugin
+
+## `app_dir`
+
+`app_dir` (`app_dir = "..."` in `aether.toml`, or `--app-dir`) is where Aether
+keeps everything a plugin needs on disk:
+
+```text
+<app_dir>/
+├── plugins/<name>/<version>/   plugin.toml, the WASM artifact, page XML
+├── views/<name>/<version>/     compiled page views (JSON)
+└── conf/                       other per-plugin configuration
+```
+
+`aether --load-plugin <package-dir>` reads the package's `plugin.toml`, copies
+the files it declares (`wasm_file`, page, model and theme files; nothing else,
+so build output such as `target/` is left behind) into
+`plugins/<name>/<version>/`, and registers the version in the core catalog.
+Compiled views are written under `views/` the first time a plugin is compiled.
+Relative paths in `aether.toml` are resolved against the config file.
+
+`aether --install-plugin <name[@version]> --org <org_db>` then enables a
+catalogued plugin for one organization.
 
 ## WASM Runtime
 

@@ -12,6 +12,8 @@ pub fn routes() -> Router<AppState> {
         .route("/login", post(api::login))
         .route("/logout", post(api::logout))
         .route("/me", get(api::me))
+        .route("/orgs", get(api::list_orgs))
+        .route("/org", post(api::switch_org))
         .route("/oauth/{provider}/start", get(api::oauth_start))
         .route("/oauth/{provider}/callback", get(api::oauth_callback))
 }

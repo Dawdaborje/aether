@@ -4,18 +4,14 @@
 	import { getContext } from 'svelte';
 	import type { CatalogGroup } from '$lib/settings/api';
 
-	type SettingsCtx = {
-		groups: CatalogGroup[];
-	};
-
+	type SettingsCtx = { groups: CatalogGroup[] };
 	const ctx = getContext<SettingsCtx>('settings-groups');
 
+	// Open the first group; with none, fall through to Appearance.
 	$effect(() => {
 		const first = ctx?.groups?.[0]?.slug;
-		if (first) {
-			goto(resolve(`/settings/${first}`), { replaceState: true });
-		}
+		void goto(resolve(first ? `/settings/${first}` : '/settings/appearance'), { replaceState: true });
 	});
 </script>
 
-<div class="p-8 text-sm text-muted-foreground">Opening settings…</div>
+<p class="text-sm text-muted-foreground">Opening settings…</p>

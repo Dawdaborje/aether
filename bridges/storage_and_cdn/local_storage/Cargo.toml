@@ -4,4 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+aether_storage = { path = "../../../facets/storage" }
+object_store = { workspace = true, features = ["fs"] }
 serde = { version = "1.0.229", features = ["derive"] }
+tokio = { version = "1.53.1", features = ["fs"] }
+
+[dev-dependencies]
+bytes.workspace = true
+tempfile.workspace = true
+tokio = { version = "1.53.1", features = ["macros", "rt", "fs"] }

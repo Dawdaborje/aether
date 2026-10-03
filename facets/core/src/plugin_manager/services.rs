@@ -33,10 +33,8 @@ pub async fn load_plugin_manifest(file_path: PathBuf) -> Result<PluginManifest, 
         .await
         .map_err(|err| format!("Failed to read {}: {err}", file_path.display()))?;
 
-    let mut manifest: PluginManifest = toml::from_str(&file_content)
-        .map_err(|err| format!("Failed to parse {}: {err}", file_path.display()))?;
-    manifest.normalize();
-    Ok(manifest)
+    PluginManifest::parse(&file_content)
+        .map_err(|err| format!("Failed to parse {}: {err}", file_path.display()))
 }
 
 pub async fn gen_plugins_from_conf(file_path: PathBuf) -> PluginDefinition {
@@ -105,7 +103,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_forward_compatible_manifest() -> Result<(), toml::de::Error> {
+    fn parses_forward_compatible_manifest() -> Result<(), crate::plugin_manager::models::plugin_def::ManifestError> {
         let toml = r#"
 [plugin]
 name = "partner"
@@ -125,11 +123,6 @@ workspace = "base"
 [communication]
 channels = ["events"]
 
-[[pages]]
-route = "/base/partners"
-title = "Contacts"
-file = "./pages/partners.xml"
-
 [[hooks]]
 name = "on_install"
 phase = "install"
@@ -139,15 +132,40 @@ handler = "hooks.on_install"
 [plugin.future_thing]
 enabled = true
 "#;
-        let mut manifest: PluginManifest = toml::from_str(toml)?;
-        manifest.normalize();
+        let manifest = PluginManifest::parse(toml)?;
         assert_eq!(manifest.plugin.name, "partner");
         assert_eq!(manifest.plugin.api_version(), "0.1");
         assert_eq!(manifest.plugin.kind.as_deref(), Some("addon"));
         assert_eq!(manifest.plugin.workspace.as_deref(), Some("base"));
-        assert_eq!(manifest.pages.len(), 1);
         assert_eq!(manifest.hooks.len(), 1);
         assert_eq!(manifest.communication.channels, vec!["events"]);
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_the_removed_pages_table() {
+        use crate::plugin_manager::models::plugin_def::ManifestError;
+        let result = PluginManifest::parse(
+            "[plugin]\nname = \"x\"\n\n[[pages]]\nroute = \"/x\"\nfile = \"./pages/x.xml\"\n",
+        );
+        assert!(matches!(result, Err(ManifestError::LegacyPages)));
+    }
+
+    #[test]
+    fn reads_the_public_declarations() -> Result<(), crate::plugin_manager::models::plugin_def::ManifestError> {
+        let manifest = PluginManifest::parse(
+            r#"
+[plugin]
+name = "chat"
+capabilities = ["db::query", "db::mutate"]
+public_functions = ["list_messages"]
+public_capabilities = ["db::query"]
+public_access_models = [{ name = "message", permissions = ["read"] }]
+"#,
+        )?;
+        assert_eq!(manifest.plugin.public_functions, ["list_messages"]);
+        assert_eq!(manifest.plugin.public_capabilities, ["db::query"]);
+        assert_eq!(manifest.plugin.public_access_models[0].name, "message");
         Ok(())
     }
 }

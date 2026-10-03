@@ -27,31 +27,10 @@ pub struct NewCoreUser {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
-pub struct Company {
-    pub id: RecordId,
-    pub name: String,
-    pub code: String,
-    pub email: Option<String>,
-    pub description: Option<String>,
-    pub date_created: Datetime,
-    pub date_updated: Datetime,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
-pub struct NewCompany {
-    pub name: String,
-    pub code: String,
-    pub email: Option<String>,
-    pub date_created: Datetime,
-    pub date_updated: Datetime,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 pub struct Organization {
     pub id: RecordId,
     pub name: String,
     pub db_name: String,
-    pub company_id: String,
     pub date_created: Datetime,
     pub date_updated: Datetime,
 }
@@ -60,7 +39,6 @@ pub struct Organization {
 pub struct NewOrganization {
     pub name: String,
     pub db_name: String,
-    pub company_id: String,
     pub date_created: Datetime,
     pub date_updated: Datetime,
 }
@@ -78,13 +56,6 @@ pub struct NewOrgDatabase {
     pub db_name: String,
     pub date_created: Datetime,
     pub date_updated: Datetime,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
-pub struct CompanyUser {
-    pub company_id: String,
-    pub user_id: String,
-    pub date_created: Datetime,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]

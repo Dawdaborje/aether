@@ -10,6 +10,6 @@ pub mod db;
 pub mod dispatch;
 pub mod error;
 
-pub use context::{ModelGrant, PluginHostContext};
+pub use context::{CallInfo, DbScope, ModelGrant, PluginHostContext};
 pub use dispatch::kernel_command;
 pub use error::HostError;

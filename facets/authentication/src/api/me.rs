@@ -11,6 +11,7 @@ pub async fn me(AuthSession(session): AuthSession) -> Json<JsonValue> {
             "email": session.user.email,
             "display_name": session.user.display_name,
             "is_super_user": session.user.is_super_user,
+            "is_developer": session.user.is_super_user,
         },
         "session": {
             "provider": session.provider,

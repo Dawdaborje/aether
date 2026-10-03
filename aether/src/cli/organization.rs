@@ -1,13 +1,20 @@
 use aether_orm::models::core::{
-    Company, CompanyUser, CoreUser, NewCompany, NewCoreUser, NewOrgDatabase, NewOrganization,
-    OrgUser, Organization, OrganizationUser, TenantOrganization,
+    CoreUser, NewCoreUser, NewOrgDatabase, NewOrganization, OrgUser, Organization,
+    OrganizationUser, TenantOrganization,
 };
 use aether_orm::{hash_password, migrate_org};
 use surrealdb::{
     Surreal,
     engine::remote::ws::Client,
-    types::{Datetime, ToSql},
+    types::{Datetime, SurrealValue, ToSql},
 };
+use std::sync::Arc;
+
+use aether_core::{
+    app_dir::AppDir,
+    org_storage::{OrgStorage, OrgStorageError, provision_org_storage},
+};
+use aether_storage::MediaBackend;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -17,9 +24,6 @@ pub enum OrganizationError {
 
     #[error("organization name cannot be empty")]
     EmptyOrganizationName,
-
-    #[error("company name cannot be empty")]
-    EmptyCompanyName,
 
     #[error("user username, email, and password are required")]
     MissingUserCredentials,
@@ -39,29 +43,54 @@ pub enum OrganizationError {
     #[error("organization database `{0}` was not found")]
     OrganizationNotFound(String),
 
-    #[error("company `{0}` was not found")]
-    CompanyNotFound(String),
-
     #[error("organization migration failed: {0}")]
     Migration(#[from] aether_orm::MigrationError),
+
+    #[error("could not set up the organization's storage: {0}")]
+    Storage(#[from] OrgStorageError),
 }
 
+#[derive(Debug, SurrealValue)]
+struct OrgDatabaseRow {
+    #[allow(dead_code)]
+    db_name: String,
+}
+
+/// Where an organization's files go: its folder in `app_dir` and its place in
+/// the media backend.
+pub struct StorageTarget {
+    pub app_dir: AppDir,
+    pub media: Arc<dyn MediaBackend>,
+}
+
+/// What to create for a new organization.
+pub struct OrganizationRequest<'a> {
+    pub name: &'a str,
+    /// Database name; defaults to a slug of `name`.
+    pub db_name: Option<&'a str>,
+    pub username: &'a str,
+    pub email: &'a str,
+    pub password: &'a str,
+}
+
+/// Create an organization: its storage first (the folder in `app_dir` and its
+/// media prefix, so an unwritable location fails before anything exists), then
+/// its first user, its core records and its database.
 pub async fn create_organization(
     db: &Surreal<Client>,
     namespace: &str,
-    organization_name: &str,
-    organization_db_name: Option<&str>,
-    company_name: &str,
-    company_email: Option<&str>,
-    username: &str,
-    email: &str,
-    password: &str,
-) -> Result<String, OrganizationError> {
+    request: &OrganizationRequest<'_>,
+    storage: &StorageTarget,
+) -> Result<(String, OrgStorage), OrganizationError> {
+    let OrganizationRequest {
+        name: organization_name,
+        db_name: organization_db_name,
+        username,
+        email,
+        password,
+    } = *request;
     if organization_name.trim().is_empty() {
         return Err(OrganizationError::EmptyOrganizationName);
-    }
-    if company_name.trim().is_empty() {
-        return Err(OrganizationError::EmptyCompanyName);
     }
     if username.trim().is_empty() || email.trim().is_empty() || password.is_empty() {
         return Err(OrganizationError::MissingUserCredentials);
@@ -77,6 +106,14 @@ pub async fn create_organization(
     {
         return Err(OrganizationError::InvalidDatabaseName(db_name));
     }
+
+    let org_storage =
+        provision_org_storage(&storage.app_dir, storage.media.clone(), &db_name).await?;
+    log::info!(
+        "Organization storage ready: files in {}, media under `{}`",
+        org_storage.directory.display(),
+        org_storage.media_prefix
+    );
 
     db.use_ns(namespace).await?;
     db.use_db("core").await?;
@@ -109,42 +146,18 @@ pub async fn create_organization(
             .ok_or(OrganizationError::UserCreationReturnedNoId)?
     };
 
-    let company_code = slugify(company_name);
-    let company_id = company_code.clone();
     let now = Datetime::now();
-    let _: Option<Company> = db
-        .create::<Option<Company>>(("companies", company_id.clone()))
-        .content(NewCompany {
-            name: company_name.to_string(),
-            code: company_code,
-            email: company_email.map(str::to_owned),
-            date_created: now.clone(),
-            date_updated: now.clone(),
-        })
-        .await?;
     let _: Option<Organization> = db
         .create::<Option<Organization>>(("organizations", db_name.clone()))
         .content(NewOrganization {
             name: organization_name.to_string(),
             db_name: db_name.clone(),
-            company_id: format!("companies:{company_id}"),
             date_created: now.clone(),
             date_updated: now.clone(),
         })
         .await?;
-    let _: Option<CompanyUser> = db
-        .update::<Option<CompanyUser>>((
-            "company_users",
-            format!("{}_{}", company_id, slugify(&user_id)),
-        ))
-        .content(CompanyUser {
-            company_id: format!("companies:{company_id}"),
-            user_id: user_id.clone(),
-            date_created: now.clone(),
-        })
-        .await?;
     let _: Option<OrganizationUser> = db
-        .update::<Option<OrganizationUser>>((
+        .upsert::<Option<OrganizationUser>>((
             "organization_users",
             format!("{}_{}", db_name, slugify(&user_id)),
         ))
@@ -155,7 +168,7 @@ pub async fn create_organization(
         })
         .await?;
     let _: Option<aether_orm::models::core::OrgDatabase> = db
-        .update::<Option<aether_orm::models::core::OrgDatabase>>(("org_databases", db_name.clone()))
+        .upsert::<Option<aether_orm::models::core::OrgDatabase>>(("org_databases", db_name.clone()))
         .content(NewOrgDatabase {
             db_name: db_name.clone(),
             date_created: now.clone(),
@@ -186,7 +199,29 @@ pub async fn create_organization(
         })
         .await?;
 
-    Ok(db_name)
+    Ok((db_name, org_storage))
+}
+
+/// Create the folder and media prefix for an organization that already exists
+/// (for example one created before storage was provisioned). Safe to repeat.
+pub async fn provision_existing_organization(
+    db: &Surreal<Client>,
+    namespace: &str,
+    organization: &str,
+    storage: &StorageTarget,
+) -> Result<OrgStorage, OrganizationError> {
+    db.use_ns(namespace).await?;
+    db.use_db("core").await?;
+    let mut response = db
+        .query("SELECT db_name FROM org_databases WHERE db_name = $org LIMIT 1;")
+        .bind(("org", organization.to_string()))
+        .await?
+        .check()?;
+    let found: Vec<OrgDatabaseRow> = response.take(0)?;
+    if found.is_empty() {
+        return Err(OrganizationError::OrganizationNotFound(organization.to_string()));
+    }
+    Ok(provision_org_storage(&storage.app_dir, storage.media.clone(), organization).await?)
 }
 
 pub async fn assign_user(
@@ -194,7 +229,6 @@ pub async fn assign_user(
     namespace: &str,
     user_login: &str,
     organization_db_name: &str,
-    company_name: &str,
 ) -> Result<(), OrganizationError> {
     db.use_ns(namespace).await?;
     db.use_db("core").await?;
@@ -214,16 +248,10 @@ pub async fn assign_user(
         .find(|organization| organization.db_name == organization_db_name)
         .map(|organization| record_id_string(&organization.id))
         .ok_or_else(|| OrganizationError::OrganizationNotFound(organization_db_name.to_string()))?;
-    let companies: Vec<Company> = db.select("companies").await?;
-    let company_id = companies
-        .into_iter()
-        .find(|company| company.name == company_name)
-        .map(|company| record_id_string(&company.id))
-        .ok_or_else(|| OrganizationError::CompanyNotFound(company_name.to_string()))?;
 
     let membership_key = slugify(&user_id);
     let _: Option<OrganizationUser> = db
-        .update::<Option<OrganizationUser>>((
+        .upsert::<Option<OrganizationUser>>((
             "organization_users",
             format!("{}_{}", slugify(organization_db_name), membership_key),
         ))
@@ -233,23 +261,11 @@ pub async fn assign_user(
             date_created: Datetime::now(),
         })
         .await?;
-    let _: Option<CompanyUser> = db
-        .update::<Option<CompanyUser>>((
-            "company_users",
-            format!("{}_{}", slugify(company_name), membership_key),
-        ))
-        .content(CompanyUser {
-            company_id,
-            user_id: user_id.clone(),
-            date_created: Datetime::now(),
-        })
-        .await?;
-
     create_and_migrate_org_database(db, namespace, organization_db_name).await?;
     db.use_ns(namespace).await?;
     db.use_db(organization_db_name).await?;
     let _: Option<OrgUser> = db
-        .update::<Option<OrgUser>>(("org_users", membership_key))
+        .upsert::<Option<OrgUser>>(("org_users", membership_key))
         .content(OrgUser {
             core_user_id: user_id,
             display_name: Some(user_login.to_string()),
@@ -333,7 +349,7 @@ mod tests {
     }
 
     #[test]
-    fn builds_company_code_from_name() {
+    fn collapses_punctuation_and_whitespace() {
         assert_eq!(slugify("Acme  Holdings, Ltd."), "acme_holdings_ltd");
     }
 }

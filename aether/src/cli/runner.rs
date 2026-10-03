@@ -1,6 +1,7 @@
 use std::{env, path::Path, str::FromStr};
 
 use aether_core::application::services::change_user_password;
+use aether_orm::{SchemaStatus, core_schema_status};
 use clap::Parser;
 use log::LevelFilter;
 
@@ -9,11 +10,16 @@ use crate::server::serve::run_server;
 use super::{
     args::Args,
     db::get_prerequisites,
-    generation::{
-        create_plugin_project, generate_default_config_template, generate_plugin_workspace,
-    },
+    generation::{generate_default_config_template, generate_plugin_workspace},
     initialization::{initialize_system, print_bootstrap_summary},
-    organization::{assign_user, create_organization},
+    organization::{
+        OrganizationRequest, StorageTarget, assign_user, create_organization,
+        provision_existing_organization,
+    },
+    plugin_manager::{
+        activate_theme, install_plugins, load_plugins, print_install_summary, print_load_summary,
+    },
+    scaffold::{Language, create_plugin},
     seed::seed_system,
 };
 
@@ -60,6 +66,38 @@ async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    if let Some(plugin_paths) = &args.load_plugin {
+        let ctx = get_db_context(&args).await;
+        let loaded = load_plugins(
+            ctx.db,
+            &ctx.namespace,
+            &ctx.database,
+            &ctx.config.app_dir,
+            plugin_paths,
+        )
+        .await?;
+        print_load_summary(&loaded);
+    }
+
+    if let Some(specs) = &args.install_plugin {
+        // clap's `requires = "org"` guarantees this is set.
+        let Some(org) = &args.org else {
+            return Err("--org must be provided when installing plugins".into());
+        };
+        let ctx = get_db_context(&args).await;
+        let report = install_plugins(ctx.db, &ctx.namespace, &ctx.database, org, specs).await?;
+        print_install_summary(org, &report);
+    }
+
+    if let Some(theme) = &args.activate_theme {
+        let Some(org) = &args.org else {
+            return Err("--org must be provided when activating a theme".into());
+        };
+        let ctx = get_db_context(&args).await;
+        activate_theme(ctx.db, &ctx.namespace, org, theme).await?;
+        println!("Theme '{theme}' is now the active theme for organization '{org}'.");
+    }
+
     if let Some(config_file_name) = &args.generate_config_file {
         let full_path = Path::new(&current_path).join(config_file_name);
         generate_default_config_template(full_path).await?;
@@ -72,19 +110,22 @@ async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 generate_plugin_workspace(current_dir).await?;
             }
             "plugin" => {
-                let plugin_path = args.plugin_path.clone().unwrap_or_else(|| {
-                    current_path
-                        .join("my_plugin")
-                        .to_string_lossy()
-                        .into_owned()
-                });
-                let plugin_name = Path::new(&plugin_path)
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("my_plugin")
-                    .to_string();
-                create_plugin_project(plugin_path, plugin_name, args.plugin_language.clone())
-                    .await?;
+                let plugin_path = args
+                    .plugin_path
+                    .as_deref()
+                    .map(Path::new)
+                    .unwrap_or_else(|| Path::new("my_plugin"));
+                let language: Language = args.plugin_language.parse()?;
+                let created = create_plugin(plugin_path, language).await?;
+                println!(
+                    "Created {} plugin '{}' at {}.",
+                    created.language.label(),
+                    created.name,
+                    created.directory.display()
+                );
+                if let Some(workspace) = created.workspace {
+                    println!("Registered it in workspace '{workspace}' under [workspace.plugins].");
+                }
             }
             "aether_config" => {
                 generate_default_config_template(current_path.join("aether.toml")).await?;
@@ -111,10 +152,6 @@ async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if let Some(organization_name) = &args.create_org {
-        let Some(company_name) = &args.company_name else {
-            log::error!("--company-name must be provided when creating an organization");
-            return Ok(());
-        };
         let Some(username) = &args.username else {
             log::error!("--username must be provided when creating an organization");
             return Ok(());
@@ -129,24 +166,35 @@ async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         };
 
         let ctx = get_db_context(&args).await;
-        match create_organization(
-            ctx.db,
-            &ctx.namespace,
-            organization_name,
-            args.org_db_name.as_deref(),
-            company_name,
-            args.company_email.as_deref(),
+        let storage = storage_target(&ctx.config).await?;
+        let request = OrganizationRequest {
+            name: organization_name,
+            db_name: args.org_db_name.as_deref(),
             username,
             email,
             password,
-        )
-        .await
-        {
-            Ok(db_name) => println!(
-                "Created organization '{organization_name}', company '{company_name}', user '{username}' in database '{db_name}'."
+        };
+        match create_organization(ctx.db, &ctx.namespace, &request, &storage).await {
+            Ok((db_name, org_storage)) => println!(
+                "Created organization '{organization_name}' with user '{username}' in database '{db_name}'.\n  files: {}\n  media: {}",
+                org_storage.directory.display(),
+                describe_media(&ctx.config, &org_storage.media_prefix)
             ),
             Err(err) => log::error!("Failed to create organization: {err}"),
         }
+        return Ok(());
+    }
+
+    if let Some(organization) = &args.provision_org {
+        let ctx = get_db_context(&args).await;
+        let storage = storage_target(&ctx.config).await?;
+        let provisioned =
+            provision_existing_organization(ctx.db, &ctx.namespace, organization, &storage).await?;
+        println!(
+            "Storage ready for organization '{organization}'.\n  files: {}\n  media: {}",
+            provisioned.directory.display(),
+            describe_media(&ctx.config, &provisioned.media_prefix)
+        );
         return Ok(());
     }
 
@@ -155,31 +203,36 @@ async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             log::error!("--org-db-name must be provided when assigning a user");
             return Ok(());
         };
-        let Some(company_name) = &args.company_name else {
-            log::error!("--company-name must be provided when assigning a user");
-            return Ok(());
-        };
 
         let ctx = get_db_context(&args).await;
-        match assign_user(
-            ctx.db,
-            &ctx.namespace,
-            user_login,
-            org_db_name,
-            company_name,
-        )
-        .await
-        {
-            Ok(()) => println!(
-                "Assigned user '{user_login}' to organization '{org_db_name}' and company '{company_name}'."
-            ),
+        match assign_user(ctx.db, &ctx.namespace, user_login, org_db_name).await {
+            Ok(()) => println!("Assigned user '{user_login}' to organization '{org_db_name}'."),
             Err(err) => log::error!("Failed to assign user '{user_login}': {err}"),
         }
         return Ok(());
     }
 
-    if args.init {
+    if args.purge_audit {
         let ctx = get_db_context(&args).await;
+        let Some(days) = ctx.config.audit.retention_days else {
+            return Err("--purge-audit needs `retention_days` under [audit] in aether.toml".into());
+        };
+        let report =
+            aether_core::access::audit::purge_expired(ctx.db, &ctx.namespace, &ctx.database, days)
+                .await?;
+        println!(
+            "Purged audit rows older than {days} days from {} organization(s): {} page visit(s), {} plugin call(s), {} data access row(s), {} visitor(s).",
+            report.organizations,
+            report.page_visits,
+            report.plugin_calls,
+            report.data_access,
+            report.visitors
+        );
+        return Ok(());
+    }
+
+    if args.init {
+        let ctx = connect_context(&args).await;
         match initialize_system(
             ctx.db,
             &ctx.namespace,
@@ -217,11 +270,73 @@ async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// The folder and media backend new organizations are provisioned in.
+async fn storage_target(
+    config: &aether_core::config_manager::models::AetherConfig,
+) -> Result<StorageTarget, Box<dyn std::error::Error>> {
+    let media = aether_core::media::build_media_backend(&config.media).await?;
+    Ok(StorageTarget {
+        app_dir: aether_core::app_dir::AppDir::new(&config.app_dir),
+        media,
+    })
+}
+
+/// Where an organization's media ends up, for the confirmation message.
+fn describe_media(
+    config: &aether_core::config_manager::models::AetherConfig,
+    prefix: &str,
+) -> String {
+    use aether_core::config_manager::models::MediaBackendKind;
+    match (&config.media.backend, &config.media.local, &config.media.s3) {
+        (MediaBackendKind::Local, Some(local), _) => local.base_path.join(prefix).display().to_string(),
+        (MediaBackendKind::S3, _, Some(s3)) => {
+            let outer = s3.prefix.as_deref().filter(|p| !p.is_empty());
+            match outer {
+                Some(outer) => format!("s3://{}/{outer}/{prefix}/", s3.bucket),
+                None => format!("s3://{}/{prefix}/", s3.bucket),
+            }
+        }
+        _ => prefix.to_string(),
+    }
+}
+
+/// Connect, and require that `aether --init` has been run. Every command except
+/// `--init` itself works on an initialized database, so a fresh one gets a
+/// plain instruction instead of a "table does not exist" error.
 async fn get_db_context(args: &Args) -> crate::cli::db::DbContext {
+    let context = connect_context(args).await;
+    match core_schema_status(context.db, &context.namespace, &context.database).await {
+        Ok(SchemaStatus::UpToDate) => context,
+        Ok(SchemaStatus::Uninitialized) => {
+            log::error!(
+                "The database `{}/{}` has not been initialized. Run `aether --init` (with the same configuration) to apply the migrations and create the first admin user.",
+                context.namespace,
+                context.database
+            );
+            std::process::exit(1);
+        }
+        Ok(SchemaStatus::Pending(pending)) => {
+            log::error!(
+                "The database `{}/{}` is missing {} migration(s) shipped with this version of Aether ({}). Run `aether --init` to apply them.",
+                context.namespace,
+                context.database,
+                pending.len(),
+                pending.join(", ")
+            );
+            std::process::exit(1);
+        }
+        Err(error) => {
+            log::error!("Could not check the database schema: {error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+async fn connect_context(args: &Args) -> crate::cli::db::DbContext {
     match get_prerequisites(args).await {
         Ok(context) => context,
         Err(error) => {
-            log::error!("Database setup failed: {error}");
+            log::error!("{error}");
             std::process::exit(1);
         }
     }

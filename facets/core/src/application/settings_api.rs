@@ -34,7 +34,9 @@ fn org_from_request(state: &AppState, headers: &HeaderMap, path: &str) -> Option
     resolve_org_slug(&req, &state.config.tenancy, None)
 }
 
-async fn require_session(
+/// Settings are part of the desk: only developers (superusers) may read or
+/// change them.
+pub(crate) async fn require_session(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<(), (StatusCode, Json<JsonValue>)> {
@@ -54,9 +56,19 @@ async fn require_session(
             Json(json!({ "error": "not authenticated" })),
         ));
     };
-    let _ = state.use_core().await;
-    match find_session_by_token(&state.db, &token).await {
-        Ok(Some(session)) if session.user.is_active => Ok(()),
+    let core = state.core().await.map_err(|err| {
+        log::error!("settings auth core database: {err}");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "database error" })),
+        )
+    })?;
+    match find_session_by_token(&core, &token).await {
+        Ok(Some(session)) if session.user.is_active && session.user.is_super_user => Ok(()),
+        Ok(Some(session)) if session.user.is_active => Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "developer access required" })),
+        )),
         Ok(_) => Err((
             StatusCode::UNAUTHORIZED,
             Json(json!({ "error": "invalid session" })),
@@ -75,6 +87,7 @@ async fn catalog(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<JsonValue>, (StatusCode, Json<JsonValue>)> {
+    require_session(&state, &headers).await?;
     let org = org_from_request(&state, &headers, "/api/settings/catalog");
     match list_catalog(&state, org.as_ref()).await {
         Ok(groups) => Ok(Json(json!({
@@ -96,6 +109,7 @@ async fn get_one(
     Path(key): Path<String>,
     req: Request<axum::body::Body>,
 ) -> Result<Json<SettingValue>, (StatusCode, Json<JsonValue>)> {
+    require_session(&state, req.headers()).await?;
     let org = resolve_org_slug(&req, &state.config.tenancy, None);
     match get_setting(&state, &key, org.as_ref()).await {
         Ok(Some(value)) => Ok(Json(value)),
@@ -118,6 +132,7 @@ async fn get_many(
     Query(query): Query<KeysQuery>,
     req: Request<axum::body::Body>,
 ) -> Result<Json<Vec<SettingValue>>, (StatusCode, Json<JsonValue>)> {
+    require_session(&state, req.headers()).await?;
     let org = resolve_org_slug(&req, &state.config.tenancy, None);
     let Some(keys_raw) = query.keys.filter(|s| !s.is_empty()) else {
         return Err((

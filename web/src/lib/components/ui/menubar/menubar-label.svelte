@@ -18,7 +18,7 @@
 	bind:this={ref}
 	data-slot="menubar-label"
 	data-inset={inset}
-	class={cn("text-muted-foreground px-3.5 py-2 text-xs font-semibold tracking-wider uppercase data-inset:pl-9.5", className)}
+	class={cn("text-muted-foreground px-3.5 py-2 text-xs font-semibold data-inset:pl-9.5", className)}
 	{...restProps}
 >
 	{@render children?.()}

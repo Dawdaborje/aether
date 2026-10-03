@@ -26,12 +26,12 @@ impl FromRequestParts<AppState> for AuthSession {
             return Err((StatusCode::UNAUTHORIZED, "not authenticated"));
         };
 
-        if let Err(err) = state.use_core().await {
-            log::error!("auth session use_core: {err}");
-            return Err((StatusCode::INTERNAL_SERVER_ERROR, "database error"));
-        }
+        let core = state.core().await.map_err(|err| {
+            log::error!("auth session core database: {err}");
+            (StatusCode::INTERNAL_SERVER_ERROR, "database error")
+        })?;
 
-        match find_session_by_token(&state.db, &token).await {
+        match find_session_by_token(&core, &token).await {
             Ok(Some(session)) if session.user.is_active => Ok(AuthSession(session)),
             Ok(Some(_)) => Err((StatusCode::FORBIDDEN, "user inactive")),
             Ok(None) => Err((StatusCode::UNAUTHORIZED, "invalid session")),
@@ -62,12 +62,12 @@ pub fn require_superuser(session: &ValidSession) -> Result<(), (StatusCode, &'st
     if session.user.is_super_user {
         Ok(())
     } else {
-        Err((StatusCode::FORBIDDEN, "superuser required"))
+        Err((StatusCode::FORBIDDEN, "developer access required"))
     }
 }
 
-/// Platform permission check. Superusers always pass.
-/// Full RBAC graph resolution is deferred — non-superusers are denied for now
+/// Platform permission check. Developers (superusers) always pass.
+/// Full RBAC graph resolution is deferred — non-developers are denied for now
 /// unless we later load role→permission edges.
 pub async fn require_permission(
     _state: &AppState,

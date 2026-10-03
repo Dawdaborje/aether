@@ -1,3 +1,4 @@
+import { apiFetch } from '$lib/api/client';
 export type CatalogItem = {
 	key: string;
 	label: string;
@@ -24,7 +25,7 @@ export type SettingsCatalog = {
 };
 
 export async function fetchSettingsCatalog(): Promise<SettingsCatalog> {
-	const res = await fetch('/api/settings/catalog', { credentials: 'include' });
+	const res = await apiFetch('/api/settings/catalog');
 	if (!res.ok) {
 		throw new Error('Failed to load settings');
 	}
@@ -32,7 +33,7 @@ export async function fetchSettingsCatalog(): Promise<SettingsCatalog> {
 }
 
 export async function updateSetting(key: string, value: unknown): Promise<CatalogItem> {
-	const res = await fetch(`/api/settings/${encodeURIComponent(key)}`, {
+	const res = await apiFetch(`/api/settings/${encodeURIComponent(key)}`, {
 		method: 'PUT',
 		credentials: 'include',
 		headers: { 'Content-Type': 'application/json' },

@@ -3,13 +3,16 @@ pub mod plugins;
 pub mod sessions;
 pub mod users;
 
-pub use migrations::{migrate_core, migrate_org, run_migrations, MigrationError};
+pub use migrations::{
+    core_schema_status, migrate_core, migrate_org, run_migrations, MigrationError, SchemaStatus,
+};
 pub use plugins::{
     get_dependencies, get_dependents, resolve_install_order, sync_plugin_dependencies,
     PluginGraphError,
 };
 pub use sessions::{
-    create_session, find_session_by_token, revoke_session_by_token, CreatedSession, SessionError,
+    create_session, find_session_by_token, revoke_session_by_token, set_session_org, CreatedSession,
+    SessionError,
     ValidSession,
 };
 pub use users::{

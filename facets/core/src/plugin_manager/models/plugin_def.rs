@@ -73,6 +73,20 @@ pub struct PluginDefinition {
     pub capabilities: Vec<String>,
     #[serde(default)]
     pub access_models: Vec<AccessModelDef>,
+    /// Functions anonymous visitors may call (`POST /api/plugins/{plugin}/{function}`).
+    /// Empty by default: nothing is callable without logging in.
+    #[serde(default)]
+    pub public_functions: Vec<String>,
+    /// Capabilities an anonymous visitor may use, a subset of `capabilities`.
+    /// Public pages imply read access (`db::query`) to the models they show;
+    /// anything beyond reading, such as `db::mutate`, must be listed here.
+    #[serde(default)]
+    pub public_capabilities: Vec<String>,
+    /// Models anonymous visitors may access beyond what public pages show,
+    /// with their permissions. A model listed with `write` is writable by
+    /// anyone, so keep this list short.
+    #[serde(default)]
+    pub public_access_models: Vec<AccessModelDef>,
     /// Parent workspace name (e.g. `"base"`, `"erp"`). Prefer `[plugin.meta].workspace`.
     #[serde(default)]
     pub workspace: Option<String>,
@@ -106,6 +120,9 @@ impl Default for PluginDefinition {
             dependencies: Vec::new(),
             capabilities: Vec::new(),
             access_models: Vec::new(),
+            public_functions: Vec::new(),
+            public_capabilities: Vec::new(),
+            public_access_models: Vec::new(),
             workspace: None,
             kind: Some("addon".into()),
             is_builtin: false,
@@ -150,19 +167,6 @@ pub struct PluginModelRef {
     pub label: Option<String>,
     #[serde(default)]
     pub file: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
-pub struct PluginPageDef {
-    pub route: String,
-    #[serde(default)]
-    pub title: Option<String>,
-    #[serde(default)]
-    pub file: Option<String>,
-    #[serde(default)]
-    pub model: Option<String>,
-    #[serde(default)]
-    pub view: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -235,14 +239,35 @@ pub struct PluginThemeDef {
     pub tokens_file: Option<String>,
 }
 
+/// `[app]`: makes the plugin a tile on the Apps launcher.
+///
+/// ```toml
+/// [app]
+/// label = "Chat"              # defaults to the plugin's label
+/// icon = "message-square"     # a lucide icon name; the tile shows a letter if unknown
+/// route = "/chat"             # a page of this plugin; what the tile opens
+/// description = "Team messaging"
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct PluginAppDef {
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub icon: Option<String>,
+    pub route: String,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
 /// Full `plugin.toml` document. Unknown top-level tables are ignored by serde.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PluginManifest {
     pub plugin: PluginDefinition,
     #[serde(default)]
     pub models: Vec<PluginModelRef>,
-    #[serde(default)]
-    pub pages: Vec<PluginPageDef>,
+    /// Present only to reject the removed `[[pages]]` table with a clear error.
+    #[serde(default, rename = "pages")]
+    legacy_pages: Option<toml::Value>,
     #[serde(default)]
     pub menus: Vec<PluginMenuDef>,
     #[serde(default)]
@@ -255,9 +280,35 @@ pub struct PluginManifest {
     pub communication: PluginCommunication,
     #[serde(default)]
     pub theme: Option<PluginThemeDef>,
+    /// Present when the plugin is an app (a tile on the Apps launcher).
+    #[serde(default)]
+    pub app: Option<PluginAppDef>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ManifestError {
+    #[error("{0}")]
+    Toml(#[from] toml::de::Error),
+
+    #[error(
+        "`[[pages]]` is no longer supported: declare each page as an XML file under `pages/` \
+         with `<page route=\"/…\">` as the root element"
+    )]
+    LegacyPages,
 }
 
 impl PluginManifest {
+    /// Parse and normalise a `plugin.toml`. Unknown keys are ignored so the
+    /// contract can grow; the removed `[[pages]]` table is an error.
+    pub fn parse(text: &str) -> Result<Self, ManifestError> {
+        let mut manifest: Self = toml::from_str(text)?;
+        if manifest.legacy_pages.is_some() {
+            return Err(ManifestError::LegacyPages);
+        }
+        manifest.normalize();
+        Ok(manifest)
+    }
+
     pub fn normalize(&mut self) {
         self.plugin.hoist_meta();
     }

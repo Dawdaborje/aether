@@ -5,6 +5,7 @@ pub mod initialization;
 pub mod organization;
 pub mod plugin_manager;
 pub mod runner;
+pub mod scaffold;
 pub mod seed;
 
 pub use runner::run;

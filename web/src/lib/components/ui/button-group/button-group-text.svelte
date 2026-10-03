@@ -14,7 +14,7 @@
 
 	const mergedProps = $derived({
 		...restProps,
-		class: cn("border-b-input group-has-[>[data-variant=outline]]/button-group:border-border gap-2 border border-transparent bg-transparent px-2.5 text-xs font-semibold uppercase [&_svg:not([class*='size-'])]:size-3.5 flex items-center [&_svg]:pointer-events-none", className),
+		class: cn("border-b-input group-has-[>[data-variant=outline]]/button-group:border-border gap-2 border border-transparent bg-transparent px-2.5 text-xs font-semibold [&_svg:not([class*='size-'])]:size-3.5 flex items-center [&_svg]:pointer-events-none", className),
 		"data-slot": "button-group-text",
 	});
 </script>

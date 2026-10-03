@@ -41,17 +41,18 @@ pub async fn login(
         }
     }
 
-    if let Err(err) = state.use_core().await {
-        log::error!("login use_core: {err}");
-        return Err((
+    let core = state.core().await.map_err(|err| {
+        log::error!("login core database: {err}");
+        (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": "database error" })),
-        ));
-    }
+        )
+    })?;
 
-    let user = match authenticate_local(&state.db, &body.username, &body.password).await {
+    let user = match authenticate_local(&core, &body.username, &body.password).await {
         Ok(u) => u,
         Err(aether_orm::UserServiceError::InvalidCredentials) => {
+            log::warn!("login failed for `{}`: invalid credentials", body.username);
             return Err((
                 StatusCode::UNAUTHORIZED,
                 Json(json!({ "error": "invalid credentials" })),
@@ -73,7 +74,7 @@ pub async fn login(
     };
 
     let org_db = org.as_ref().map(|o| o.db_name.clone());
-    let session = create_session(&state.db, user.id.clone(), "local", org_db, 24)
+    let session = create_session(&core, user.id.clone(), "local", org_db, 24)
         .await
         .map_err(|err| {
             log::error!("create session: {err}");
@@ -83,6 +84,11 @@ pub async fn login(
             )
         })?;
 
+    log::info!(
+        "login ok: `{}` (organization: {})",
+        body.username,
+        org_db_for_log(&session.record.org_database_id)
+    );
     let jar = set_session_cookie(jar, &session.raw_token);
 
     Ok((
@@ -95,9 +101,14 @@ pub async fn login(
                 "email": user.email,
                 "display_name": user.display_name,
                 "is_super_user": user.is_super_user,
+                "is_developer": user.is_super_user,
             }
         })),
     ))
+}
+
+fn org_db_for_log(org: &Option<String>) -> &str {
+    org.as_deref().unwrap_or("none yet")
 }
 
 pub(crate) fn methods_as_strings(value: &JsonValue) -> Vec<String> {

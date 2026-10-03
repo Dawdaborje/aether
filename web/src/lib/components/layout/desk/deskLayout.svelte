@@ -1,21 +1,11 @@
 <script lang="ts">
-	import DeskSideBar from './deskSideBar.svelte';
-	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
+	import { deskNav } from '../nav';
+	import EnterpriseShell from '../shell/EnterpriseShell.svelte';
 
 	let { children } = $props();
 </script>
 
-<Sidebar.Provider class="min-h-screen">
-	<DeskSideBar />
-	<Sidebar.Inset class="min-h-screen bg-background">
-		<header
-			class="flex h-12 items-center gap-2 border-b border-border bg-card px-4"
-		>
-			<Sidebar.Trigger />
-			<div class="text-sm text-muted-foreground">Enterprise workspace</div>
-		</header>
-		<main class="min-h-[calc(100vh-3rem)] flex-1 overflow-auto">
-			{@render children()}
-		</main>
-	</Sidebar.Inset>
-</Sidebar.Provider>
+<!-- The developer desk: the same shell as the default layout, with the desk's navigation. -->
+<EnterpriseShell nav={deskNav}>
+	{@render children()}
+</EnterpriseShell>

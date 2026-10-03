@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeMap,
     io,
     path::{Path, PathBuf},
     sync::Arc,
@@ -8,16 +7,18 @@ use std::{
 
 use extism::{CompiledPlugin, Manifest, PluginBuilder, Wasm};
 use moka::sync::Cache as CompiledCache;
-use quick_xml::{Reader, events::Event};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use sha2::{Digest, Sha256};
+use serde::Deserialize;
 use surrealdb::{Surreal, engine::remote::ws::Client};
 use surrealdb::types::SurrealValue;
 use thiserror::Error;
 use tokio::sync::Mutex;
 
-use super::models::{plugin_db_def::PluginDbDefinition, plugin_def::PluginManifest};
+use super::catalog::sha256_hex;
+use crate::app_dir::{AppDir, AppDirError};
+use super::models::{
+    plugin_db_def::PluginDbDefinition,
+    plugin_def::{ManifestError, PluginManifest},
+};
 use super::services::fetch_active_plugin_version;
 
 /// Default number of Extism `CompiledPlugin` modules kept in RAM.
@@ -34,7 +35,7 @@ pub enum PluginRuntimeError {
     Manifest {
         path: PathBuf,
         #[source]
-        source: toml::de::Error,
+        source: ManifestError,
     },
     #[error("failed to compile plugin `{name}@{version}`: {source}")]
     Compile {
@@ -65,8 +66,8 @@ pub enum PluginRuntimeError {
     },
     #[error("plugin invocation failed: {0}")]
     Invoke(#[source] extism::Error),
-    #[error("plugin UI compilation failed: {0}")]
-    UiCompile(String),
+    #[error(transparent)]
+    AppDir(#[from] AppDirError),
 }
 
 pub struct LoadedPlugin {
@@ -118,7 +119,7 @@ impl PluginRuntime {
     /// Does **not** compile WASM — modules are compiled on first use and kept
     /// in a bounded Extism `CompiledPlugin` cache.
     pub async fn load_catalog(&self, db: &Surreal<Client>) -> Result<usize, PluginRuntimeError> {
-        tokio::fs::create_dir_all(self.app_dir.as_path()).await?;
+        AppDir::new(self.app_dir.as_path()).ensure().await?;
         let mut response = db
             .query("SELECT name, version FROM plugins WHERE is_active = true;")
             .await?
@@ -136,11 +137,10 @@ impl PluginRuntime {
     /// In-flight calls keep their `Arc<LoadedPlugin>` until they finish.
     pub async fn register_version(
         &self,
-        db: &Surreal<Client>,
         record: PluginDbDefinition,
     ) -> Result<Arc<LoadedPlugin>, PluginRuntimeError> {
         let _gate = self.compile_gate.lock().await;
-        Ok(self.insert_compiled(self.compile_record(db, record).await?))
+        Ok(self.insert_compiled(self.compile_record(record).await?))
     }
 
     pub fn get(&self, name: &str, version: &str) -> Result<Arc<LoadedPlugin>, PluginRuntimeError> {
@@ -153,12 +153,10 @@ impl PluginRuntime {
     }
 
     /// Return a cached `CompiledPlugin`, or load the version from the core
-    /// `plugins` table, compile it, and cache it.
+    /// `plugins` table, compile it, and cache it. `db` must be the core session.
     pub async fn ensure_loaded(
         &self,
         db: &Surreal<Client>,
-        namespace: &str,
-        core_database: &str,
         name: &str,
         version: &str,
     ) -> Result<Arc<LoadedPlugin>, PluginRuntimeError> {
@@ -171,8 +169,6 @@ impl PluginRuntime {
             return Ok(loaded);
         }
 
-        db.use_ns(namespace).await?;
-        db.use_db(core_database).await?;
         let record = fetch_active_plugin_version(db, name, version)
             .await?
             .ok_or_else(|| PluginRuntimeError::NotInCatalog {
@@ -180,7 +176,7 @@ impl PluginRuntime {
                 version: version.to_string(),
             })?;
 
-        Ok(self.insert_compiled(self.compile_record(db, record).await?))
+        Ok(self.insert_compiled(self.compile_record(record).await?))
     }
 
     fn insert_compiled(&self, plugin: LoadedPlugin) -> Arc<LoadedPlugin> {
@@ -233,7 +229,6 @@ impl PluginRuntime {
 
     async fn compile_record(
         &self,
-        db: &Surreal<Client>,
         record: PluginDbDefinition,
     ) -> Result<LoadedPlugin, PluginRuntimeError> {
         let artifact = record
@@ -247,10 +242,7 @@ impl PluginRuntime {
             let expected_hash = expected_hash
                 .strip_prefix("sha256:")
                 .unwrap_or(expected_hash);
-            let actual_hash = Sha256::digest(&bytes)
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>();
+            let actual_hash = sha256_hex(&bytes);
             if !actual_hash.eq_ignore_ascii_case(expected_hash) {
                 return Err(PluginRuntimeError::ArtifactHashMismatch {
                     name: record.name,
@@ -264,45 +256,17 @@ impl PluginRuntime {
             .unwrap_or_else(|| Path::new("."))
             .join("plugin.toml");
         let manifest_text = tokio::fs::read_to_string(&manifest_path).await?;
-        let mut manifest: PluginManifest =
-            toml::from_str(&manifest_text).map_err(|source| PluginRuntimeError::Manifest {
+        let manifest = PluginManifest::parse(&manifest_text).map_err(|source| {
+            PluginRuntimeError::Manifest {
                 path: manifest_path.clone(),
                 source,
-            })?;
-        manifest.normalize();
+            }
+        })?;
         if manifest.plugin.name != record.name || manifest.plugin.version != record.version {
             return Err(PluginRuntimeError::ManifestIdentityMismatch {
                 name: record.name,
                 version: record.version,
             });
-        }
-
-        for page in &manifest.pages {
-            let Some(source) = page.file.as_deref() else {
-                continue;
-            };
-            let page_path = artifact_path
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .join(source);
-            let page_path = self
-                .resolve_app_path(page_path.to_string_lossy().as_ref())
-                .await?;
-            let xml = tokio::fs::read_to_string(&page_path).await?;
-            let tree = compile_ui_xml(&xml)?;
-            self.persist_ui_tree(
-                &record.id,
-                &record.name,
-                &record.version,
-                &page.route,
-                page.title.as_deref().unwrap_or(&page.route),
-                page.model.as_deref(),
-                page.view.as_deref(),
-                &page_path,
-                tree,
-                db,
-            )
-            .await?;
         }
 
         let name = manifest.plugin.name.clone();
@@ -340,48 +304,6 @@ impl PluginRuntime {
         })
     }
 
-    async fn persist_ui_tree(
-        &self,
-        plugin_id: &surrealdb::types::RecordId,
-        plugin_name: &str,
-        version: &str,
-        route: &str,
-        title: &str,
-        model: Option<&str>,
-        view_type: Option<&str>,
-        source_path: &Path,
-        tree: Value,
-        db: &Surreal<Client>,
-    ) -> Result<(), PluginRuntimeError> {
-        let record_key = Sha256::digest(format!("{plugin_name}@{version}:{route}").as_bytes())
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        db.query(
-            r#"
-            UPSERT type::thing('plugin_ui_pages', $record_key) SET
-                plugin = $plugin,
-                route = $route,
-                title = $title,
-                model = $model,
-                view_type = $view_type,
-                component_tree = $component_tree,
-                source_path = $source_path;
-            "#,
-        )
-        .bind(("record_key", record_key))
-        .bind(("plugin", plugin_id.clone()))
-        .bind(("route", route.to_string()))
-        .bind(("title", title.to_string()))
-        .bind(("model", model.map(str::to_string)))
-        .bind(("view_type", view_type.map(str::to_string)))
-        .bind(("component_tree", tree))
-        .bind(("source_path", source_path.to_string_lossy().to_string()))
-        .await?
-        .check()?;
-        Ok(())
-    }
-
     async fn resolve_app_path(&self, raw_path: &str) -> Result<PathBuf, PluginRuntimeError> {
         let app_dir = tokio::fs::canonicalize(self.app_dir.as_path()).await?;
         let input = PathBuf::from(raw_path);
@@ -402,119 +324,6 @@ impl PluginRuntime {
 struct CatalogVersionRow {
     name: String,
     version: String,
-}
-
-#[derive(Debug, Serialize)]
-struct UiTreeNode {
-    tag: String,
-    attributes: BTreeMap<String, String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    children: Vec<UiTreeNode>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    text: Option<String>,
-}
-
-fn compile_ui_xml(xml: &str) -> Result<Value, PluginRuntimeError> {
-    let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
-    let mut stack: Vec<UiTreeNode> = Vec::new();
-    let mut root: Option<UiTreeNode> = None;
-
-    loop {
-        match reader.read_event() {
-            Ok(Event::Start(element)) => {
-                let mut attributes = BTreeMap::new();
-                for attribute in element.attributes() {
-                    let attribute = attribute
-                        .map_err(|error| PluginRuntimeError::UiCompile(error.to_string()))?;
-                    let key = String::from_utf8_lossy(attribute.key.as_ref()).into_owned();
-                    let value = attribute
-                        .decode_and_unescape_value(reader.decoder())
-                        .map_err(|error| PluginRuntimeError::UiCompile(error.to_string()))?
-                        .into_owned();
-                    attributes.insert(key, value);
-                }
-                stack.push(UiTreeNode {
-                    tag: String::from_utf8_lossy(element.name().as_ref()).into_owned(),
-                    attributes,
-                    children: Vec::new(),
-                    text: None,
-                });
-            }
-            Ok(Event::Empty(element)) => {
-                let mut attributes = BTreeMap::new();
-                for attribute in element.attributes() {
-                    let attribute = attribute
-                        .map_err(|error| PluginRuntimeError::UiCompile(error.to_string()))?;
-                    let key = String::from_utf8_lossy(attribute.key.as_ref()).into_owned();
-                    let value = attribute
-                        .decode_and_unescape_value(reader.decoder())
-                        .map_err(|error| PluginRuntimeError::UiCompile(error.to_string()))?
-                        .into_owned();
-                    attributes.insert(key, value);
-                }
-                let node = UiTreeNode {
-                    tag: String::from_utf8_lossy(element.name().as_ref()).into_owned(),
-                    attributes,
-                    children: Vec::new(),
-                    text: None,
-                };
-                append_ui_node(&mut stack, &mut root, node)?;
-            }
-            Ok(Event::End(_)) => {
-                let node = stack.pop().ok_or_else(|| {
-                    PluginRuntimeError::UiCompile("unexpected closing XML element".into())
-                })?;
-                append_ui_node(&mut stack, &mut root, node)?;
-            }
-            Ok(Event::Text(text)) => {
-                let text = text
-                    .decode()
-                    .map_err(|error| PluginRuntimeError::UiCompile(error.to_string()))?;
-                if let Some(node) = stack.last_mut()
-                    && !text.trim().is_empty()
-                {
-                    node.text = Some(text.into_owned());
-                }
-            }
-            Ok(Event::CData(text)) => {
-                let text = text
-                    .decode()
-                    .map_err(|error| PluginRuntimeError::UiCompile(error.to_string()))?;
-                if let Some(node) = stack.last_mut() {
-                    node.text = Some(text.into_owned());
-                }
-            }
-            Ok(Event::Eof) => break,
-            Ok(Event::Decl(_) | Event::Comment(_) | Event::DocType(_) | Event::PI(_)) => {}
-            Err(error) => return Err(PluginRuntimeError::UiCompile(error.to_string())),
-        }
-    }
-
-    if !stack.is_empty() {
-        return Err(PluginRuntimeError::UiCompile(
-            "unclosed XML elements remain".into(),
-        ));
-    }
-    serde_json::to_value(
-        root.ok_or_else(|| PluginRuntimeError::UiCompile("page XML has no root element".into()))?,
-    )
-    .map_err(|error| PluginRuntimeError::UiCompile(error.to_string()))
-}
-
-fn append_ui_node(
-    stack: &mut [UiTreeNode],
-    root: &mut Option<UiTreeNode>,
-    node: UiTreeNode,
-) -> Result<(), PluginRuntimeError> {
-    if let Some(parent) = stack.last_mut() {
-        parent.children.push(node);
-    } else if root.replace(node).is_some() {
-        return Err(PluginRuntimeError::UiCompile(
-            "page XML must have exactly one root element".into(),
-        ));
-    }
-    Ok(())
 }
 
 #[derive(Debug, serde::Deserialize)]

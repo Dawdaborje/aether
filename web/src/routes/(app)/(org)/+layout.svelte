@@ -1,9 +1,7 @@
 <script>
-	import DeskLayout from '$lib/components/layout/desk/deskLayout.svelte';
-
+	// The application shell (theme layout, navigation) is applied by the parent
+	// `(app)` layout; plugin pages render inside it.
 	let { children } = $props();
 </script>
 
-<DeskLayout>
-	{@render children()}
-</DeskLayout>
+{@render children()}

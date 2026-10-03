@@ -1,3 +1,5 @@
+import { apiFetch } from '$lib/api/client';
+
 /** Client helpers for /api/auth */
 
 export type AuthMethods = {
@@ -13,6 +15,8 @@ export type AuthUser = {
 	email?: string | null;
 	display_name?: string | null;
 	is_super_user: boolean;
+	/** The account that may use the developer tools (the kernel stores it as a superuser). */
+	is_developer: boolean;
 };
 
 export type MeResponse = {
@@ -24,7 +28,7 @@ export type MeResponse = {
 };
 
 export async function fetchAuthMethods(): Promise<AuthMethods> {
-	const res = await fetch('/api/auth/methods', { credentials: 'include' });
+	const res = await apiFetch('/api/auth/methods');
 	if (!res.ok) {
 		return {
 			primary_method: 'local',
@@ -36,9 +40,8 @@ export async function fetchAuthMethods(): Promise<AuthMethods> {
 }
 
 export async function loginLocal(username: string, password: string): Promise<MeResponse['user']> {
-	const res = await fetch('/api/auth/login', {
+	const res = await apiFetch('/api/auth/login', {
 		method: 'POST',
-		credentials: 'include',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ username, password })
 	});
@@ -50,14 +53,14 @@ export async function loginLocal(username: string, password: string): Promise<Me
 }
 
 export async function fetchMe(): Promise<MeResponse | null> {
-	const res = await fetch('/api/auth/me', { credentials: 'include' });
+	const res = await apiFetch('/api/auth/me');
 	if (res.status === 401) return null;
 	if (!res.ok) return null;
 	return res.json();
 }
 
 export async function logout(): Promise<void> {
-	await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+	await apiFetch('/api/auth/logout', { method: 'POST' });
 }
 
 export function oauthStartUrl(provider: string): string {

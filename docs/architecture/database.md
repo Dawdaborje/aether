@@ -8,9 +8,6 @@ These are the core tables that store the application state. And are always in th
 ### Organization Table (Tenant)
 This table stores the organization details and is specific to each tenant.
 
-### Company Table
-This table stores the company details and is specific to each tenant.
-
 ### Settings Tables
 This setting is to store settings values for configuration and it is designed to be flexible to add new settings.
 The settings is divided into 2:

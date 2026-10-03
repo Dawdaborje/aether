@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { PageNode } from '$lib/dsl/types';
 	import { browser } from '$app/environment';
+	import ErrorCard from '$lib/components/errors/ErrorCard.svelte';
 
 	let { node }: { node: PageNode } = $props();
 
@@ -8,10 +9,8 @@
 </script>
 
 {#if show}
-	<div class="rounded border border-dashed border-amber-500/50 bg-amber-500/5 p-3 text-xs">
-		Unknown / unhandled widget: <code class="font-mono">{node.type}</code>
-		{#if node.name}
-			({String(node.name)})
-		{/if}
-	</div>
+	<ErrorCard
+		title="Unknown widget"
+		message={`No widget is registered for "${node.type}"${node.name ? ` (${String(node.name)})` : ''}.`}
+	/>
 {/if}

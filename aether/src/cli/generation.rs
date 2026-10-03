@@ -1,7 +1,4 @@
-use std::{
-    io,
-    path::{Path, PathBuf},
-};
+use std::{io, path::PathBuf};
 
 use tokio::fs;
 
@@ -14,6 +11,9 @@ instance_name = "Aether Test"
 host = "0.0.0.0"
 port = 7890
 addon_paths = []
+# Reverse proxies whose X-Forwarded-For header is believed. Leave empty unless
+# a proxy sits in front of Aether; otherwise audit rows record the proxy's address.
+# trusted_proxies = ["10.0.0.1"]
 
 [configuration]
 is_development_mode = false
@@ -36,41 +36,47 @@ max_value_bytes = 1048576
 # url = "redis://127.0.0.1:6379/0"
 # key_prefix = "aether:cache:"
 
+[media]
+# Where uploaded files live: "local" or "s3". Plugins never choose the backend.
+backend = "local"
+
+# Default: <app_dir>/media. `--media-dir` overrides this.
+# [media.local]
+# base_path = "media"
+
+# [media.s3]
+# bucket = "aether-media"
+# region = "us-east-1"
+# endpoint = "http://127.0.0.1:3900"   # Garage, MinIO, … (omit for AWS)
+# access_key_id = "..."                # or AWS_ACCESS_KEY_ID
+# secret_access_key = "..."            # or AWS_SECRET_ACCESS_KEY
+# allow_http = false
+# virtual_hosted_style = false
+# prefix = "aether"
+
+# Audit trail of page visits, plugin calls and data access.
+[audit]
+# How client IPs are stored: "full", "truncated" (IPv4 /24, IPv6 /48) or
+# "hashed" (keyed hash; needs ip_hash_key of at least 16 characters).
+ip = "full"
+# ip_hash_key = "change-me-to-a-long-random-secret"
+# Delete audit rows older than this many days. Omit to keep them forever.
+# retention_days = 365
+
+# Limits on anonymous traffic.
+[public]
+# Requests one client address may make per minute while not logged in
+# (logged-in users are not limited). Over the limit: 429 with Retry-After.
+max_requests_per_ip_per_minute = 300
+# New visitor identities one client address may create per minute.
+max_new_visitors_per_ip_per_minute = 30
+
 [tenancy]
+# Public pages have no session to name an organization, so anonymous traffic
+# needs "subdomain", "path" or "header" here; "session_only" serves logged-in users only.
 org_resolution = "session_only"
 org_header = "X-Org-Slug"
 org_path_prefix = "/o"
-"#;
-
-const DEFAULT_PLUGIN_CONFIG_TEMPLATE: &str = r#"[plugin]
-name = "{plugin_name}"
-label = "{plugin_label}"
-version = "0.0.1"
-description = "{plugin_description}"
-long_description = "{plugin_long_description}"
-authors = [{ name = "Your Name", email = "your.email@example.com" }]
-website = "https://your.website.com"
-categories = []
-dependencies = []
-capabilities = ["db::query", "db::mutate"]
-
-access_models = [
-    { name = "user", permissions = ["read", "write"] },
-]
-is_builtin = false
-
-# Contract version — bump only when breaking required keys.
-[plugin.api]
-version = "0.1"
-
-[plugin.meta]
-kind = "addon"
-workspace = ""
-
-[communication]
-# Planned channels: events | email | sms | http | plugins
-channels = []
-
 "#;
 
 const DEFAULT_PLUGIN_WORKSPACE_TEMPLATE: &str = r#"[workspace]
@@ -84,10 +90,10 @@ website = "https://your.website.com"
 categories = []
 dependencies = []
 
-# Register each addon plugin directory here.
-# [[addons]]
-# name = "my_addon"
-# path = "./my_addon"
+# Member plugins. `aether --gen plugin --plugin-path <name>` adds an entry
+# here; a plugin can also be added by hand:
+#   my_plugin = { path = "./my_plugin" }
+[workspace.plugins]
 "#;
 
 /// Writes `content` to `file_path`, creating parent directories as needed.
@@ -101,35 +107,6 @@ async fn write_file(file_path: PathBuf, content: &str) -> io::Result<()> {
     }
 
     fs::write(&file_path, content).await
-}
-
-/// Turns a raw plugin name into a human friendly label, e.g. `my_plugin` -> `My Plugin`.
-fn humanize(name: &str) -> String {
-    name.split(['_', ' ', '-'])
-        .filter(|word| !word.is_empty())
-        .map(|word| {
-            let mut chars = word.chars();
-            match chars.next() {
-                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-                None => String::new(),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// Fills the plugin config template with the given plugin name and derived label.
-fn render_plugin_config(name: &str) -> String {
-    let label = humanize(name);
-
-    DEFAULT_PLUGIN_CONFIG_TEMPLATE
-        .replace("{plugin_name}", name)
-        .replace("{plugin_label}", &label)
-        .replace("{plugin_description}", "A short description of the plugin.")
-        .replace(
-            "{plugin_long_description}",
-            "A longer description of what the plugin does.",
-        )
 }
 
 pub async fn generate_default_config_template(file_name: PathBuf) -> io::Result<()> {
@@ -146,147 +123,32 @@ pub async fn generate_plugin_workspace(path: String) -> io::Result<()> {
     write_file(workspace_path, DEFAULT_PLUGIN_WORKSPACE_TEMPLATE).await
 }
 
-pub async fn generate_plugin_config(path: String, name: &str) -> io::Result<()> {
-    let root = PathBuf::from(&path);
-    let config_path = root.join("plugin.toml");
+#[cfg(test)]
+mod tests {
+    use aether_core::config_manager::{
+        models::MediaBackendKind,
+        services::{ConfigOverrides, load_config},
+    };
 
-    log::info!("Generating plugin config at: {:?}", config_path);
+    use super::DEFAULT_CONFIG_TEMPLATE;
 
-    write_file(config_path, &render_plugin_config(name)).await?;
+    #[test]
+    fn default_config_template_loads() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("aether.toml");
+        std::fs::write(&path, DEFAULT_CONFIG_TEMPLATE)?;
 
-    // Scaffold folders expected by the evolving plugin API (pages, hooks, …).
-    for dir in ["models", "pages", "i18n"] {
-        let dir_path = root.join(dir);
-        fs::create_dir_all(&dir_path).await?;
-    }
+        let config = load_config(Some(&path.to_string_lossy()), &ConfigOverrides::default())?;
 
-    write_file(
-        root.join("hooks.toml"),
-        "[[hook]]\nname = \"on_install\"\nphase = \"install\"\n",
-    )
-    .await?;
-    write_file(
-        root.join("permissions.toml"),
-        &format!("[[permission]]\nkey = \"{name}.read\"\nlabel = \"Read {name}\"\n"),
-    )
-    .await?;
-    write_file(root.join("events.toml"), "").await
-}
-
-fn find_extism_cli() -> Option<PathBuf> {
-    let path_var = std::env::var_os("PATH")?;
-    for directory in std::env::split_paths(&path_var) {
-        let candidate = directory.join("extism");
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
-/// Walks up from `start` looking for a `workspace.toml` in an ancestor directory.
-fn find_workspace_manifest(start: &Path) -> Option<PathBuf> {
-    let mut current = Some(start);
-
-    while let Some(dir) = current {
-        let candidate = dir.join("workspace.toml");
-        if candidate.exists() {
-            return Some(candidate);
-        }
-        current = dir.parent();
-    }
-
-    None
-}
-
-async fn plugin_final_touches(name: String, project_path: PathBuf) -> io::Result<()> {
-    // A workspace is optional; standalone plugins are valid projects too.
-    if let Some(workspace_manifest) = find_workspace_manifest(&project_path) {
-        log::info!(
-            "Found optional plugin workspace at: {:?}",
-            workspace_manifest
+        assert_eq!(config.app_dir, directory.path().join("app_dir"));
+        assert_eq!(config.media.backend, MediaBackendKind::Local);
+        assert_eq!(config.audit.retention_days, None);
+        assert_eq!(config.public.max_new_visitors_per_ip_per_minute, 30);
+        assert_eq!(config.public.max_requests_per_ip_per_minute, 300);
+        assert_eq!(
+            config.media.local.map(|local| local.base_path),
+            Some(directory.path().join("app_dir").join("media"))
         );
+        Ok(())
     }
-
-    // Generate the Aether plugin manifest inside the freshly scaffolded project.
-    generate_plugin_config(project_path.to_string_lossy().to_string(), &name).await?;
-
-    log::info!("Plugin project finalized at: {:?}", project_path);
-    Ok(())
-}
-
-pub async fn create_plugin_project(path: String, name: String, language: String) -> io::Result<()> {
-    let plugin_path = PathBuf::from(&path);
-    let parent_path = plugin_path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-
-    log::info!("Creating plugin project at: {:?}", plugin_path);
-
-    let Some(extism_cli) = find_extism_cli() else {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "Extism CLI is not installed. See https://github.com/extism/cli",
-        ));
-    };
-
-    match std::process::Command::new(&extism_cli)
-        .arg("--help")
-        .output()
-    {
-        Ok(output) if output.status.success() => {}
-        Ok(output) => {
-            return Err(io::Error::other(format!(
-                "Extism CLI at {:?} could not be executed: {}",
-                extism_cli,
-                String::from_utf8_lossy(&output.stderr)
-            )));
-        }
-        Err(err) => {
-            return Err(io::Error::other(format!(
-                "Failed to execute Extism CLI at {:?}: {err}",
-                extism_cli
-            )));
-        }
-    }
-
-    let arg_language = match language.to_lowercase().as_str() {
-        "rust" => "rust",
-        "python" => "python",
-        "javascript" => "js",
-        "typescript" => "ts",
-        "go" => "go",
-        unsupported => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "Unsupported plugin language '{unsupported}'. Choose go, rust, python, javascript, or typescript."
-                ),
-            ));
-        }
-    };
-
-    // Create the destination's parent; Extism creates the project directory.
-    fs::create_dir_all(parent_path).await?;
-
-    let output = std::process::Command::new(&extism_cli)
-        .arg("gen")
-        .arg("plugin")
-        .arg("-l")
-        .arg(arg_language)
-        .arg("-o")
-        .arg(&plugin_path)
-        .output()?;
-
-    if !output.status.success() {
-        return Err(io::Error::other(format!(
-            "Failed to create plugin project: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )));
-    }
-
-    log::info!("Plugin project created successfully");
-
-    plugin_final_touches(name, plugin_path).await
 }

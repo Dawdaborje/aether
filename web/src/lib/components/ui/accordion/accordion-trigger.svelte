@@ -20,7 +20,7 @@
 		data-slot="accordion-trigger"
 		bind:ref
 		class={cn(
-			"focus-visible:ring-ring/30 focus-visible:border-ring **:data-[slot=accordion-trigger-icon]:text-muted-foreground gap-6 rounded-none py-4 text-left text-sm font-semibold hover:underline focus-visible:ring-2 **:data-[slot=accordion-trigger-icon]:ml-auto **:data-[slot=accordion-trigger-icon]:size-3.5 group/accordion-trigger relative flex flex-1 items-start justify-between border border-transparent transition-all outline-none disabled:pointer-events-none disabled:opacity-50",
+			"focus-visible:ring-ring/30 focus-visible:border-ring **:data-[slot=accordion-trigger-icon]:text-muted-foreground gap-6 rounded-md py-4 text-left text-sm font-semibold hover:underline focus-visible:ring-2 **:data-[slot=accordion-trigger-icon]:ml-auto **:data-[slot=accordion-trigger-icon]:size-3.5 group/accordion-trigger relative flex flex-1 items-start justify-between border border-transparent transition-all outline-none disabled:pointer-events-none disabled:opacity-50",
 			className
 		)}
 		{...restProps}

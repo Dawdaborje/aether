@@ -74,6 +74,9 @@ fn require_model<'a>(
         return Err(HostError::ModelPermission(name.to_string(), "read"));
     }
     validate_ident(&grant.table)?;
+    if RESERVED_TABLES.contains(&grant.table.as_str()) {
+        return Err(HostError::ReservedTable(grant.table.clone()));
+    }
     Ok(grant)
 }
 
@@ -109,7 +112,18 @@ fn reject_dangerous_surql(query: &str) -> Result<(), HostError> {
         "INFO DB",
         "REBUILD ",
         "KILL ",
+        "BEGIN",
+        "COMMIT",
+        "CANCEL",
     ];
+    for table in PROTECTED_IN_RAW_SURQL {
+        if upper.contains(table) {
+            return Err(HostError::SurqlRejected(format!(
+                "raw SurQL may not reference the kernel table `{}`",
+                table.to_lowercase()
+            )));
+        }
+    }
     for token in BANNED {
         if upper.contains(token) {
             return Err(HostError::SurqlRejected(format!(
@@ -125,20 +139,133 @@ fn parse_req<T: serde::de::DeserializeOwned>(payload: &JsonValue) -> Result<T, H
         .map_err(|e| HostError::InvalidPayload(e.to_string()))
 }
 
+/// Rows a single `db::find` may return, whatever limit the plugin asks for.
+pub const MAX_ROWS_PER_FIND: u32 = 1000;
+
+/// Tables the kernel owns in every organization database. A plugin cannot map
+/// a model onto one of them.
+const RESERVED_TABLES: &[&str] = &[
+    "bridge_configs",
+    "data_access",
+    "group_roles",
+    "groups",
+    "installed_plugin_depends_on",
+    "installed_plugins",
+    "invitations",
+    "media",
+    "org_user_groups",
+    "org_user_roles",
+    "org_users",
+    "organizations",
+    "page_visits",
+    "permissions",
+    "plugin_calls",
+    "role_permissions",
+    "roles",
+    "schema_migrations",
+    "settings_group_items",
+    "settings_groups",
+    "settings_items",
+    "storage_backends",
+    "ui_theme_config",
+    "ui_themes",
+    "visitors",
+];
+
+/// Raw SurQL may not mention these (the audit trail and plugin installs).
+const PROTECTED_IN_RAW_SURQL: &[&str] = &[
+    "DATA_ACCESS",
+    "PAGE_VISITS",
+    "PLUGIN_CALLS",
+    "VISITORS",
+    "INSTALLED_PLUGINS",
+];
+
+/// Index of the `RETURN $rows` statement in the audited transaction:
+/// `BEGIN`, the work, the audit insert, then the return.
+const RETURN_INDEX: usize = 3;
+
+struct Access<'a> {
+    operation: &'static str,
+    model: &'a str,
+    table: &'a str,
+}
+
+/// Run `body` (which must `LET $rows = …;`) and record the access in
+/// `data_access` inside one transaction. If the audit row cannot be written,
+/// nothing is applied and the call fails. `ids` is the SurrealQL expression for
+/// the record ids touched.
+async fn run_audited(
+    ctx: &PluginHostContext,
+    access: Access<'_>,
+    body: &str,
+    ids: &str,
+    binds: Vec<(String, JsonValue)>,
+) -> Result<Vec<JsonValue>, HostError> {
+    let surql = format!(
+        r#"
+        BEGIN TRANSACTION;
+        {body}
+        CREATE data_access SET
+            request_id = $__audit_request,
+            actor_type = $__audit_actor_type,
+            actor_id = $__audit_actor_id,
+            plugin = $__audit_plugin,
+            function_name = $__audit_function,
+            model = $__audit_model,
+            table_name = $__audit_table,
+            operation = $__audit_operation,
+            record_ids = {ids},
+            record_count = array::len($rows),
+            ip = $__audit_ip;
+        RETURN $rows;
+        COMMIT TRANSACTION;
+        "#
+    );
+    let mut query = ctx
+        .db
+        .query(surql)
+        .bind(("__audit_request", ctx.audit.request_id.clone()))
+        .bind(("__audit_actor_type", ctx.audit.actor.kind().to_string()))
+        .bind(("__audit_actor_id", ctx.audit.actor.id().map(str::to_string)))
+        .bind(("__audit_plugin", ctx.plugin_name.clone()))
+        .bind(("__audit_function", ctx.function.clone()))
+        .bind(("__audit_model", access.model.to_string()))
+        .bind(("__audit_table", access.table.to_string()))
+        .bind(("__audit_operation", access.operation.to_string()))
+        .bind(("__audit_ip", ctx.audit.ip.clone()));
+    for (name, value) in binds {
+        query = query.bind((name, value));
+    }
+    let mut response = query.await?.check()?;
+    Ok(response.take(RETURN_INDEX)?)
+}
+
+fn record_binds(grant: &ModelGrant, id: &str) -> Vec<(String, JsonValue)> {
+    vec![
+        ("__table".to_string(), JsonValue::String(grant.table.clone())),
+        (
+            "__key".to_string(),
+            JsonValue::String(strip_table_prefix(id, &grant.table).to_string()),
+        ),
+    ]
+}
+
+const RECORD_ID: &str = "[type::record($__table, $__key)]";
+
 pub async fn db_get(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
     ctx.require_cap("db::query")?;
     let req: GetRequest = parse_req(payload)?;
     let grant = require_model(ctx, &req.model, false)?;
-    ctx.use_scoped_db().await?;
 
-    let record = format!("{}:{}", grant.table, strip_table_prefix(&req.id, &grant.table));
-    let mut response = ctx
-        .db
-        .query("SELECT * FROM type::thing($id);")
-        .bind(("id", record))
-        .await?
-        .check()?;
-    let rows: Vec<JsonValue> = response.take(0).unwrap_or_default();
+    let rows = run_audited(
+        ctx,
+        Access { operation: "read", model: &req.model, table: &grant.table },
+        "LET $rows = SELECT * FROM type::record($__table, $__key);",
+        RECORD_ID,
+        record_binds(grant, &req.id),
+    )
+    .await?;
     Ok(serde_json::json!({ "ok": true, "data": rows.into_iter().next() }))
 }
 
@@ -146,10 +273,12 @@ pub async fn db_find(ctx: &PluginHostContext, payload: &JsonValue) -> Result<Jso
     ctx.require_cap("db::query")?;
     let req: FindRequest = parse_req(payload)?;
     let grant = require_model(ctx, &req.model, false)?;
-    ctx.use_scoped_db().await?;
 
     let mut where_parts = Vec::new();
-    let mut binds: Vec<(String, JsonValue)> = Vec::new();
+    let mut binds: Vec<(String, JsonValue)> = vec![(
+        "__table".to_string(),
+        JsonValue::String(grant.table.clone()),
+    )];
     for (i, (field, value)) in req.filter.iter().enumerate() {
         validate_field_name(field)?;
         let placeholder = format!("f{i}");
@@ -157,28 +286,30 @@ pub async fn db_find(ctx: &PluginHostContext, payload: &JsonValue) -> Result<Jso
         binds.push((placeholder, value.clone()));
     }
 
-    let mut surql = format!("SELECT * FROM type::table($table)");
+    let mut body = String::from("LET $rows = SELECT * FROM type::table($__table)");
     if !where_parts.is_empty() {
-        surql.push_str(" WHERE ");
-        surql.push_str(&where_parts.join(" AND "));
+        body.push_str(" WHERE ");
+        body.push_str(&where_parts.join(" AND "));
     }
     if let Some(order) = &req.order {
         validate_field_name(order)?;
-        surql.push_str(&format!(" ORDER BY {order}"));
+        body.push_str(&format!(" ORDER BY {order}"));
     }
-    if let Some(limit) = req.limit {
-        surql.push_str(&format!(" LIMIT {limit}"));
-    }
+    let limit = req.limit.map_or(MAX_ROWS_PER_FIND, |limit| limit.min(MAX_ROWS_PER_FIND));
+    body.push_str(&format!(" LIMIT {limit}"));
     if let Some(offset) = req.offset {
-        surql.push_str(&format!(" START {offset}"));
+        body.push_str(&format!(" START {offset}"));
     }
+    body.push(';');
 
-    let mut q = ctx.db.query(&surql).bind(("table", grant.table.clone()));
-    for (k, v) in binds {
-        q = q.bind((k, v));
-    }
-    let mut response = q.await?.check()?;
-    let rows: Vec<JsonValue> = response.take(0).unwrap_or_default();
+    let rows = run_audited(
+        ctx,
+        Access { operation: "read", model: &req.model, table: &grant.table },
+        &body,
+        "$rows.id",
+        binds,
+    )
+    .await?;
     Ok(serde_json::json!({ "ok": true, "data": rows }))
 }
 
@@ -195,16 +326,19 @@ pub async fn db_create(
     for key in req.data.keys() {
         validate_field_name(key)?;
     }
-    ctx.use_scoped_db().await?;
 
-    let mut response = ctx
-        .db
-        .query("CREATE type::table($table) CONTENT $data RETURN AFTER;")
-        .bind(("table", grant.table.clone()))
-        .bind(("data", JsonValue::Object(req.data)))
-        .await?
-        .check()?;
-    let rows: Vec<JsonValue> = response.take(0).unwrap_or_default();
+    let binds = vec![
+        ("__table".to_string(), JsonValue::String(grant.table.clone())),
+        ("__data".to_string(), JsonValue::Object(req.data)),
+    ];
+    let rows = run_audited(
+        ctx,
+        Access { operation: "create", model: &req.model, table: &grant.table },
+        "LET $rows = (CREATE type::table($__table) CONTENT $__data RETURN AFTER);",
+        "$rows.id",
+        binds,
+    )
+    .await?;
     Ok(serde_json::json!({ "ok": true, "data": rows.into_iter().next() }))
 }
 
@@ -218,17 +352,17 @@ pub async fn db_update(
     for key in req.data.keys() {
         validate_field_name(key)?;
     }
-    ctx.use_scoped_db().await?;
 
-    let record = format!("{}:{}", grant.table, strip_table_prefix(&req.id, &grant.table));
-    let mut response = ctx
-        .db
-        .query("UPDATE type::thing($id) MERGE $data RETURN AFTER;")
-        .bind(("id", record))
-        .bind(("data", JsonValue::Object(req.data)))
-        .await?
-        .check()?;
-    let rows: Vec<JsonValue> = response.take(0).unwrap_or_default();
+    let mut binds = record_binds(grant, &req.id);
+    binds.push(("__data".to_string(), JsonValue::Object(req.data)));
+    let rows = run_audited(
+        ctx,
+        Access { operation: "update", model: &req.model, table: &grant.table },
+        "LET $rows = (UPDATE type::record($__table, $__key) MERGE $__data RETURN AFTER);",
+        RECORD_ID,
+        binds,
+    )
+    .await?;
     Ok(serde_json::json!({ "ok": true, "data": rows.into_iter().next() }))
 }
 
@@ -239,37 +373,75 @@ pub async fn db_delete(
     ctx.require_cap("db::mutate")?;
     let req: DeleteRequest = parse_req(payload)?;
     let grant = require_model(ctx, &req.model, true)?;
-    ctx.use_scoped_db().await?;
 
-    let record = format!("{}:{}", grant.table, strip_table_prefix(&req.id, &grant.table));
-    let mut response = ctx
-        .db
-        .query("DELETE type::thing($id) RETURN BEFORE;")
-        .bind(("id", record))
-        .await?
-        .check()?;
-    let rows: Vec<JsonValue> = response.take(0).unwrap_or_default();
+    let rows = run_audited(
+        ctx,
+        Access { operation: "delete", model: &req.model, table: &grant.table },
+        "LET $rows = (DELETE type::record($__table, $__key) RETURN BEFORE);",
+        RECORD_ID,
+        record_binds(grant, &req.id),
+    )
+    .await?;
     Ok(serde_json::json!({ "ok": true, "data": rows.into_iter().next() }))
 }
 
 /// Raw SurQL — requires `db::surql`. Optional `model` binds `$__table`.
+/// The access is recorded with the statement text; the record ids a raw
+/// statement touches are not known to the kernel.
 pub async fn db_surql(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
     ctx.require_cap("db::surql")?;
     let req: SurqlRequest = parse_req(payload)?;
     reject_dangerous_surql(&req.query)?;
-    ctx.use_scoped_db().await?;
 
-    let mut q = ctx.db.query(&req.query);
+    let surql = format!(
+        r#"
+        BEGIN TRANSACTION;
+        CREATE data_access SET
+            request_id = $__audit_request,
+            actor_type = $__audit_actor_type,
+            actor_id = $__audit_actor_id,
+            plugin = $__audit_plugin,
+            function_name = $__audit_function,
+            model = $__audit_model,
+            table_name = $__audit_table,
+            operation = 'raw',
+            statement = $__audit_statement,
+            record_ids = [],
+            record_count = 0,
+            ip = $__audit_ip;
+        {};
+        COMMIT TRANSACTION;
+        "#,
+        req.query.trim().trim_end_matches(';')
+    );
+    let mut table = None;
+    let mut q = ctx
+        .db
+        .query(surql)
+        .bind(("__audit_request", ctx.audit.request_id.clone()))
+        .bind(("__audit_actor_type", ctx.audit.actor.kind().to_string()))
+        .bind(("__audit_actor_id", ctx.audit.actor.id().map(str::to_string)))
+        .bind(("__audit_plugin", ctx.plugin_name.clone()))
+        .bind(("__audit_function", ctx.function.clone()))
+        .bind(("__audit_statement", req.query.clone()))
+        .bind(("__audit_ip", ctx.audit.ip.clone()));
     if let Some(model) = &req.model {
         // Raw SurQL that references a model still needs read or write on that model.
         let grant = ctx
             .model(model)
             .ok_or_else(|| HostError::ModelDenied(model.clone()))?;
         validate_ident(&grant.table)?;
+        table = Some(grant.table.clone());
         q = q.bind(("__table", grant.table.clone()));
     }
+    q = q
+        .bind(("__audit_model", req.model.clone()))
+        .bind(("__audit_table", table));
     for (k, v) in req.vars {
         validate_ident(&k)?;
+        if k.starts_with("__audit") {
+            return Err(HostError::SurqlRejected(format!("variable `{k}` is reserved")));
+        }
         q = q.bind((k, v));
     }
     let response = q.await?.check()?;
@@ -293,6 +465,19 @@ mod tests {
     fn rejects_use_ns() {
         let err = reject_dangerous_surql("USE NS other; SELECT * FROM x").unwrap_err();
         assert!(matches!(err, HostError::SurqlRejected(_)));
+    }
+
+    #[test]
+    fn rejects_transaction_control_and_audit_tables() {
+        for query in [
+            "COMMIT TRANSACTION; DELETE page_visits",
+            "SELECT * FROM Data_Access",
+            "UPDATE visitors SET linked_user = NONE",
+            "SELECT * FROM installed_plugins",
+            "CANCEL TRANSACTION",
+        ] {
+            assert!(reject_dangerous_surql(query).is_err(), "{query}");
+        }
     }
 
     #[test]

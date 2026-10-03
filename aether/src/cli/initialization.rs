@@ -28,7 +28,8 @@ pub struct BootstrapResult {
     pub superuser_already_existed: bool,
 }
 
-/// Bootstrap the platform core DB: apply migrations, seed settings, ensure superuser.
+/// Bootstrap the platform core DB: apply migrations, seed settings, ensure the developer account
+/// (stored as a superuser: the kernel skips RBAC checks for it).
 pub async fn initialize_system(
     db: &Surreal<Client>,
     namespace: &str,
@@ -67,7 +68,7 @@ pub async fn initialize_system(
             println!(
                 "{}",
                 format!(
-                    "  superuser: already exists ({})",
+                    "  developer: already exists ({})",
                     existing
                         .username
                         .or(existing.email)
@@ -84,7 +85,7 @@ pub async fn initialize_system(
                 .map(str::to_owned)
                 .unwrap_or_else(|| generate_password(20));
             let creds = create_superuser(db, username, email, &password).await?;
-            println!("{}", "  superuser: created".green());
+            println!("{}", "  developer: created".green());
             (Some(creds), false)
         }
     };
@@ -126,7 +127,7 @@ pub fn print_bootstrap_summary(result: &BootstrapResult) {
 
     if let Some(creds) = &result.superuser {
         println!();
-        println!("{}", "  Superuser credentials (save these):".green().bold());
+        println!("{}", "  Developer credentials (save these):".green().bold());
         println!(
             "  {}  {}",
             "Username:".green(),
@@ -146,7 +147,7 @@ pub fn print_bootstrap_summary(result: &BootstrapResult) {
     } else if result.superuser_already_existed {
         println!(
             "  {}  {}",
-            "Superuser:".green().bold(),
+            "Developer:".green().bold(),
             "already present — password not changed".dimmed()
         );
     }
