@@ -1,7 +1,7 @@
 use aether_core::state::AppState;
 use axum::{
     Router,
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 
 use crate::api;
@@ -13,7 +13,7 @@ pub fn routes() -> Router<AppState> {
         .route("/logout", post(api::logout))
         .route("/me", get(api::me))
         .route("/orgs", get(api::list_orgs))
-        .route("/org", post(api::switch_org))
+        .route("/org", post(api::switch_org).delete(api::leave_org))
         .route("/oauth/{provider}/start", get(api::oauth_start))
         .route("/oauth/{provider}/callback", get(api::oauth_callback))
 }

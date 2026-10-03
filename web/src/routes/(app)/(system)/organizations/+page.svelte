@@ -3,7 +3,10 @@
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { Button } from '$lib/components/ui/button';
+	import CreateOrganizationModal from '$lib/org/CreateOrganizationModal.svelte';
 	import { orgStore } from '$lib/org/orgStore.svelte';
+
+	let creating = $state(false);
 
 	const how = $derived(
 		{
@@ -14,16 +17,19 @@
 	);
 </script>
 
-<ControlPanel crumbs={[{ label: 'Organizations' }]} />
+<ControlPanel crumbs={[{ label: 'Organizations' }]}>
+	{#snippet actions()}
+		<Button size="sm" onclick={() => (creating = true)}>Create organization</Button>
+	{/snippet}
+</ControlPanel>
 <div class="w-full space-y-4 px-4 py-4 md:px-6">
 	<p class="text-sm text-muted-foreground">{how}</p>
 
 	{#if orgStore.organizations.length === 0}
 		<div class="space-y-2 rounded-lg border border-dashed border-border p-8 text-center">
 			<p class="font-medium">No organizations yet</p>
-			<p class="text-sm text-muted-foreground">
-				Create one with <code>aether --create-org &lt;name&gt; --username … --email … --password …</code>.
-			</p>
+			<p class="text-sm text-muted-foreground">Create the first one to start installing apps.</p>
+			<Button onclick={() => (creating = true)}>Create organization</Button>
 		</div>
 	{:else}
 		<ul class="divide-y divide-border rounded-md border border-border bg-card shadow-xs">
@@ -60,3 +66,5 @@
 		</ul>
 	{/if}
 </div>
+
+<CreateOrganizationModal bind:open={creating} />

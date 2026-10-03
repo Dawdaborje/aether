@@ -11,7 +11,7 @@ use crate::access::{ip::IpPolicy, ratelimit::RateLimiter};
 use crate::config_manager::models::AetherConfig;
 use crate::media::{MediaError, build_media_backend};
 use crate::plugin_manager::runtime::PluginRuntime;
-use crate::websocket::NotificationHub;
+use crate::notifications::NotificationHub;
 
 #[derive(Debug, Error)]
 pub enum AppStateError {
@@ -20,6 +20,9 @@ pub enum AppStateError {
 
     #[error("failed to initialize media storage: {0}")]
     Media(#[from] MediaError),
+
+    #[error("failed to initialize the plugin runtime: {0}")]
+    PluginRuntime(#[from] crate::plugin_manager::runtime::PluginRuntimeError),
 }
 
 /// A long-lived database session already pointed at one database.
@@ -88,10 +91,8 @@ impl AppState {
         let ip_policy = IpPolicy::from_config(&config.audit);
         let visitor_limiter = RateLimiter::new(config.public.max_new_visitors_per_ip_per_minute);
         let request_limiter = RateLimiter::new(config.public.max_requests_per_ip_per_minute);
-        let plugin_runtime = PluginRuntime::with_capacity(
-            config.app_dir.clone(),
-            config.plugin_runtime.max_compiled,
-        );
+        let plugin_runtime =
+            PluginRuntime::new(config.app_dir.clone(), config.plugin_runtime.clone())?;
         let pool = SessionPool {
             connection: Arc::new(db),
             namespace: namespace.clone(),
@@ -119,6 +120,16 @@ impl AppState {
             self.media.clone(),
             organization,
         )?))
+    }
+
+    /// Send a notification in an organization: store it, then wake whoever is connected.
+    pub async fn notify(
+        &self,
+        org_database: &str,
+        new: crate::notifications::NewNotification,
+    ) -> Result<crate::notifications::Notification, crate::notifications::NotifyError> {
+        let db = self.org(org_database).await?;
+        crate::notifications::send(&db, &self.notifications, org_database, new).await
     }
 
     /// A new session that may be switched between databases freely. It costs about 25 ms

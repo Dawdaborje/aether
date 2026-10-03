@@ -87,9 +87,9 @@ pub struct Args {
     #[arg(long, action = clap::ArgAction::SetFalse)]
     pub no_scheduling: bool,
 
-    #[arg(short, long)]
-    /// Plugins to upgrade (e.g. `--upgrade-plugin plugin1 plugin2`)
-    pub upgrade_plugin: Option<Vec<String>>,
+    #[arg(short = 'u', long, value_name = "NAME[@VERSION]", num_args = 1.., requires = "org")]
+    /// Move an organization's installed plugins to the newest loaded version, or the one named (e.g. `--upgrade-plugin notes --org acme`)
+    pub upgrade_plugin: Option<Vec<PluginSpec>>,
 
     #[arg(long, value_name = "PATH", num_args = 1..)]
     /// Register plugin packages in the core catalog (e.g. `--load-plugin app_dir/plugins/partner`)
@@ -100,7 +100,7 @@ pub struct Args {
     pub install_plugin: Option<Vec<PluginSpec>>,
 
     #[arg(long, value_name = "DB_NAME")]
-    /// Organization database that `--install-plugin` and `--activate-theme` act on
+    /// Organization database that `--install-plugin`, `--upgrade-plugin` and `--activate-theme` act on
     pub org: Option<String>,
 
     #[arg(long, value_name = "THEME", requires = "org")]

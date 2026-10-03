@@ -11,7 +11,7 @@ pub use plugins::{
     PluginGraphError,
 };
 pub use sessions::{
-    create_session, find_session_by_token, revoke_session_by_token, set_session_org, CreatedSession,
+    create_session, find_session_by_token, revoke_session_by_token, set_session_org, LEFT_ORGANIZATION, CreatedSession,
     SessionError,
     ValidSession,
 };

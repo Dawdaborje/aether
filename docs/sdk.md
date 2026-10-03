@@ -1,42 +1,33 @@
-## SDK
+## SDKs
 
-Each language has a clean SDK that wraps the raw WIT bindings. Plugin authors never touch WIT directly.
+Plugin authors do not touch Extism or the kernel's JSON protocol: each language gets an SDK that
+turns the kernel's commands into ordinary functions. The SDKs live outside this repository, in
+`sdks/<language>` next to it.
 
-**Rust**
+| Language | State |
+|---|---|
+| Rust | Built: `sdks/rust` (see its README). |
+| Go, TypeScript, JavaScript, Python | Not started. |
+
+What the kernel offers a plugin today, and so what an SDK wraps:
+
+| Area | Commands | Capability |
+|---|---|---|
+| Data | `db::get`, `db::find`, `db::create`, `db::update`, `db::delete` | `db::query`, `db::mutate` |
+| Notifications | `notify::send` | `notify::send`, `notify::public` |
+| Live events | `events::emit` | `events::emit` |
+| Who is calling | `context::get` | none |
+
+There is no raw SurQL: a plugin names a model it was granted, and the kernel builds the query,
+scoped to the organization and audited. Cache, storage, email, SMS, HTTP, plugin-to-plugin,
+bridge and scheduler commands are reserved in the capability catalog but not implemented yet.
+
+Rust, for example:
+
 ```rust
-use aether_sdk::{Db, Email, Events, Plugins};
+use aether_sdk::prelude::*;
 
-Db::query::<Invoice>("invoice", "status = 'draft'")?;
-Email::send("user@example.com", "Hello", "Body")?;
-Events::emit("invoice.posted", &payload);
-Plugins::call::<_, StockLevel>("inventory", "check-stock", &req)?;
-```
-
-**Python**
-```python
-from aether import Db, Email, Events, Plugins
-
-Db.query("invoice", "status = 'draft'")
-Email.send("user@example.com", "Hello", "Body")
-Events.emit("invoice.posted", {"id": invoice_id})
-Plugins.call("inventory", "check-stock", {"invoice_id": id})
-```
-
-**TypeScript**
-```typescript
-import { Db, Email, Events, Plugins } from '@aether/sdk';
-
-await Db.query<Invoice>('invoice', "status = 'draft'");
-Email.send('user@example.com', 'Hello', 'Body');
-Events.emit('invoice.posted', { id: invoiceId });
-Plugins.call<CheckRequest, StockLevel>('inventory', 'check-stock', req);
-```
-
-**Go**
-```go
-import "github.com/aether/sdk-go/db"
-import "github.com/aether/sdk-go/events"
-
-db.Query[Invoice]("invoice", "status = 'draft'")
-events.Emit("invoice.posted", payload)
+Message::find().filter("channel", "general").limit(20).all()?;
+Notification::new("New message").link("/chat").to(Audience::Members).send()?;
+events::emit("typing", &json!({ "who": "ann" }))?;
 ```

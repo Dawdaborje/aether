@@ -51,9 +51,9 @@
 	<div
 		role="presentation"
 		onclick={(e) => (e.target as HTMLElement).closest('a') && (open = false)}
-		class="fixed inset-x-0 top-12 bottom-0 z-50 overflow-y-auto bg-background text-foreground"
+		class="fixed top-12 bottom-0 left-0 z-50 w-full max-w-4xl overflow-y-auto border-r border-border bg-background text-foreground shadow-2xl"
 	>
-		<div class="mx-auto flex w-full max-w-[90rem] flex-col gap-6 px-6 py-6 md:flex-row md:gap-10">
+		<div class="flex w-full flex-col gap-6 px-6 py-6 md:flex-row md:gap-8">
 			<div class="w-full shrink-0 space-y-5 md:w-64">
 				{#if orgStore.currentName}
 					<section>

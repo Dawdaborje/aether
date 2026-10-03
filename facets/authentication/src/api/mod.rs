@@ -10,4 +10,4 @@ pub use logout::logout;
 pub use me::me;
 pub use methods::methods;
 pub use oauth::{oauth_callback, oauth_start};
-pub use orgs::{list_orgs, switch_org};
+pub use orgs::{leave_org, list_orgs, switch_org};

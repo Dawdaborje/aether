@@ -2,7 +2,7 @@
 
 use aether_core::access::organizations::{SelectionMode, overview, user_organizations};
 use aether_core::state::AppState;
-use aether_orm::set_session_org;
+use aether_orm::{LEFT_ORGANIZATION, set_session_org};
 use axum::{
     Json,
     extract::State,
@@ -83,4 +83,34 @@ pub async fn switch_org(
         .map_err(|error| database_error("saving the organization", error))?;
     log::info!("organization switched to `{}`", chosen.db_name);
     Ok(Json(json!({ "ok": true, "org": chosen.db_name, "name": chosen.name })))
+}
+
+/// `DELETE /api/auth/org`: leave the organization you are in, back to the Organizations
+/// page. For developers only: everyone else belongs to their organizations and is always
+/// in one. Where the address decides the organization there is nothing to leave.
+pub async fn leave_org(
+    State(state): State<AppState>,
+    AuthSession(session): AuthSession,
+) -> Result<Json<JsonValue>, ApiError> {
+    if !session.user.is_super_user {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "only developers can leave an organization" })),
+        ));
+    }
+    if SelectionMode::of(&state.config.tenancy.org_resolution) == SelectionMode::Address {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "the organization is chosen by the address, not by the session" })),
+        ));
+    }
+    let core = state
+        .core()
+        .await
+        .map_err(|error| database_error("core selection", error))?;
+    set_session_org(&core, &session.session_id, LEFT_ORGANIZATION)
+        .await
+        .map_err(|error| database_error("leaving the organization", error))?;
+    log::info!("developer left their organization");
+    Ok(Json(json!({ "ok": true })))
 }

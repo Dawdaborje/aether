@@ -19,6 +19,8 @@ pub async fn methods(
     let session_org = session
         .as_ref()
         .and_then(|s| s.org_database_id.as_ref())
+        // Empty means a developer who left their organization: none.
+        .filter(|db| !db.is_empty())
         .map(|db| OrgRef {
             slug: db.trim_start_matches("org_").to_string(),
             db_name: db.clone(),

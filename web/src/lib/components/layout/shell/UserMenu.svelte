@@ -22,6 +22,11 @@
 			.join('') || '?'
 	);
 
+	async function leaveOrganization() {
+		await orgStore.leave();
+		if (!orgStore.error) await goto(resolve('/organizations'));
+	}
+
 	async function signOut() {
 		await authSession.signOut();
 		await goto(resolve('/login'));
@@ -79,6 +84,11 @@
 					</DropdownMenu.RadioItem>
 				</DropdownMenu.RadioGroup>
 			</DropdownMenu.Group>
+			{#if orgStore.canLeave}
+				<DropdownMenu.Item onclick={leaveOrganization}>
+					Leave organization{orgStore.currentName ? ` (${orgStore.currentName})` : ''}
+				</DropdownMenu.Item>
+			{/if}
 			<DropdownMenu.Separator />
 			<DropdownMenu.Item onclick={signOut}>Sign out</DropdownMenu.Item>
 		</DropdownMenu.Content>

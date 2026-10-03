@@ -59,6 +59,10 @@ pub struct PluginDbDefinition {
     pub kind: Option<String>,
     pub artifact_path: Option<String>,
     pub artifact_hash: Option<String>,
+    /// The folder under `plugins/<name>/` holding this version's file index; none for a
+    /// plugin stored in the older layout.
+    #[serde(default)]
+    pub revision: Option<String>,
     pub is_builtin: bool,
     pub is_active: bool,
     pub date_created: Datetime,

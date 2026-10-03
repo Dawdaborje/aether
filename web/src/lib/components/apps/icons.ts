@@ -26,6 +26,7 @@ import ShieldIcon from '@lucide/svelte/icons/shield';
 import BoxesIcon from '@lucide/svelte/icons/boxes';
 import ReceiptIcon from '@lucide/svelte/icons/receipt';
 import BanknoteIcon from '@lucide/svelte/icons/banknote';
+import PlugIcon from '@lucide/svelte/icons/plug';
 import AppWindowIcon from '@lucide/svelte/icons/app-window';
 
 /**
@@ -60,6 +61,7 @@ export const appIcons: Record<string, Component<{ class?: string }>> = {
 		'boxes': BoxesIcon,
 		'receipt': ReceiptIcon,
 		'banknote': BanknoteIcon,
+		'plug': PlugIcon,
 		'app-window': AppWindowIcon
 };
 

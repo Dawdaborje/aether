@@ -7,9 +7,12 @@
 	import { orgStore } from '$lib/org/orgStore.svelte';
 	import type { ThemeNav } from '$lib/theme/types';
 	import { activeApp, isActive, navHref } from '../nav';
+	import { goto } from '$app/navigation';
+	import { resolve } from '$app/paths';
 	import { appsStore } from '$lib/apps/appsStore.svelte';
 	import type { NavItem } from '$lib/theme/types';
 	import HomeMenu from './HomeMenu.svelte';
+	import NotificationBell from '$lib/notifications/NotificationBell.svelte';
 	import UserMenu from './UserMenu.svelte';
 
 	let { nav }: { nav: ThemeNav } = $props();
@@ -31,6 +34,11 @@
 	$effect(() => {
 		if (authSession.isUser && appsStore.apps === null) void appsStore.load();
 	});
+	async function leaveOrganization() {
+		await orgStore.leave();
+		if (!orgStore.error) await goto(resolve('/organizations'));
+	}
+
 	const trigger =
 		'flex h-8 items-center gap-1 rounded-md px-2.5 text-[13px] font-medium text-sidebar-foreground/80 outline-none transition hover:bg-white/10 hover:text-white data-[state=open]:bg-white/10 data-[state=open]:text-white';
 </script>
@@ -98,7 +106,7 @@
 					<a
 						href={navHref(item.href)}
 						aria-current={isActive(item, page.url.pathname) ? 'page' : undefined}
-						class="{trigger} aria-[current=page]:bg-white/10 aria-[current=page]:text-white"
+						class="{trigger} aria-[current=page]:bg-white/10 aria-[current=page]:text-white aria-[current=page]:shadow-[inset_0_-2px_0_0_var(--highlight)]"
 					>
 						{item.label}
 					</a>
@@ -112,22 +120,33 @@
 	<div class="flex items-center gap-2 pr-1">
 		{#if authSession.isDeveloper}
 			<span
-				class="hidden rounded-full bg-white/10 px-2.5 py-0.5 text-[10px] font-semibold tracking-[0.14em] text-white/80 uppercase ring-1 ring-white/15 ring-inset sm:inline"
+				class="hidden rounded-full bg-highlight/15 px-2.5 py-0.5 text-[10px] font-semibold tracking-[0.14em] text-highlight uppercase ring-1 ring-highlight/30 ring-inset sm:inline"
 				>Developer</span
 			>
 		{/if}
+		{#if authSession.isUser}
+			<NotificationBell />
+		{/if}
 		{#if orgStore.currentName}
-			<button
-				type="button"
-				disabled={!orgStore.canSwitch}
-				onclick={() => orgStore.openSwitcher()}
-				aria-label="Switch organization"
-				class="flex h-8 items-center gap-1.5 rounded-md px-2.5 text-[13px] text-sidebar-foreground/85 transition enabled:hover:bg-white/10 enabled:hover:text-white disabled:cursor-default"
-			>
-				<span class="size-1.5 rounded-full bg-emerald-400"></span>
-				{orgStore.currentName}
-				{#if orgStore.canSwitch}<ChevronDownIcon class="size-3 opacity-60" />{/if}
-			</button>
+			<DropdownMenu.Root>
+				<DropdownMenu.Trigger
+					disabled={!orgStore.canSwitch && !orgStore.canLeave}
+					aria-label="Organization"
+					class="flex h-8 items-center gap-1.5 rounded-md px-2.5 text-[13px] text-sidebar-foreground/85 outline-none transition enabled:cursor-pointer enabled:hover:bg-white/10 enabled:hover:text-white disabled:cursor-default data-[state=open]:bg-white/10"
+				>
+					<span class="size-1.5 rounded-full bg-highlight"></span>
+					{orgStore.currentName}
+					{#if orgStore.canSwitch || orgStore.canLeave}<ChevronDownIcon class="size-3 opacity-60" />{/if}
+				</DropdownMenu.Trigger>
+				<DropdownMenu.Content align="end" class="min-w-52">
+					{#if orgStore.canSwitch}
+						<DropdownMenu.Item onclick={() => orgStore.openSwitcher()}>Switch organization</DropdownMenu.Item>
+					{/if}
+					{#if orgStore.canLeave}
+						<DropdownMenu.Item onclick={leaveOrganization}>Leave organization</DropdownMenu.Item>
+					{/if}
+				</DropdownMenu.Content>
+			</DropdownMenu.Root>
 		{/if}
 		<UserMenu tone="on-primary" />
 	</div>

@@ -53,7 +53,8 @@ public_access_models = [{ name = "guestbook", permissions = ["write"] }]
   happens before any WASM is compiled.
 - Writing needs both a `public_capabilities` entry (`db::mutate`) and a model
   entry with `write`. A model listed with `write` is writable by anyone.
-- `db::surql` (raw SurQL) is never available to visitors.
+- There is no raw SurQL for anyone: plugins reach the database only through the
+  structured `db::*` commands, on the models they were granted.
 
 ## Visitors
 
@@ -97,16 +98,16 @@ Written to the organization database, append-only, by the kernel only:
 |---|---|
 | `page_visits` | actor, plugin, route (the page as declared, e.g. `/chat/{channel}`), path (what was requested, e.g. `/chat/general`), status (including 401/403/404/429 refusals), IP, user agent |
 | `plugin_calls` | actor, plugin, function, status, IP |
-| `data_access` | actor, plugin, function, model, table, operation (`read`/`create`/`update`/`delete`/`raw`), **record ids**, count, IP |
+| `data_access` | actor, plugin, function, model, table, operation (`read`/`create`/`update`/`delete`), **record ids**, count, IP |
 
 Rows for one request share a `request_id`. Every `db::*` command writes its
 `data_access` row in the same transaction as the work, so there is never an
 access without a record. **If an audit row cannot be written, the request fails**
-and the change is rolled back. Raw SurQL is recorded with its statement text (the
-records it touched are not known). `db::find` returns at most 1000 rows.
+and the change is rolled back. `db::find` returns at most 1000 rows.
 
-Plugins cannot map a model onto the audit tables (or other kernel tables), and
-raw SurQL that mentions them is rejected.
+Plugins cannot map a model onto the audit tables (or other kernel tables). Field and
+order names must be plain identifiers and values are always bound as values, so a
+plugin cannot shape a query beyond what the structured commands allow.
 
 ### Configuration (`aether.toml`)
 

@@ -2,7 +2,6 @@ use crate::cache::CacheConfig;
 use local_storage::LocalStorageConfig;
 use s3_storage::S3StorageConfig;
 use crate::plugin_manager::models::plugin_def::PluginDefinition;
-use crate::plugin_manager::runtime::DEFAULT_MAX_COMPILED_PLUGINS;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -210,6 +209,75 @@ impl PublicConfig {
     }
 }
 
+/// `[notifications]` in `aether.toml`: the live event stream and stored notifications.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct NotificationsConfig {
+    /// Open event streams one person (or one anonymous address) may hold at once;
+    /// each browser tab holds one.
+    #[serde(default = "default_max_streams")]
+    pub max_streams_per_actor: u32,
+    /// Seconds between keep-alive comments on an idle stream. Keeps proxies from
+    /// closing it.
+    #[serde(default = "default_keepalive_secs")]
+    pub keepalive_secs: u64,
+    /// Seconds a stream lives before the server closes it and the browser
+    /// reconnects. The reconnect checks the session again, so a logged-out
+    /// browser stops receiving.
+    #[serde(default = "default_stream_lifetime_secs")]
+    pub stream_lifetime_secs: u64,
+    /// Most notifications replayed to a browser that reconnects.
+    #[serde(default = "default_replay_limit")]
+    pub replay_limit: u32,
+    /// Delete notifications older than this many days; unset keeps them until
+    /// they expire.
+    pub retention_days: Option<u32>,
+}
+
+fn default_max_streams() -> u32 {
+    8
+}
+
+fn default_keepalive_secs() -> u64 {
+    25
+}
+
+fn default_stream_lifetime_secs() -> u64 {
+    900
+}
+
+fn default_replay_limit() -> u32 {
+    100
+}
+
+impl Default for NotificationsConfig {
+    fn default() -> Self {
+        Self {
+            max_streams_per_actor: default_max_streams(),
+            keepalive_secs: default_keepalive_secs(),
+            stream_lifetime_secs: default_stream_lifetime_secs(),
+            replay_limit: default_replay_limit(),
+            retention_days: None,
+        }
+    }
+}
+
+impl NotificationsConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.max_streams_per_actor == 0 {
+            return Err("notifications.max_streams_per_actor must be at least 1".into());
+        }
+        if self.keepalive_secs == 0 || self.stream_lifetime_secs == 0 {
+            return Err(
+                "notifications.keepalive_secs and stream_lifetime_secs must be at least 1".into(),
+            );
+        }
+        if self.replay_limit == 0 {
+            return Err("notifications.replay_limit must be at least 1".into());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize, Default, Clone)]
 pub struct CoreConfig {
     pub is_development_mode: bool,
@@ -260,23 +328,185 @@ impl Default for TenancyConfig {
     }
 }
 
-/// In-process Extism compile cache. Only `CompiledPlugin` objects are retained;
-/// a fresh `Plugin` instance is created for every call.
+/// `[plugin_runtime]` in `aether.toml`: how many compiled plugins are kept in memory
+/// and how they are compiled. Every size is in megabytes.
+///
+/// Plugins compile on first use, never at start-up. Compiled modules are kept in a
+/// memory cache bounded by `max_compiled_memory_mb`, least recently used first out.
+/// `compile_cache` adds an on-disk cache of compiled code so a restart, or a plugin
+/// evicted from memory, loads without compiling again.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct PluginRuntimeConfig {
-    #[serde(default = "default_max_compiled_plugins")]
-    pub max_compiled: u64,
+    /// Memory budget for compiled plugins kept ready. A plugin whose estimated size
+    /// alone exceeds it is refused.
+    #[serde(default = "default_max_compiled_memory_mb")]
+    pub max_compiled_memory_mb: u64,
+    /// Largest `.wasm` accepted.
+    #[serde(default = "default_max_wasm_size_mb")]
+    pub max_wasm_size_mb: u64,
+    /// How many times larger a compiled module is in memory than its `.wasm`. The
+    /// runtime cannot measure this, so a plugin's size is estimated as
+    /// `wasm size × factor + engine_overhead_mb`.
+    #[serde(default = "default_compiled_size_factor")]
+    pub compiled_size_factor: f64,
+    /// Fixed memory every compiled plugin costs on top (its own wasmtime engine).
+    #[serde(default = "default_engine_overhead_mb")]
+    pub engine_overhead_mb: f64,
+    /// Compilations that may run at once. Each can use several times the plugin's size
+    /// while it runs.
+    #[serde(default = "default_max_concurrent_compiles")]
+    pub max_concurrent_compiles: u32,
+    /// Compilations that may wait for a turn; beyond this callers are told to retry.
+    #[serde(default = "default_compile_queue_limit")]
+    pub compile_queue_limit: u32,
+    /// Seconds a caller waits for a plugin to become ready.
+    #[serde(default = "default_compile_timeout_secs")]
+    pub compile_timeout_secs: u64,
+    /// Memory limit of one running call.
+    #[serde(default = "default_instance_memory_mb")]
+    pub instance_memory_mb: u32,
+    /// Plugin calls that may run at once.
+    #[serde(default = "default_max_concurrent_calls")]
+    pub max_concurrent_calls: u32,
+    #[serde(default)]
+    pub compile_cache: CompileCacheConfig,
 }
 
-fn default_max_compiled_plugins() -> u64 {
-    DEFAULT_MAX_COMPILED_PLUGINS
+/// `[plugin_runtime.compile_cache]`: compiled code kept on disk (wasmtime's compilation
+/// cache). On by default, under `app_dir`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompileCacheConfig {
+    #[serde(default = "default_compile_cache_enabled")]
+    pub enabled: bool,
+    /// Where compiled code is kept; relative paths are inside `app_dir`.
+    #[serde(default = "default_compile_cache_directory")]
+    pub directory: PathBuf,
+    /// Disk budget; the oldest entries are removed past it.
+    #[serde(default = "default_compile_cache_max_size_mb")]
+    pub max_size_mb: u64,
+}
+
+fn default_max_compiled_memory_mb() -> u64 {
+    256
+}
+fn default_max_wasm_size_mb() -> u64 {
+    24
+}
+/// Measured at 9 to 12 times the `.wasm` on dense synthetic code (run the `calibrate`
+/// test in `plugin_manager/runtime.rs` with a real plugin to refine it); real code is
+/// usually less dense, so 8 leans safe without wasting the budget.
+fn default_compiled_size_factor() -> f64 {
+    8.0
+}
+fn default_engine_overhead_mb() -> f64 {
+    2.0
+}
+fn default_max_concurrent_compiles() -> u32 {
+    1
+}
+fn default_compile_queue_limit() -> u32 {
+    32
+}
+fn default_compile_timeout_secs() -> u64 {
+    60
+}
+fn default_instance_memory_mb() -> u32 {
+    16
+}
+fn default_max_concurrent_calls() -> u32 {
+    64
+}
+fn default_compile_cache_enabled() -> bool {
+    true
+}
+fn default_compile_cache_directory() -> PathBuf {
+    PathBuf::from("cache/compiled")
+}
+fn default_compile_cache_max_size_mb() -> u64 {
+    1024
+}
+
+impl Default for CompileCacheConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_compile_cache_enabled(),
+            directory: default_compile_cache_directory(),
+            max_size_mb: default_compile_cache_max_size_mb(),
+        }
+    }
 }
 
 impl Default for PluginRuntimeConfig {
     fn default() -> Self {
         Self {
-            max_compiled: default_max_compiled_plugins(),
+            max_compiled_memory_mb: default_max_compiled_memory_mb(),
+            max_wasm_size_mb: default_max_wasm_size_mb(),
+            compiled_size_factor: default_compiled_size_factor(),
+            engine_overhead_mb: default_engine_overhead_mb(),
+            max_concurrent_compiles: default_max_concurrent_compiles(),
+            compile_queue_limit: default_compile_queue_limit(),
+            compile_timeout_secs: default_compile_timeout_secs(),
+            instance_memory_mb: default_instance_memory_mb(),
+            max_concurrent_calls: default_max_concurrent_calls(),
+            compile_cache: CompileCacheConfig::default(),
         }
+    }
+}
+
+impl PluginRuntimeConfig {
+    /// Smallest memory budget: below this nothing useful fits.
+    pub const MIN_BUDGET_MB: u64 = 16;
+
+    /// The estimated memory of a compiled plugin whose `.wasm` has `wasm_bytes` bytes.
+    pub fn estimated_compiled_mb(&self, wasm_bytes: u64) -> f64 {
+        wasm_bytes as f64 / (1024.0 * 1024.0) * self.compiled_size_factor + self.engine_overhead_mb
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.max_compiled_memory_mb < Self::MIN_BUDGET_MB {
+            return Err(format!(
+                "plugin_runtime.max_compiled_memory_mb must be at least {}",
+                Self::MIN_BUDGET_MB
+            ));
+        }
+        if self.max_wasm_size_mb == 0 {
+            return Err("plugin_runtime.max_wasm_size_mb must be at least 1".into());
+        }
+        if !self.compiled_size_factor.is_finite() || self.compiled_size_factor < 1.0 {
+            return Err("plugin_runtime.compiled_size_factor must be at least 1".into());
+        }
+        if !self.engine_overhead_mb.is_finite() || self.engine_overhead_mb < 0.0 {
+            return Err("plugin_runtime.engine_overhead_mb cannot be negative".into());
+        }
+        let largest = self.estimated_compiled_mb(self.max_wasm_size_mb * 1024 * 1024);
+        if largest > self.max_compiled_memory_mb as f64 {
+            return Err(format!(
+                "a plugin of max_wasm_size_mb ({}) would be estimated at {largest:.0} MB compiled, more than max_compiled_memory_mb ({}); raise the budget or lower max_wasm_size_mb",
+                self.max_wasm_size_mb, self.max_compiled_memory_mb
+            ));
+        }
+        if self.max_concurrent_compiles == 0
+            || self.compile_queue_limit == 0
+            || self.compile_timeout_secs == 0
+            || self.max_concurrent_calls == 0
+        {
+            return Err(
+                "plugin_runtime.max_concurrent_compiles, compile_queue_limit, compile_timeout_secs and max_concurrent_calls must be at least 1"
+                    .into(),
+            );
+        }
+        if !(1..=4096).contains(&self.instance_memory_mb) {
+            return Err("plugin_runtime.instance_memory_mb must be between 1 and 4096".into());
+        }
+        if self.compile_cache.enabled && self.compile_cache.max_size_mb < Self::MIN_BUDGET_MB {
+            return Err(format!(
+                "plugin_runtime.compile_cache.max_size_mb must be at least {}",
+                Self::MIN_BUDGET_MB
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -300,6 +530,8 @@ pub struct AetherConfig {
     pub audit: AuditConfig,
     #[serde(default)]
     pub public: PublicConfig,
+    #[serde(default)]
+    pub notifications: NotificationsConfig,
 }
 
 fn default_media_config() -> MediaConfig {
@@ -323,6 +555,7 @@ impl Default for AetherConfig {
             tenancy: TenancyConfig::default(),
             audit: AuditConfig::default(),
             public: PublicConfig::default(),
+            notifications: NotificationsConfig::default(),
         }
     }
 }

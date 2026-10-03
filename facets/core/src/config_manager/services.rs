@@ -1,7 +1,7 @@
 use crate::cache::{CacheBackendKind, CacheConfig, RedisCacheConfig};
 use crate::config_manager::errors::{ConfigError, MissingSetting};
 use crate::config_manager::models::{
-    AetherConfig, AuditConfig, CoreConfig, DatabaseConfig, MediaBackendKind, MediaConfig, OrgResolutionMode,
+    AetherConfig, AuditConfig, CoreConfig, DatabaseConfig, MediaBackendKind, MediaConfig, NotificationsConfig, OrgResolutionMode, PluginRuntimeConfig,
     PublicConfig, ServerConfig, TenancyConfig,
 };
 use crate::plugin_manager::models::plugin_def::PluginDefinition;
@@ -468,6 +468,24 @@ pub fn load_config(
         expected: message,
     })?;
 
+    let notifications: NotificationsConfig = match optional_table(&value, "notifications")? {
+        Some(table) => table.clone().try_into()?,
+        None => NotificationsConfig::default(),
+    };
+    notifications.validate().map_err(|message| ConfigError::InvalidType {
+        field: "notifications".to_string(),
+        expected: message,
+    })?;
+
+    let plugin_runtime: PluginRuntimeConfig = match optional_table(&value, "plugin_runtime")? {
+        Some(table) => table.clone().try_into()?,
+        None => PluginRuntimeConfig::default(),
+    };
+    plugin_runtime.validate().map_err(|message| ConfigError::InvalidType {
+        field: "plugin_runtime".to_string(),
+        expected: message,
+    })?;
+
     let server = match optional_table(&value, "server")? {
         Some(table) => Some(build_server_conf(table)?),
         None => Some(ServerConfig::default()),
@@ -505,6 +523,8 @@ pub fn load_config(
         media,
         audit,
         public,
+        notifications,
+        plugin_runtime,
         ..Default::default()
     })
 }
@@ -558,6 +578,41 @@ mod tests {
         assert_eq!(s3.bucket, "b");
         assert!(s3.allow_http);
         Ok(())
+    }
+
+    #[test]
+    fn plugin_runtime_defaults_to_a_memory_budget_with_the_disk_cache_on() -> Result<(), Box<dyn std::error::Error>> {
+        let config = load(BASE)?;
+        assert_eq!(config.plugin_runtime.max_compiled_memory_mb, 256);
+        assert!(config.plugin_runtime.compile_cache.enabled);
+        assert_eq!(config.plugin_runtime.compile_cache.directory, std::path::PathBuf::from("cache/compiled"));
+        Ok(())
+    }
+
+    #[test]
+    fn plugin_runtime_settings_are_read_from_the_file() -> Result<(), Box<dyn std::error::Error>> {
+        let config = load(&format!(
+            "{BASE}[plugin_runtime]\nmax_compiled_memory_mb = 512\nmax_wasm_size_mb = 16\nmax_concurrent_compiles = 2\n\
+             [plugin_runtime.compile_cache]\nenabled = false\nmax_size_mb = 2048\n"
+        ))?;
+        assert_eq!(config.plugin_runtime.max_compiled_memory_mb, 512);
+        assert_eq!(config.plugin_runtime.max_wasm_size_mb, 16);
+        assert_eq!(config.plugin_runtime.max_concurrent_compiles, 2);
+        assert!(!config.plugin_runtime.compile_cache.enabled);
+        assert_eq!(config.plugin_runtime.compile_cache.max_size_mb, 2048);
+        Ok(())
+    }
+
+    #[test]
+    fn plugin_runtime_rejects_unknown_and_unusable_settings() {
+        // The old entry-count setting was never read; it must not be silently ignored.
+        assert!(load_typed(&format!("{BASE}[plugin_runtime]\nmax_compiled = 8\n")).is_err());
+        assert!(load_typed(&format!("{BASE}[plugin_runtime]\nmax_compiled_memory_mb = 4\n")).is_err());
+        // A budget too small for the biggest wasm that would be accepted.
+        assert!(load_typed(&format!(
+            "{BASE}[plugin_runtime]\nmax_compiled_memory_mb = 64\nmax_wasm_size_mb = 24\n"
+        ))
+        .is_err());
     }
 
     /// Like [`load`], but keeps the typed error.

@@ -5,34 +5,76 @@
 	import { Label } from '$lib/components/ui/label';
 	import { Badge } from '$lib/components/ui/badge';
 	import { NativeSelect } from '$lib/components/ui/native-select';
+	import { getFormState } from '$lib/pages/pageContext.svelte';
 
 	let { node }: { node: PageNode } = $props();
 
 	const fieldType = $derived(
 		(typeof node.fieldType === 'string' ? node.fieldType : 'char') as FieldType
 	);
+	const name = $derived(typeof node.name === 'string' ? node.name : '');
 	const label = $derived(String(node.label ?? node.name ?? 'Field'));
-	const options = $derived(Array.isArray(node.options) ? (node.options as string[]) : []);
-	let value = $state('');
+	const required = $derived(node.required === true);
+	const options = $derived(
+		Array.isArray(node.options)
+			? (node.options as string[])
+			: typeof node.options === 'string'
+				? node.options.split(',').map((option) => option.trim()).filter(Boolean)
+				: []
+	);
+
+	// Inside a form the field edits the form's values; elsewhere it only holds its own.
+	const form = getFormState();
+	let own = $state<unknown>('');
+	const id = $props.id();
+
+	const value = {
+		get current(): unknown {
+			return form && name ? (form.values[name] ?? '') : own;
+		},
+		set current(next: unknown) {
+			if (form && name) form.values[name] = next;
+			else own = next;
+		}
+	};
 </script>
 
 <div class="space-y-1.5">
-	{#if node.type !== 'badge' && node.type !== 'avatar'}
-		<Label class="text-xs font-medium text-muted-foreground">{label}</Label>
+	{#if node.type !== 'badge' && node.type !== 'avatar' && fieldType !== 'boolean'}
+		<Label for={id} class="text-xs font-medium text-muted-foreground">
+			{label}{#if required}<span class="text-destructive"> *</span>{/if}
+		</Label>
 	{/if}
 
 	{#if fieldType === 'text'}
-		<Textarea rows={3} placeholder={label} bind:value />
+		<Textarea
+			{id}
+			rows={3}
+			{required}
+			placeholder={label}
+			value={String(value.current)}
+			oninput={(event) => (value.current = event.currentTarget.value)}
+		/>
 	{:else if fieldType === 'boolean'}
 		<label class="flex items-center gap-2 text-sm">
-			<input type="checkbox" class="size-4 rounded border-input" />
+			<input
+				type="checkbox"
+				class="size-4 rounded border-input"
+				checked={value.current === true}
+				onchange={(event) => (value.current = event.currentTarget.checked)}
+			/>
 			{label}
 		</label>
 	{:else if fieldType === 'selection'}
-		<NativeSelect>
+		<NativeSelect
+			{id}
+			{required}
+			value={String(value.current)}
+			onchange={(event) => (value.current = event.currentTarget.value)}
+		>
 			<option value="">Select…</option>
-			{#each options as opt}
-				<option value={opt}>{opt}</option>
+			{#each options as option (option)}
+				<option value={option}>{option}</option>
 			{/each}
 		</NativeSelect>
 	{:else if fieldType === 'badge'}
@@ -42,16 +84,24 @@
 			<div class="h-full w-2/3 bg-primary"></div>
 		</div>
 	{:else}
+		{@const numeric = fieldType === 'integer' || fieldType === 'float' || fieldType === 'currency'}
 		<Input
-			type={fieldType === 'integer' || fieldType === 'float' || fieldType === 'currency'
+			{id}
+			{required}
+			type={numeric
 				? 'number'
 				: fieldType === 'date'
 					? 'date'
 					: fieldType === 'datetime'
 						? 'datetime-local'
 						: 'text'}
+			step={fieldType === 'float' || fieldType === 'currency' ? 'any' : undefined}
 			placeholder={label}
-			bind:value
+			value={String(value.current)}
+			oninput={(event) => {
+				const raw = event.currentTarget.value;
+				value.current = numeric ? (raw === '' ? '' : Number(raw)) : raw;
+			}}
 		/>
 	{/if}
 </div>

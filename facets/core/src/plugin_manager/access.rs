@@ -3,8 +3,7 @@
 //! * A logged-in user gets the plugin's `access_models` and `capabilities`.
 //! * An anonymous visitor gets far less, and only what the plugin declares:
 //!   read access to the models its public pages show, plus whatever
-//!   `public_access_models` and `public_capabilities` list. Raw SurQL is never
-//!   available to visitors.
+//!   `public_access_models` and `public_capabilities` list.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -87,7 +86,6 @@ pub fn anonymous_capabilities(manifest: &PluginManifest, has_readable_models: bo
         .public_capabilities
         .iter()
         .filter(|capability| plugin.capabilities.contains(capability))
-        .filter(|capability| capability.as_str() != "db::surql")
         .cloned()
         .collect();
     if has_readable_models && plugin.capabilities.iter().any(|c| c == "db::query") {
@@ -105,13 +103,13 @@ mod tests {
             r#"
 [plugin]
 name = "chat"
-capabilities = ["db::query", "db::mutate", "db::surql"]
+capabilities = ["db::query", "db::mutate"]
 access_models = [
   { name = "message", permissions = ["read", "write"] },
   { name = "channel", permissions = ["read", "write"] },
   { name = "secret", permissions = ["read"] },
 ]
-public_capabilities = ["db::mutate", "db::surql", "events::emit"]
+public_capabilities = ["db::mutate", "events::emit"]
 public_access_models = [{ name = "guestbook", permissions = ["write"] }]
 
 [[models]]
@@ -170,15 +168,25 @@ public_access_models = [{ name = "post", permissions = ["write"] }]
     }
 
     #[test]
-    fn anonymous_capabilities_are_the_declared_subset_and_never_raw_surql()
+    fn anonymous_capabilities_are_the_declared_subset()
     -> Result<(), Box<dyn std::error::Error>> {
         let caps = anonymous_capabilities(&manifest()?, true);
         assert!(caps.contains("db::mutate"));
         assert!(caps.contains("db::query"), "implied by readable public data");
-        assert!(!caps.contains("db::surql"));
         assert!(!caps.contains("events::emit"), "the plugin does not hold it");
 
         assert!(!anonymous_capabilities(&manifest()?, false).contains("db::query"));
         Ok(())
+    }
+
+    #[test]
+    fn a_manifest_that_still_asks_for_raw_surql_is_refused() {
+        for field in ["capabilities", "public_capabilities"] {
+            let text = format!("[plugin]\nname = \"old\"\n{field} = [\"db::query\", \"db::surql\"]\n");
+            assert!(
+                matches!(PluginManifest::parse(&text), Err(super::super::models::plugin_def::ManifestError::RawSurql(f)) if f == field),
+                "{field}"
+            );
+        }
     }
 }

@@ -91,6 +91,8 @@ pub async fn run_server(
     }
 
     let retention_task = aether_core::access::audit::spawn_retention_task(&state);
+    let notification_cleanup = aether_core::notifications::spawn_cleanup(&state);
+    let notification_hub = state.notifications.clone();
 
     let app = Router::new()
         .merge(core_routes())
@@ -134,6 +136,8 @@ pub async fn run_server(
     tokio::spawn(async move {
         wait_for_shutdown_signal().await;
         log::info!("Shutdown requested: no longer accepting connections, draining in-flight requests");
+        // Event streams would otherwise hold the server up until the grace period ends.
+        notification_hub.close_all();
         // Ignored: there is no receiver left only if the server already ended.
         let _ = shutdown_tx.send(true);
     });
@@ -168,6 +172,7 @@ pub async fn run_server(
     if let Some(task) = retention_task {
         task.abort();
     }
+    notification_cleanup.abort();
     // End the database session cleanly. The connection itself closes when the
     // process exits, which follows immediately.
     match db_conn.invalidate().await {

@@ -1,12 +1,17 @@
 {
   "code": "db",
   "name": "Database",
-  "description": "SurrealDB access mediated by the kernel. Plugins never open a DB connection or supply free-form SurQL by default; the kernel scopes every call to the active org and the plugin's allowed models.",
+  "description": "SurrealDB access mediated by the kernel. Plugins never open a DB connection or send queries of their own; the kernel scopes every call to the active org and the plugin's allowed models.",
   "capabilities": [
     {
       "code": "query",
       "name": "Query",
-      "description": "Structured reads: get / find by model name. The kernel builds parameterized SurQL — plugins do not send raw queries."
+      "description": "Structured reads: get / find by model name. The kernel builds parameterized queries, and only for models the plugin was granted."
+    },
+    {
+      "code": "mutate",
+      "name": "Mutate",
+      "description": "Structured writes: create, update and delete by model name. This is the capability the kernel checks for db::create, db::update and db::delete."
     },
     {
       "code": "create",

@@ -165,6 +165,11 @@ pub async fn revoke_session_by_token(
 }
 
 /// Remember which organization a session is working in.
+/// The `org_database_id` of a session whose developer deliberately left their organization:
+/// not "unset" (which means nothing was chosen yet), so it is not filled in again from the
+/// developer's only membership.
+pub const LEFT_ORGANIZATION: &str = "";
+
 pub async fn set_session_org(
     db: &Surreal<Client>,
     session_id: &RecordId,

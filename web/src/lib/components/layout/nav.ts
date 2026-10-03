@@ -20,6 +20,7 @@ export const deskNav: ThemeNav = {
 	header: 'Aether',
 	items: [
 		{ label: 'Apps', href: '/apps', icon: 'layout-dashboard' },
+		{ label: 'Bridges', href: '/bridges', icon: 'plug' },
 		{ label: 'Organizations', href: '/organizations', icon: 'building-2' },
 		{ label: 'Settings', href: '/settings', icon: 'settings' },
 		{ label: 'Developer tools', href: '/studio', icon: 'wrench' }

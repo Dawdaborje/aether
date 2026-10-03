@@ -1,0 +1,17 @@
+{
+  "code": "notify",
+  "name": "Notifications",
+  "description": "Tell people about something through the kernel: stored in the organization, pushed to whoever is connected.",
+  "capabilities": [
+    {
+      "code": "send",
+      "name": "Send Notification",
+      "description": "Send a notification to the organization's members, to specific users or visitors, or back to the caller. Maps to kernel command notify::send."
+    },
+    {
+      "code": "public",
+      "name": "Notify Everyone",
+      "description": "Also send to everyone connected, anonymous visitors included. Needed, besides notify::send, for the `everyone` audience."
+    }
+  ]
+}

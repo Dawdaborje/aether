@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::access::audit::AuditContext;
-use crate::websocket::NotificationHub;
+use crate::notifications::NotificationHub;
 
 /// Per-model access granted to a plugin (from `access_models` / plugin.toml).
 #[derive(Debug, Clone, Serialize, Deserialize)]

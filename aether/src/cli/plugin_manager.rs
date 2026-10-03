@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use aether_core::plugin_manager::catalog::{
-    self, CatalogError, InstallReport, LoadedPlugin, PluginSpec,
+    self, CatalogError, InstallReport, LoadedPlugin, PluginSpec, UpgradeReport,
 };
 use surrealdb::{Surreal, engine::remote::ws::Client};
 
@@ -32,6 +32,26 @@ pub async fn install_plugins(
     catalog::install_plugins(db, namespace, core_database, org_database, specs).await
 }
 
+/// Move an organization's plugins to another catalog version.
+pub async fn upgrade_plugins(
+    db: &Surreal<Client>,
+    namespace: &str,
+    core_database: &str,
+    org_database: &str,
+    specs: &[PluginSpec],
+) -> Result<UpgradeReport, CatalogError> {
+    catalog::upgrade_plugins(db, namespace, core_database, org_database, specs).await
+}
+
+pub fn print_upgrade_summary(org_database: &str, report: &UpgradeReport) {
+    for (name, from, to) in &report.upgraded {
+        println!("Upgraded plugin '{name}' for organization '{org_database}': {from} -> {to}.");
+    }
+    for (name, version) in &report.already_current {
+        println!("Plugin '{name}' is already on '{version}' for organization '{org_database}'.");
+    }
+}
+
 pub fn print_load_summary(loaded: &[LoadedPlugin]) {
     for plugin in loaded {
         let status = if plugin.created {
@@ -43,8 +63,19 @@ pub fn print_load_summary(loaded: &[LoadedPlugin]) {
             .artifact_path
             .as_deref()
             .map_or_else(|| "no WASM artifact".to_string(), |path| format!("artifact: {path}"));
+        // What was written, when something was: only the files whose hash changed.
+        let files = match (&plugin.revision, plugin.created) {
+            (Some(revision), true) if plugin.reused_files > 0 => format!(
+                "; revision {revision}: {} changed file(s) stored, {} unchanged reused",
+                plugin.written_files, plugin.reused_files
+            ),
+            (Some(revision), true) => {
+                format!("; revision {revision}: {} file(s) stored", plugin.written_files)
+            }
+            _ => String::new(),
+        };
         println!(
-            "{status} plugin '{}@{}' ({artifact}; {} page(s), {} public{}{}).",
+            "{status} plugin '{}@{}' ({artifact}; {} page(s), {} public{}{}{files}).",
             plugin.name,
             plugin.version,
             plugin.pages,

@@ -7,7 +7,9 @@
 	import { appsStore } from '$lib/apps/appsStore.svelte';
 	import { orgStore } from '$lib/org/orgStore.svelte';
 	import { themeStore } from '$lib/theme';
-	import { onMount } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
+	import NotificationToasts from '$lib/notifications/NotificationToasts.svelte';
+	import { notificationsStore } from '$lib/notifications/notificationsStore.svelte';
 
 	let { children } = $props();
 
@@ -17,6 +19,18 @@
 	const isPluginPage = $derived(page.route.id === '/(app)/(org)/[...slug]');
 
 	let ready = $state(false);
+
+	onDestroy(() => notificationsStore.stop());
+
+	// Notifications belong to an organization: switching starts a fresh stream.
+	let streamOrg = orgStore.current;
+	$effect(() => {
+		const current = orgStore.current;
+		if (ready && current !== streamOrg) {
+			streamOrg = current;
+			notificationsStore.restart();
+		}
+	});
 
 	onMount(async () => {
 		// Who the user is, which organizations they have and the organization's
@@ -35,6 +49,7 @@
 				await themeStore.loadFromApi('');
 			}
 			if (authSession.isUser) void appsStore.load();
+			notificationsStore.start();
 			ready = true;
 			return;
 		}
@@ -43,6 +58,7 @@
 </script>
 
 <div class="flex w-full flex-col">
+	<NotificationToasts />
 	{#if !ready}
 		<!-- Chrome first, content when it is known: never a blank screen. -->
 		<div class="flex min-h-screen flex-col bg-canvas" aria-busy="true">

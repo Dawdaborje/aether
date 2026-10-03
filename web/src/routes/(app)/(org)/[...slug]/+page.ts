@@ -10,6 +10,8 @@ export interface PluginPage {
 	route: string;
 	title: string;
 	public: boolean;
+	/** The plugin the page belongs to: its functions are what widgets on the page call. */
+	plugin: string;
 	/** The layout the page asks for (`<page layout="bare">`), or null for the theme's. */
 	layout: string | null;
 	/** Values captured by `{param}` segments of the route. */

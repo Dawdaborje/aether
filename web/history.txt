@@ -1,0 +1,3 @@
+#V2
+USE NS aether DB core;
+SELECT feature_key, name, label, description, category, version, is_builtin, enabled_globally FROM bridges ORDER BY category, name LIMIT 3;

@@ -117,6 +117,7 @@ dependencies = [
  "bytes",
  "directories",
  "extism",
+ "futures",
  "hmac 0.13.0",
  "local_storage",
  "log",
@@ -135,6 +136,7 @@ dependencies = [
  "time",
  "tokio",
  "toml 1.1.5+spec-1.1.0",
+ "wat",
 ]
 
 [[package]]
@@ -197,6 +199,7 @@ version = "0.1.0"
 name = "aether_security"
 version = "0.1.0"
 dependencies = [
+ "include_dir",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -478,6 +481,17 @@ dependencies = [
  "compression-core",
  "pin-project-lite",
  "tokio",
+]
+
+[[package]]
+name = "async-lock"
+version = "3.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "290f7f2596bd5b78a9fec8088ccd89180d7f9f55b94b0576823bbbdc72ee8311"
+dependencies = [
+ "event-listener",
+ "event-listener-strategy",
+ "pin-project-lite",
 ]
 
 [[package]]
@@ -4068,10 +4082,13 @@ version = "0.12.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4293f18e7567a1caf3c584855554377025c65e0aa445344d04171f5ad63d19b9"
 dependencies = [
+ "async-lock",
  "crossbeam-channel",
  "crossbeam-epoch",
  "crossbeam-utils",
  "equivalent",
+ "event-listener",
+ "futures-util",
  "parking_lot",
  "portable-atomic",
  "smallvec",

@@ -1,5 +1,6 @@
 import { invalidateAll } from '$app/navigation';
 import { apiFetch } from '$lib/api/client';
+import { authSession } from '$lib/auth/session.svelte';
 import { themeStore } from '$lib/theme';
 import { getHeaderOrg, setHeaderOrg } from './selection';
 
@@ -94,6 +95,32 @@ class OrgStore {
 	closeSwitcher(): void {
 		// Choosing is mandatory while nothing is selected.
 		if (!this.selectionRequired) this.modalOpen = false;
+	}
+
+	/** A developer can step out of the organization they are in, back to none. */
+	get canLeave(): boolean {
+		return this.mode !== 'address' && this.current !== null && authSession.isDeveloper;
+	}
+
+	/** Leave the current organization. */
+	async leave(): Promise<void> {
+		this.switching = true;
+		this.error = null;
+		try {
+			const res = await apiFetch('/api/auth/org', { method: 'DELETE' });
+			if (!res.ok) {
+				const body = await res.json().catch(() => ({}));
+				throw new Error(body.error ?? `Could not leave the organization (${res.status})`);
+			}
+			if (this.mode === 'header') setHeaderOrg(null);
+			await this.load();
+			await themeStore.loadFromApi('');
+			await invalidateAll();
+		} catch (err) {
+			this.error = err instanceof Error ? err.message : 'Could not leave the organization';
+		} finally {
+			this.switching = false;
+		}
 	}
 
 	/** Work in `dbName` from now on, then reload what depends on it. */

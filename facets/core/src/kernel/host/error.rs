@@ -22,9 +22,6 @@ pub enum HostError {
     #[error("table `{0}` belongs to the kernel and cannot be used as a model")]
     ReservedTable(String),
 
-    #[error("raw SurQL rejected: {0}")]
-    SurqlRejected(String),
-
     #[error("database error: {0}")]
     Db(#[from] surrealdb::Error),
 
@@ -44,7 +41,6 @@ impl HostError {
                 Self::UnknownCommand(_) => "unknown_command",
                 Self::InvalidPayload(_) => "invalid_payload",
                 Self::ModelDenied(_) | Self::ModelPermission(_, _) | Self::ReservedTable(_) => "model",
-                Self::SurqlRejected(_) => "surql",
                 Self::Db(_) => "db",
                 Self::NotImplemented(_) => "not_implemented",
                 Self::Message(_) => "error",

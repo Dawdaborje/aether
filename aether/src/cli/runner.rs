@@ -13,11 +13,12 @@ use super::{
     generation::{generate_default_config_template, generate_plugin_workspace},
     initialization::{initialize_system, print_bootstrap_summary},
     organization::{
-        OrganizationRequest, StorageTarget, assign_user, create_organization,
+        FirstMember, OrganizationRequest, StorageTarget, assign_user, create_organization,
         provision_existing_organization,
     },
     plugin_manager::{
         activate_theme, install_plugins, load_plugins, print_install_summary, print_load_summary,
+        print_upgrade_summary, upgrade_plugins,
     },
     scaffold::{Language, create_plugin},
     seed::seed_system,
@@ -60,12 +61,6 @@ fn init_logger(args: &Args) {
 async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let current_path = env::current_dir()?;
 
-    if let Some(plugins_to_upgrade) = &args.upgrade_plugin {
-        for plugin_name in plugins_to_upgrade {
-            log::info!("{plugin_name}");
-        }
-    }
-
     if let Some(plugin_paths) = &args.load_plugin {
         let ctx = get_db_context(&args).await;
         let loaded = load_plugins(
@@ -87,6 +82,15 @@ async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         let ctx = get_db_context(&args).await;
         let report = install_plugins(ctx.db, &ctx.namespace, &ctx.database, org, specs).await?;
         print_install_summary(org, &report);
+    }
+
+    if let Some(specs) = &args.upgrade_plugin {
+        let Some(org) = &args.org else {
+            return Err("--org must be provided when upgrading plugins".into());
+        };
+        let ctx = get_db_context(&args).await;
+        let report = upgrade_plugins(ctx.db, &ctx.namespace, &ctx.database, org, specs).await?;
+        print_upgrade_summary(org, &report);
     }
 
     if let Some(theme) = &args.activate_theme {
@@ -170,9 +174,7 @@ async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         let request = OrganizationRequest {
             name: organization_name,
             db_name: args.org_db_name.as_deref(),
-            username,
-            email,
-            password,
+            member: FirstMember::User { username, email, password },
         };
         match create_organization(ctx.db, &ctx.namespace, &request, &storage).await {
             Ok((db_name, org_storage)) => println!(

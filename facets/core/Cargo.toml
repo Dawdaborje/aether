@@ -17,6 +17,7 @@ s3_storage = { path = "../../bridges/storage_and_cdn/s3_storage" }
 extism.workspace = true
 axum.workspace = true
 axum-extra.workspace = true
+futures.workspace = true
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1"
 sha2.workspace = true
@@ -35,5 +36,6 @@ hmac = "0.13"
 time = "0.3"
 
 [dev-dependencies]
+wat = "1"
 tempfile = "3"
 object_store.workspace = true

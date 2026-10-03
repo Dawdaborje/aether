@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use include_dir::{Dir, include_dir};
 use thiserror::Error;
 
 use super::models::{CapabilityGroup, parse_capability_key};
@@ -80,13 +81,36 @@ impl CapabilityCatalog {
         Ok(catalog)
     }
 
+    /// The catalog compiled into the program: the files of the repository's `capabilities/`
+    /// directory. This is what plugin manifests are checked against when they are loaded.
+    pub fn builtin() -> Result<Self, CapabilityError> {
+        static BUILTIN: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../capabilities");
+        let mut catalog = Self::new();
+        for file in BUILTIN.files() {
+            let path = file.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let raw = file.contents_utf8().ok_or_else(|| CapabilityError::Io {
+                path: path.to_path_buf(),
+                source: std::io::Error::new(std::io::ErrorKind::InvalidData, "not UTF-8"),
+            })?;
+            catalog.insert_json(path, raw)?;
+        }
+        Ok(catalog)
+    }
+
     fn insert_file(&mut self, path: &Path) -> Result<(), CapabilityError> {
         let raw = fs::read_to_string(path).map_err(|source| CapabilityError::Io {
             path: path.to_path_buf(),
             source,
         })?;
+        self.insert_json(path, &raw)
+    }
+
+    fn insert_json(&mut self, path: &Path, raw: &str) -> Result<(), CapabilityError> {
         let group: CapabilityGroup =
-            serde_json::from_str(&raw).map_err(|source| CapabilityError::Parse {
+            serde_json::from_str(raw).map_err(|source| CapabilityError::Parse {
                 path: path.to_path_buf(),
                 source,
             })?;
@@ -186,7 +210,9 @@ mod tests {
         assert!(catalog.contains("cache::set"));
         assert!(catalog.contains("cache::invalidate"));
         assert!(catalog.contains("cache::clear"));
-        assert!(catalog.contains("db::surql"));
+        assert!(catalog.contains("notify::send"));
+        assert!(catalog.contains("notify::public"));
+        assert!(!catalog.contains("db::surql"), "raw SurQL no longer exists");
         assert!(!catalog.contains("db::write"));
         assert!(!catalog.contains("fs::read"));
         Ok(())
@@ -207,5 +233,18 @@ mod tests {
         assert_eq!(parse_capability_key("db::query"), Some(("db", "query")));
         assert!(parse_capability_key("db").is_none());
         assert!(parse_capability_key("db::").is_none());
+    }
+
+    #[test]
+    fn the_builtin_catalog_matches_the_files() -> Result<(), CapabilityError> {
+        let builtin = CapabilityCatalog::builtin()?;
+        let from_disk = CapabilityCatalog::load_from_dir(repo_capabilities_dir())?;
+        let mut built: Vec<_> = builtin.all_keys().cloned().collect();
+        let mut disk: Vec<_> = from_disk.all_keys().cloned().collect();
+        built.sort();
+        disk.sort();
+        assert_eq!(built, disk);
+        assert!(builtin.contains("db::mutate"));
+        Ok(())
     }
 }

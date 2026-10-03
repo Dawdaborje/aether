@@ -2,7 +2,8 @@
 //!
 //! ```text
 //! <app_dir>/
-//! ├── plugins/<name>/<version>/   plugin.toml, the WASM artifact, page XML
+//! ├── plugins/<name>/<stamp>/     one revision: only the files that changed, and files.json
+//!                                 (older plugins: plugins/<name>/<version>/ with every file)
 //! ├── views/<name>/<version>/     compiled page views (JSON)
 //! ├── orgs/<organization>/        files belonging to one organization
 //! │   └── conf/                   its configuration
@@ -66,6 +67,17 @@ impl AppDir {
                 })?;
         }
         Ok(())
+    }
+
+    /// `plugins/<name>`: every revision of one plugin lives under it.
+    pub fn plugin_root(&self, name: &str) -> Result<PathBuf, AppDirError> {
+        Ok(self.root.join(PLUGINS).join(component(name)?))
+    }
+
+    /// `plugins/<name>/<revision>`: one stored revision (a timestamped folder), or a
+    /// folder in the older layout named after the version.
+    pub fn revision_dir(&self, name: &str, revision: &str) -> Result<PathBuf, AppDirError> {
+        Ok(self.plugin_root(name)?.join(component(revision)?))
     }
 
     /// `plugins/<name>/<version>`, relative to the app_dir root.

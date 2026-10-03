@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 
 use aether_core::access::audit::{Actor, AuditContext};
 use aether_core::kernel::{CallInfo, DbScope, HostError, ModelGrant, PluginHostContext, kernel_command};
-use aether_core::websocket::NotificationHub;
+use aether_core::notifications::NotificationHub;
 use serde_json::{Value, json};
 use surrealdb::{Surreal, engine::remote::ws::{Client, Ws}, opt::auth::Root};
 
@@ -45,7 +45,7 @@ fn rand_suffix() -> u32 {
         .unwrap_or(7)
 }
 
-async fn context(db: &Surreal<Client>, org: &str, actor: Actor, grants: &[(&str, &str, bool, bool)], caps: &[&str]) -> PluginHostContext {
+async fn context(db: &Surreal<Client>, org: &str, actor: Actor, grants: &[(&str, &str, bool, bool)], caps: &[&str]) -> Result<PluginHostContext, surrealdb::Error> {
     let models: HashMap<String, ModelGrant> = grants
         .iter()
         .map(|(name, table, read, write)| {
@@ -60,15 +60,13 @@ async fn context(db: &Surreal<Client>, org: &str, actor: Actor, grants: &[(&str,
             )
         })
         .collect();
-    PluginHostContext::new(
+    let session = db.clone();
+    session.use_ns(NAMESPACE).use_db(org).await?;
+    Ok(PluginHostContext::new(
         "chat",
         caps.iter().map(|c| c.to_string()).collect::<HashSet<_>>(),
         models,
-        {
-            let session = db.clone();
-            session.use_ns(NAMESPACE).use_db(org).await.expect("select org database");
-            std::sync::Arc::new(session)
-        },
+        std::sync::Arc::new(session),
         DbScope::new(NAMESPACE, org),
         NotificationHub::default(),
         CallInfo::new(
@@ -80,7 +78,7 @@ async fn context(db: &Surreal<Client>, org: &str, actor: Actor, grants: &[(&str,
             },
             "post_message",
         ),
-    )
+    ))
 }
 
 async fn audit_rows(db: &Surreal<Client>, org: &str) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
@@ -104,7 +102,7 @@ async fn every_access_is_recorded_with_record_ids() -> TestResult {
         Actor::Visitor("visitors:v1".into()),
         &[("message", "chat_message", true, true)],
         &["db::query", "db::mutate"],
-    ).await;
+    ).await?;
 
     let created = kernel_command(&ctx, "db::create", json!({ "model": "message", "data": { "body": "hi" } })).await?;
     let id = created["data"]["id"].as_str().ok_or("create returned no id")?.to_string();
@@ -150,7 +148,7 @@ async fn a_failed_audit_write_rolls_back_the_change() -> TestResult {
         .await?
         .check()?;
 
-    let ctx = context(&db, &org, Actor::User("users:u1".into()), &[("message", "chat_message", true, true)], &["db::query", "db::mutate"]).await;
+    let ctx = context(&db, &org, Actor::User("users:u1".into()), &[("message", "chat_message", true, true)], &["db::query", "db::mutate"]).await?;
     let result = kernel_command(&ctx, "db::create", json!({ "model": "message", "data": { "body": "should not persist" } })).await;
     assert!(matches!(result, Err(HostError::Db(_))), "audit failure must fail the command: {result:?}");
 
@@ -173,12 +171,12 @@ async fn a_failed_audit_write_rolls_back_the_change() -> TestResult {
 async fn read_only_grants_cannot_write_and_leave_no_data_access_row() -> TestResult {
     let Some(db) = connect().await? else { return Ok(()) };
     let org = fresh_org(&db, "readonly").await?;
-    let ctx = context(&db, &org, Actor::Visitor("visitors:v2".into()), &[("message", "chat_message", true, false)], &["db::query"]).await;
+    let ctx = context(&db, &org, Actor::Visitor("visitors:v2".into()), &[("message", "chat_message", true, false)], &["db::query"]).await?;
 
     let denied = kernel_command(&ctx, "db::create", json!({ "model": "message", "data": { "body": "x" } })).await;
     assert!(matches!(denied, Err(HostError::Capability(_))), "no db::mutate capability: {denied:?}");
 
-    let ctx = context(&db, &org, Actor::Visitor("visitors:v2".into()), &[("message", "chat_message", true, false)], &["db::query", "db::mutate"]).await;
+    let ctx = context(&db, &org, Actor::Visitor("visitors:v2".into()), &[("message", "chat_message", true, false)], &["db::query", "db::mutate"]).await?;
     let denied = kernel_command(&ctx, "db::create", json!({ "model": "message", "data": { "body": "x" } })).await;
     assert!(matches!(denied, Err(HostError::ModelPermission(_, "write"))), "{denied:?}");
 
@@ -191,7 +189,7 @@ async fn read_only_grants_cannot_write_and_leave_no_data_access_row() -> TestRes
 
 #[tokio::test]
 #[ignore = "needs SurrealDB (AETHER_TEST_DB)"]
-async fn kernel_tables_cannot_be_used_as_models_or_touched_by_raw_surql() -> TestResult {
+async fn kernel_tables_cannot_be_used_as_models() -> TestResult {
     let Some(db) = connect().await? else { return Ok(()) };
     let org = fresh_org(&db, "reserved").await?;
     let ctx = context(
@@ -199,26 +197,27 @@ async fn kernel_tables_cannot_be_used_as_models_or_touched_by_raw_surql() -> Tes
         &org,
         Actor::User("users:u1".into()),
         &[("log", "data_access", true, true), ("v", "visitors", true, true)],
-        &["db::query", "db::mutate", "db::surql"],
-    ).await;
+        &["db::query", "db::mutate"],
+    ).await?;
 
-    for (model, command) in [("log", "db::find"), ("v", "db::find")] {
-        let result = kernel_command(&ctx, command, json!({ "model": model })).await;
-        assert!(matches!(result, Err(HostError::ReservedTable(_))), "{model}: {result:?}");
+    for (model, command, payload) in [
+        ("log", "db::find", json!({ "model": "log" })),
+        ("v", "db::find", json!({ "model": "v" })),
+        ("v", "db::create", json!({ "model": "v", "data": { "token_hash": "x" } })),
+        ("log", "db::delete", json!({ "model": "log", "id": "any" })),
+    ] {
+        let result = kernel_command(&ctx, command, payload).await;
+        assert!(matches!(result, Err(HostError::ReservedTable(_))), "{model} {command}: {result:?}");
     }
-    let result = kernel_command(&ctx, "db::surql", json!({ "query": "DELETE page_visits" })).await;
-    assert!(matches!(result, Err(HostError::SurqlRejected(_))));
-    let result = kernel_command(&ctx, "db::surql", json!({ "query": "SELECT 1; COMMIT TRANSACTION; DELETE data_access" })).await;
-    assert!(matches!(result, Err(HostError::SurqlRejected(_))));
     Ok(())
 }
 
 #[tokio::test]
 #[ignore = "needs SurrealDB (AETHER_TEST_DB)"]
-async fn raw_surql_is_recorded_with_its_statement_and_find_is_capped() -> TestResult {
+async fn find_is_capped_and_cannot_be_used_to_inject_queries() -> TestResult {
     let Some(db) = connect().await? else { return Ok(()) };
-    let org = fresh_org(&db, "raw").await?;
-    let ctx = context(&db, &org, Actor::User("users:u1".into()), &[("message", "chat_message", true, true)], &["db::query", "db::mutate", "db::surql"]).await;
+    let org = fresh_org(&db, "find").await?;
+    let ctx = context(&db, &org, Actor::User("users:u1".into()), &[("message", "chat_message", true, true)], &["db::query", "db::mutate"]).await?;
 
     for body in ["a", "b", "c"] {
         kernel_command(&ctx, "db::create", json!({ "model": "message", "data": { "body": body } })).await?;
@@ -226,12 +225,19 @@ async fn raw_surql_is_recorded_with_its_statement_and_find_is_capped() -> TestRe
     let limited = kernel_command(&ctx, "db::find", json!({ "model": "message", "limit": 2 })).await?;
     assert_eq!(limited["data"].as_array().map(Vec::len), Some(2));
 
-    kernel_command(&ctx, "db::surql", json!({ "query": "SELECT * FROM chat_message" })).await?;
-    let rows = audit_rows(&db, &org).await?;
-    let raw = rows.last().ok_or("no audit rows")?;
-    assert_eq!(raw["operation"], "raw");
-    assert_eq!(raw["statement"], "SELECT * FROM chat_message");
-    assert_eq!(raw["actor_type"], "user");
+    // A value is only ever a value, however much it looks like a query...
+    let tricky = kernel_command(&ctx, "db::find", json!({ "model": "message", "filter": { "body": "a' OR true --" } })).await?;
+    assert_eq!(tricky["data"].as_array().map(Vec::len), Some(0));
+    // ...and a field name must be a plain identifier.
+    for field in ["body = 1 OR true", "body; DELETE chat_message", "a.b"] {
+        let result = kernel_command(&ctx, "db::find", json!({ "model": "message", "filter": { field: 1 } })).await;
+        assert!(matches!(result, Err(HostError::InvalidPayload(_))), "{field}: {result:?}");
+    }
+    let order = kernel_command(&ctx, "db::find", json!({ "model": "message", "order": "body; DELETE chat_message" })).await;
+    assert!(matches!(order, Err(HostError::InvalidPayload(_))));
+    // Nothing was deleted by any of that.
+    let all = kernel_command(&ctx, "db::find", json!({ "model": "message" })).await?;
+    assert_eq!(all["data"].as_array().map(Vec::len), Some(3));
     Ok(())
 }
 

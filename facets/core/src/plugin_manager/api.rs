@@ -42,12 +42,12 @@ struct PublicPageModels {
 /// A failed call: the HTTP status and the message sent to the client.
 struct CallError {
     status: StatusCode,
-    message: &'static str,
+    message: String,
 }
 
 impl CallError {
-    fn new(status: StatusCode, message: &'static str) -> Self {
-        Self { status, message }
+    fn new(status: StatusCode, message: impl Into<String>) -> Self {
+        Self { status, message: message.into() }
     }
 
     fn database(context: &str, error: impl std::fmt::Display) -> Self {
@@ -264,16 +264,24 @@ async fn run_call(
         )
         .await
         .map_err(|error| {
+            use super::runtime::PluginRuntimeError as Failure;
             log::error!("plugin version is not available: {error}");
-            match error {
-                super::runtime::PluginRuntimeError::NotInCatalog { .. } => CallError::new(
+            match error.root() {
+                Failure::NotInCatalog { .. } => CallError::new(
                     StatusCode::NOT_FOUND,
                     "plugin version is not in the catalog",
                 ),
-                super::runtime::PluginRuntimeError::MissingArtifact(_) => CallError::new(
+                Failure::MissingArtifact(_) => CallError::new(
                     StatusCode::NOT_FOUND,
                     "plugin has no callable functions",
                 ),
+                Failure::WasmTooLarge { .. } | Failure::ExceedsBudget { .. } => CallError::new(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "plugin is too large to load",
+                ),
+                Failure::CompileQueueFull | Failure::CompileTimeout { .. } | Failure::Busy => {
+                    CallError::new(StatusCode::SERVICE_UNAVAILABLE, "plugin is busy, retry shortly")
+                }
                 _ => CallError::new(
                     StatusCode::SERVICE_UNAVAILABLE,
                     "plugin version is unavailable",
@@ -308,6 +316,15 @@ async fn run_call(
         .await
         .map_err(|error| {
             log::error!("plugin invocation `{plugin_name}.{function}` failed: {error}");
-            CallError::new(StatusCode::BAD_GATEWAY, "plugin invocation failed")
+            if let Some(message) = error.user_message() {
+                // The plugin said, on purpose, what went wrong.
+                return CallError::new(StatusCode::UNPROCESSABLE_ENTITY, message);
+            }
+            match error {
+                super::runtime::PluginRuntimeError::Busy => {
+                    CallError::new(StatusCode::SERVICE_UNAVAILABLE, "plugin is busy, retry shortly")
+                }
+                _ => CallError::new(StatusCode::BAD_GATEWAY, "plugin invocation failed"),
+            }
         })
 }

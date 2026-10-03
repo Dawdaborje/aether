@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 /// Full capability keys are `{id}::{capability.id}` → `db::query`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapabilityGroup {
+    /// Written `code` in the catalog files.
+    #[serde(alias = "code")]
     pub id: String,
     pub name: String,
     pub description: Option<String>,
@@ -13,6 +15,7 @@ pub struct CapabilityGroup {
 /// A single capability inside a group.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Capability {
+    #[serde(alias = "code")]
     pub id: String,
     pub name: String,
     pub description: Option<String>,

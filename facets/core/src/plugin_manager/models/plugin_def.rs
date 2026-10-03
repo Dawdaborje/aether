@@ -295,6 +295,12 @@ pub enum ManifestError {
          with `<page route=\"/…\">` as the root element"
     )]
     LegacyPages,
+
+    #[error(
+        "`db::surql` no longer exists: plugins reach the database only through the structured \
+         `db::*` commands on the models they are granted; remove it from `{0}`"
+    )]
+    RawSurql(&'static str),
 }
 
 impl PluginManifest {
@@ -304,6 +310,13 @@ impl PluginManifest {
         let mut manifest: Self = toml::from_str(text)?;
         if manifest.legacy_pages.is_some() {
             return Err(ManifestError::LegacyPages);
+        }
+        const REMOVED: &str = "db::surql";
+        if manifest.plugin.capabilities.iter().any(|c| c == REMOVED) {
+            return Err(ManifestError::RawSurql("capabilities"));
+        }
+        if manifest.plugin.public_capabilities.iter().any(|c| c == REMOVED) {
+            return Err(ManifestError::RawSurql("public_capabilities"));
         }
         manifest.normalize();
         Ok(manifest)

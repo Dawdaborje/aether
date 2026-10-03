@@ -162,17 +162,14 @@ pub async fn overview(
         .as_deref()
         .filter(|candidate| known(candidate))
         .map(str::to_string);
-    // Exactly one membership: that is the organization.
-    let only = match memberships.as_slice() {
-        [only] => Some(only.clone()),
-        _ => None,
-    };
 
-    let current = from_request.or(from_session).or(only);
-    // Two or more memberships and nothing selecting one: the user must choose.
-    // This applies to developers too; one with fewer memberships is never asked.
-    let selection_required =
-        mode != SelectionMode::Address && memberships.len() > 1 && current.is_none();
+    let (current, selection_required) = decide_current(
+        from_request,
+        from_session,
+        &memberships,
+        session_left_organization(session),
+        mode,
+    );
 
     Ok(OrgOverview {
         mode,
@@ -180,6 +177,35 @@ pub async fn overview(
         current,
         selection_required,
     })
+}
+
+/// A developer who chose to leave their organization: they are in none until they enter
+/// one again, even if they have exactly one membership.
+pub fn session_left_organization(session: &ValidSession) -> bool {
+    session.user.is_super_user
+        && session.org_database_id.as_deref() == Some(aether_orm::LEFT_ORGANIZATION)
+}
+
+/// Which organization the request is for, and whether the user must choose first.
+///
+/// An organization named by the request or remembered by the session wins. Otherwise a
+/// single membership is the organization. Two or more memberships with nothing choosing
+/// one means the user must choose (developers too); a developer who left is never asked.
+fn decide_current(
+    from_request: Option<String>,
+    from_session: Option<String>,
+    memberships: &[String],
+    left: bool,
+    mode: SelectionMode,
+) -> (Option<String>, bool) {
+    let only = match memberships {
+        [only] if !left => Some(only.clone()),
+        _ => None,
+    };
+    let current = from_request.or(from_session).or(only);
+    let selection_required =
+        mode != SelectionMode::Address && memberships.len() > 1 && current.is_none() && !left;
+    (current, selection_required)
 }
 
 /// Memberships of a user, for deciding whether the request needs a choice.
@@ -212,6 +238,46 @@ mod tests {
             serde_json::json!({ "db_name": "acme", "name": "Acme", "member": true })
         );
         Ok(())
+    }
+
+    fn names(names: &[&str]) -> Vec<String> {
+        names.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn a_single_membership_is_the_organization() {
+        let (current, required) =
+            decide_current(None, None, &names(&["acme"]), false, SelectionMode::Session);
+        assert_eq!((current.as_deref(), required), (Some("acme"), false));
+    }
+
+    #[test]
+    fn several_memberships_and_no_choice_ask_the_user() {
+        let (current, required) =
+            decide_current(None, None, &names(&["acme", "globex"]), false, SelectionMode::Session);
+        assert_eq!((current, required), (None, true));
+        // An address-decided deployment never asks.
+        let (_, required) =
+            decide_current(None, None, &names(&["acme", "globex"]), false, SelectionMode::Address);
+        assert!(!required);
+    }
+
+    #[test]
+    fn a_developer_who_left_is_in_no_organization_and_is_not_asked() {
+        for memberships in [names(&[]), names(&["acme"]), names(&["acme", "globex"])] {
+            let (current, required) =
+                decide_current(None, None, &memberships, true, SelectionMode::Session);
+            assert_eq!((current, required), (None, false), "{memberships:?}");
+        }
+        // Entering one again works.
+        let (current, _) = decide_current(
+            None,
+            Some("globex".into()),
+            &names(&["acme", "globex"]),
+            true,
+            SelectionMode::Session,
+        );
+        assert_eq!(current.as_deref(), Some("globex"));
     }
 
     #[test]

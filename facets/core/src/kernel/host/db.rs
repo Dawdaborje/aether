@@ -42,16 +42,6 @@ pub struct DeleteRequest {
     pub id: String,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct SurqlRequest {
-    /// Optional model — when set, `$__table` is bound to the allowlisted table name.
-    #[serde(default)]
-    pub model: Option<String>,
-    pub query: String,
-    #[serde(default)]
-    pub vars: Map<String, JsonValue>,
-}
-
 #[derive(Debug, Serialize)]
 pub struct DbResponse {
     pub ok: bool,
@@ -97,43 +87,6 @@ fn validate_field_name(name: &str) -> Result<(), HostError> {
     validate_ident(name)
 }
 
-/// Reject DDL / namespace escapes in raw SurQL.
-fn reject_dangerous_surql(query: &str) -> Result<(), HostError> {
-    let upper = query.to_uppercase();
-    const BANNED: &[&str] = &[
-        "USE NS",
-        "USE DB",
-        "USE NAMESPACE",
-        "USE DATABASE",
-        "DEFINE ",
-        "REMOVE ",
-        "INFO FOR",
-        "INFO NS",
-        "INFO DB",
-        "REBUILD ",
-        "KILL ",
-        "BEGIN",
-        "COMMIT",
-        "CANCEL",
-    ];
-    for table in PROTECTED_IN_RAW_SURQL {
-        if upper.contains(table) {
-            return Err(HostError::SurqlRejected(format!(
-                "raw SurQL may not reference the kernel table `{}`",
-                table.to_lowercase()
-            )));
-        }
-    }
-    for token in BANNED {
-        if upper.contains(token) {
-            return Err(HostError::SurqlRejected(format!(
-                "statement containing `{token}` is not allowed"
-            )));
-        }
-    }
-    Ok(())
-}
-
 fn parse_req<T: serde::de::DeserializeOwned>(payload: &JsonValue) -> Result<T, HostError> {
     serde_json::from_value(payload.clone())
         .map_err(|e| HostError::InvalidPayload(e.to_string()))
@@ -153,6 +106,8 @@ const RESERVED_TABLES: &[&str] = &[
     "installed_plugins",
     "invitations",
     "media",
+    "notification_reads",
+    "notifications",
     "org_user_groups",
     "org_user_roles",
     "org_users",
@@ -170,15 +125,6 @@ const RESERVED_TABLES: &[&str] = &[
     "ui_theme_config",
     "ui_themes",
     "visitors",
-];
-
-/// Raw SurQL may not mention these (the audit trail and plugin installs).
-const PROTECTED_IN_RAW_SURQL: &[&str] = &[
-    "DATA_ACCESS",
-    "PAGE_VISITS",
-    "PLUGIN_CALLS",
-    "VISITORS",
-    "INSTALLED_PLUGINS",
 ];
 
 /// Index of the `RETURN $rows` statement in the audited transaction:
@@ -385,74 +331,6 @@ pub async fn db_delete(
     Ok(serde_json::json!({ "ok": true, "data": rows.into_iter().next() }))
 }
 
-/// Raw SurQL — requires `db::surql`. Optional `model` binds `$__table`.
-/// The access is recorded with the statement text; the record ids a raw
-/// statement touches are not known to the kernel.
-pub async fn db_surql(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
-    ctx.require_cap("db::surql")?;
-    let req: SurqlRequest = parse_req(payload)?;
-    reject_dangerous_surql(&req.query)?;
-
-    let surql = format!(
-        r#"
-        BEGIN TRANSACTION;
-        CREATE data_access SET
-            request_id = $__audit_request,
-            actor_type = $__audit_actor_type,
-            actor_id = $__audit_actor_id,
-            plugin = $__audit_plugin,
-            function_name = $__audit_function,
-            model = $__audit_model,
-            table_name = $__audit_table,
-            operation = 'raw',
-            statement = $__audit_statement,
-            record_ids = [],
-            record_count = 0,
-            ip = $__audit_ip;
-        {};
-        COMMIT TRANSACTION;
-        "#,
-        req.query.trim().trim_end_matches(';')
-    );
-    let mut table = None;
-    let mut q = ctx
-        .db
-        .query(surql)
-        .bind(("__audit_request", ctx.audit.request_id.clone()))
-        .bind(("__audit_actor_type", ctx.audit.actor.kind().to_string()))
-        .bind(("__audit_actor_id", ctx.audit.actor.id().map(str::to_string)))
-        .bind(("__audit_plugin", ctx.plugin_name.clone()))
-        .bind(("__audit_function", ctx.function.clone()))
-        .bind(("__audit_statement", req.query.clone()))
-        .bind(("__audit_ip", ctx.audit.ip.clone()));
-    if let Some(model) = &req.model {
-        // Raw SurQL that references a model still needs read or write on that model.
-        let grant = ctx
-            .model(model)
-            .ok_or_else(|| HostError::ModelDenied(model.clone()))?;
-        validate_ident(&grant.table)?;
-        table = Some(grant.table.clone());
-        q = q.bind(("__table", grant.table.clone()));
-    }
-    q = q
-        .bind(("__audit_model", req.model.clone()))
-        .bind(("__audit_table", table));
-    for (k, v) in req.vars {
-        validate_ident(&k)?;
-        if k.starts_with("__audit") {
-            return Err(HostError::SurqlRejected(format!("variable `{k}` is reserved")));
-        }
-        q = q.bind((k, v));
-    }
-    let response = q.await?.check()?;
-    // Return raw multi-statement results as JSON array of statement outputs when possible.
-    Ok(serde_json::json!({
-        "ok": true,
-        "data": serde_json::to_value(format!("{response:?}")).unwrap_or(JsonValue::Null),
-        "note": "raw SurQL executed under db::surql; prefer structured db::* commands"
-    }))
-}
-
 fn strip_table_prefix<'a>(id: &'a str, table: &str) -> &'a str {
     id.strip_prefix(&format!("{table}:")).unwrap_or(id)
 }
@@ -462,27 +340,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rejects_use_ns() {
-        let err = reject_dangerous_surql("USE NS other; SELECT * FROM x").unwrap_err();
-        assert!(matches!(err, HostError::SurqlRejected(_)));
-    }
-
-    #[test]
-    fn rejects_transaction_control_and_audit_tables() {
-        for query in [
-            "COMMIT TRANSACTION; DELETE page_visits",
-            "SELECT * FROM Data_Access",
-            "UPDATE visitors SET linked_user = NONE",
-            "SELECT * FROM installed_plugins",
-            "CANCEL TRANSACTION",
-        ] {
-            assert!(reject_dangerous_surql(query).is_err(), "{query}");
+    fn field_and_table_names_must_be_plain_identifiers() {
+        for good in ["body", "created_at", "chat_message", "A1"] {
+            assert!(validate_ident(good).is_ok(), "{good}");
         }
-    }
-
-    #[test]
-    fn allows_select() {
-        reject_dangerous_surql("SELECT * FROM type::table($__table) WHERE active = $active")
-            .unwrap();
+        for bad in ["", "a b", "a;b", "a.b", "a-b", "x) OR true --", "type::table"] {
+            assert!(validate_ident(bad).is_err(), "{bad}");
+        }
     }
 }

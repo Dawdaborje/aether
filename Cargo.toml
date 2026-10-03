@@ -50,7 +50,7 @@ resolver = "2"
 
 [workspace.dependencies]
 extism = "1.30.0"
-moka = { version = "0.12.16", features = ["sync"] }
+moka = { version = "0.12.16", features = ["sync", "future"] }
 surrealdb = "3.2.4"
 axum = { version = "0.8.9", features = ["tokio", "macros", "ws"] }
 axum-extra = { version = "0.12", features = ["cookie"] }

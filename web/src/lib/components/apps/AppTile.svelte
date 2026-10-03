@@ -14,7 +14,7 @@
 	class="group flex w-full flex-col items-center gap-2.5 rounded-xl p-3 text-center outline-none transition hover:bg-card hover:shadow-sm focus-visible:ring-2 focus-visible:ring-ring"
 >
 	<span
-		class="flex size-14 items-center justify-center rounded-xl border border-border bg-card text-foreground/75 transition group-hover:border-primary/50 group-hover:text-primary"
+		class="flex size-14 items-center justify-center rounded-xl border border-primary/15 bg-primary/10 text-primary transition group-hover:border-primary/40 group-hover:bg-primary/15"
 		aria-hidden="true"
 	>
 		{#if Icon}

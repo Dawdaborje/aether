@@ -27,6 +27,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/ui/catalog", get(list_catalog))
         .route("/api/ui/catalog/install", post(install))
+        .route("/api/ui/plugins/runtime", get(runtime_stats))
 }
 
 #[derive(Debug, Deserialize, SurrealValue)]
@@ -194,9 +195,21 @@ async fn install(
                     report.installed.len(),
                     report.already_installed.len()
                 );
+                let installed = versions(report.installed);
+                if !installed.is_empty() {
+                    // The kernel tells the organization's members what changed.
+                    let note = crate::notifications::NewNotification::kernel(
+                        crate::notifications::Level::Success,
+                        format!("{} installed", installed.join(", ")),
+                        None,
+                    );
+                    if let Err(error) = state.notify(&organization, note).await {
+                        log::warn!("install notification for `{organization}`: {error}");
+                    }
+                }
                 OrgOutcome {
                     organization,
-                    installed: versions(report.installed),
+                    installed,
                     already_installed: versions(report.already_installed),
                     error: None,
                 }
@@ -213,4 +226,14 @@ async fn install(
         });
     }
     Json(json!({ "results": outcomes })).into_response()
+}
+
+/// `GET /api/ui/plugins/runtime`: how the compiled-plugin cache is doing, for tuning
+/// `[plugin_runtime]`. Many evictions with the same plugins loading again and again mean
+/// the memory budget is too small.
+async fn runtime_stats(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err((status, body)) = require_session(&state, &headers).await {
+        return (status, body).into_response();
+    }
+    Json(json!({ "runtime": state.plugin_runtime.stats().await })).into_response()
 }

@@ -13,12 +13,14 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use surrealdb::{Surreal, engine::remote::ws::Client, types::SurrealValue};
+use aether_security::capabilities::CapabilityCatalog;
 use thiserror::Error;
 
 use crate::app_dir::{AppDir, AppDirError};
 use super::models::plugin_db_def::{PluginDbAuthor, PluginDbCategory, PluginDbDefinition};
 use super::models::plugin_def::{ManifestError, PluginManifest};
 use super::pages::{PageDocument, PageError, discover_pages, write_view_files};
+use super::revisions;
 use super::themes::{ThemeDocument, ThemeError, parse_theme};
 
 const MANIFEST_FILE: &str = "plugin.toml";
@@ -96,13 +98,30 @@ pub enum CatalogError {
     #[error("manifest path {0} has no parent directory")]
     InvalidManifestPath(PathBuf),
 
-    #[error(
-        "{name}@{version} is already in the catalog with different content; bump the version to publish changes"
-    )]
-    VersionConflict { name: String, version: String },
+    #[error("plugin `{0}` is not installed in this organization; install it first")]
+    NotInstalled(String),
+
+    #[error("plugin `{plugin}` needs `{dependency}`, which this organization has not installed")]
+    MissingDependency { plugin: String, dependency: String },
 
     #[error("invalid plugin spec `{0}`; expected `name` or `name@version`")]
     InvalidSpec(String),
+
+    #[error("{path}: {source}; capabilities are listed in `capabilities/`")]
+    UnknownCapability {
+        path: PathBuf,
+        #[source]
+        source: aether_security::capabilities::CapabilityError,
+    },
+
+    #[error("{path}: `public_capabilities` lists `{capability}`, which the plugin does not list in `capabilities`")]
+    PublicCapabilityNotHeld { path: PathBuf, capability: String },
+
+    #[error("the built-in capability catalog is invalid: {0}")]
+    CapabilityCatalog(String),
+
+    #[error(transparent)]
+    Revision(#[from] super::revisions::RevisionError),
 
     #[error("organization database `{0}` was not found")]
     OrganizationNotFound(String),
@@ -112,11 +131,6 @@ pub enum CatalogError {
 
     #[error("plugin `{name}@{version}` is not an active catalog version")]
     VersionNotFound { name: String, version: String },
-
-    #[error(
-        "plugin `{name}` has several active versions ({versions}); choose one with `{name}@<version>`"
-    )]
-    AmbiguousVersion { name: String, versions: String },
 
     #[error("plugin `{name}` is already installed at {installed}, but {requested} was requested")]
     VersionMismatch {
@@ -188,6 +202,8 @@ struct NewPlugin {
     artifact_path: Option<String>,
     artifact_hash: Option<String>,
     content_hash: String,
+    /// The folder under `plugins/<name>/` holding this version's file index.
+    revision: Option<String>,
     /// The launcher tile, when the plugin is an app.
     app: Option<NewApp>,
     /// Functions anonymous visitors may call; checked before a module is compiled.
@@ -231,8 +247,49 @@ struct NewUiPage {
 }
 
 #[derive(Debug, Deserialize, SurrealValue)]
-struct ExistingContent {
+struct KnownVersion {
+    version: String,
     content_hash: Option<String>,
+    revision: Option<String>,
+}
+
+/// `0.1.0+20261003T210100Z` is a rebuild of `0.1.0`.
+pub fn base_version(version: &str) -> &str {
+    version.split('+').next().unwrap_or(version)
+}
+
+/// A package-relative path as it is written in `files.json`.
+fn logical_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+/// The capabilities a manifest asks for must exist, and a public capability must be one the
+/// plugin holds.
+fn validate_capabilities(manifest: &PluginManifest, manifest_path: &Path) -> Result<(), CatalogError> {
+    use std::sync::OnceLock;
+    static CATALOG: OnceLock<Result<CapabilityCatalog, String>> = OnceLock::new();
+    let catalog = CATALOG
+        .get_or_init(|| CapabilityCatalog::builtin().map_err(|error| error.to_string()))
+        .as_ref()
+        .map_err(|message| CatalogError::CapabilityCatalog(message.clone()))?;
+    let plugin = &manifest.plugin;
+    catalog
+        .validate_declared(&plugin.capabilities, &plugin.public_capabilities)
+        .map_err(|source| CatalogError::UnknownCapability {
+            path: manifest_path.to_path_buf(),
+            source,
+        })?;
+    if let Some(capability) = plugin
+        .public_capabilities
+        .iter()
+        .find(|capability| !plugin.capabilities.contains(capability))
+    {
+        return Err(CatalogError::PublicCapabilityNotHeld {
+            path: manifest_path.to_path_buf(),
+            capability: capability.clone(),
+        });
+    }
+    Ok(())
 }
 
 #[derive(Debug, Deserialize, SurrealValue)]
@@ -260,8 +317,15 @@ pub struct LoadedPlugin {
     pub theme: Option<(String, String)>,
     /// `(label, route)` when the plugin is an app.
     pub app: Option<(String, String)>,
-    /// `false` when the identical version was already in the catalog.
+    /// `false` when identical content was already in the catalog.
     pub created: bool,
+    /// The time-stamped folder this load wrote (or, for content already catalogued, the one
+    /// it is in); `None` for a plugin stored before revisions existed.
+    pub revision: Option<String>,
+    /// Files written for this load: new or changed since the previous revision.
+    pub written_files: usize,
+    /// Files that did not change and were not copied again.
+    pub reused_files: usize,
 }
 
 /// Register the plugin package at `plugin_path` in the core catalog.
@@ -271,13 +335,15 @@ pub struct LoadedPlugin {
 /// here, so a malformed page or a duplicate route fails the load. The files a
 /// plugin ships (`plugin.toml`, page XML, model and theme files, and the WASM
 /// artifact, which may sit in a build folder such as `out/` and is stored
-/// beside `plugin.toml`) are copied into `<app_dir>/plugins/<name>/<version>/`
-/// and each page is compiled to JSON under `<app_dir>/views/`. The catalog
-/// records the plugin and its pages together.
+/// beside `plugin.toml`) are stored under `<app_dir>/plugins/<name>/`, and each page is
+/// compiled to JSON under `<app_dir>/views/`. The catalog records the plugin and its pages
+/// together.
 ///
-/// Catalog versions are immutable: re-loading identical content is a no-op,
-/// while different content under an existing `name@version` is rejected. A
-/// plugin may have no WASM artifact (a pure UI plugin).
+/// Files are stored as revisions (see [`super::revisions`]): they are compared by hash with
+/// the plugin's latest revision, and only the ones that differ are written, into a new
+/// folder named after the date and time. Loading identical content again is a no-op; loading
+/// changed content under a version that is already catalogued adds `<version>+<stamp>`, so a
+/// rebuild needs no version bump. A plugin may have no WASM artifact (a pure UI plugin).
 pub async fn load_plugin(
     db: &Surreal<Client>,
     namespace: &str,
@@ -313,12 +379,9 @@ pub async fn load_plugin(
         return Err(CatalogError::IncompleteManifest(manifest_path));
     }
 
-    let relative_dir =
-        AppDir::plugin_relative_dir(&manifest.plugin.name, &manifest.plugin.version)?;
-    let destination = layout.root().join(&relative_dir);
-
     let pages = discover_pages(&package_dir).await?;
     validate_page_models(&manifest, &pages)?;
+    validate_capabilities(&manifest, &manifest_path)?;
 
     let theme = read_theme(&manifest, &manifest_path, &package_dir).await?;
     let app = read_app(&manifest, &manifest_path, &pages)?;
@@ -329,8 +392,8 @@ pub async fn load_plugin(
         files.insert(resolve_package_file(&package_dir, declared).await?);
     }
 
-    // The artifact may live in a build folder such as `out/`; in `app_dir` it is
-    // stored beside `plugin.toml`, where the runtime looks for the manifest.
+    // The artifact may live in a build folder such as `out/`; it is stored beside
+    // `plugin.toml`, under its own file name.
     let artifact = match manifest.plugin.wasm_file.as_deref().filter(|file| !file.is_empty()) {
         Some(wasm_file) => {
             let source = resolve_package_file(&package_dir, wasm_file).await?;
@@ -343,6 +406,8 @@ pub async fn load_plugin(
         None => None,
     };
 
+    // Read every file once: these bytes are what is hashed, compared and stored.
+    let mut contents: Vec<(String, Vec<u8>)> = Vec::new();
     let mut wasm_hash = None;
     let mut content = Sha256::new();
     for relative in &files {
@@ -351,25 +416,22 @@ pub async fn load_plugin(
         content.update(relative.to_string_lossy().as_bytes());
         content.update((bytes.len() as u64).to_le_bytes());
         content.update(&bytes);
+        contents.push((logical_path(relative), bytes));
     }
+    let artifact_logical = artifact.as_ref().map(|artifact| logical_path(&artifact.name));
     if let Some(artifact) = &artifact {
         let source = package_dir.join(&artifact.source);
         let bytes = tokio::fs::read(&source).await.map_err(io_error(&source))?;
         wasm_hash = Some(sha256_hex(&bytes));
         content.update(artifact.name.to_string_lossy().as_bytes());
         content.update(&bytes);
+        contents.push((logical_path(&artifact.name), bytes));
     }
     let content_hash = content
         .finalize()
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
-    let artifact_path = artifact.as_ref().map(|artifact| {
-        relative_dir
-            .join(&artifact.name)
-            .to_string_lossy()
-            .into_owned()
-    });
 
     let is_system_theme = manifest.theme.as_ref().is_some_and(|theme| theme.is_system);
     let app_summary = app.as_ref().map(|app| (app.label.clone(), app.route.clone()));
@@ -377,47 +439,106 @@ pub async fn load_plugin(
         .as_ref()
         .map(|theme| (theme.name.clone(), theme.layout.clone()));
     let definition = manifest.plugin;
-    let summary = |created| LoadedPlugin {
+    let summary = |version: String,
+                   artifact_path: Option<String>,
+                   created: bool,
+                   revision: Option<String>,
+                   written_files: usize,
+                   reused_files: usize| LoadedPlugin {
         name: definition.name.clone(),
-        version: definition.version.clone(),
-        artifact_path: artifact_path.clone(),
+        version,
+        artifact_path,
         pages: pages.len(),
         public_pages: pages.iter().filter(|page| page.public).count(),
         theme: theme_summary.clone(),
         app: app_summary.clone(),
         created,
+        revision,
+        written_files,
+        reused_files,
     };
 
     db.use_ns(namespace).await?;
     db.use_db(core_database).await?;
 
+    // Everything this plugin already has in the catalog, newest first.
     let mut response = db
-        .query("SELECT content_hash FROM plugins WHERE name = $name AND version = $version LIMIT 1;")
+        .query("SELECT version, content_hash, revision, date_created FROM plugins WHERE name = $name ORDER BY date_created DESC;")
         .bind(("name", definition.name.clone()))
-        .bind(("version", definition.version.clone()))
         .await?
         .check()?;
-    let existing: Vec<ExistingContent> = response.take(0)?;
-    if let Some(existing) = existing.into_iter().next() {
-        if existing.content_hash.as_deref() != Some(content_hash.as_str()) {
-            return Err(CatalogError::VersionConflict {
-                name: definition.name,
-                version: definition.version,
-            });
-        }
-        // Already catalogued: only repair app_dir if its copy has gone missing.
-        let artifact_missing = artifact
-            .as_ref()
-            .is_some_and(|artifact| !destination.join(&artifact.name).is_file());
-        if artifact_missing || !destination.join(MANIFEST_FILE).is_file() {
-            copy_package(&package_dir, &destination, &files, artifact.as_ref()).await?;
-            write_view_files(&layout, &definition.name, &definition.version, &pages).await?;
-        }
-        return Ok(summary(false));
+    let known: Vec<KnownVersion> = response.take(0)?;
+    let same_version = |row: &&KnownVersion| base_version(&row.version) == definition.version;
+
+    // The same content again is not a new revision.
+    if let Some(same) = known
+        .iter()
+        .filter(same_version)
+        .find(|row| row.content_hash.as_deref() == Some(content_hash.as_str()))
+    {
+        let artifact_path = match &same.revision {
+            Some(revision) => {
+                let index = revisions::read_index(&layout, &definition.name, revision).await?;
+                // Only repair `app_dir` if its copy has gone missing.
+                if let Some(index) = &index {
+                    if !revisions::missing_files(&layout, index).await?.is_empty() {
+                        revisions::restore(&layout, index, &contents).await?;
+                    }
+                }
+                artifact_logical
+                    .as_ref()
+                    .and_then(|logical| index.as_ref()?.files.get(logical).map(|entry| (logical, entry)))
+                    .map(|(logical, entry)| revisions::relative_path(&definition.name, entry, logical))
+                    .map(|path| path.to_string_lossy().into_owned())
+            }
+            // Stored in the older layout: files are in plugins/<name>/<version>/.
+            None => artifact
+                .as_ref()
+                .map(|artifact| {
+                    AppDir::plugin_relative_dir(&definition.name, &same.version)
+                        .map(|dir| dir.join(&artifact.name).to_string_lossy().into_owned())
+                })
+                .transpose()?,
+        };
+        return Ok(summary(same.version.clone(), artifact_path, false, same.revision.clone(), 0, 0));
     }
 
-    copy_package(&package_dir, &destination, &files, artifact.as_ref()).await?;
-    write_view_files(&layout, &definition.name, &definition.version, &pages).await?;
+    // New content. Compare its files by hash with the plugin's latest revision and write
+    // only the ones that differ, into a new folder named after the date and time.
+    let previous = match known.first() {
+        Some(latest) => {
+            let folder = latest.revision.clone().unwrap_or_else(|| latest.version.clone());
+            revisions::read_index(&layout, &definition.name, &folder)
+                .await?
+                .map(|index| (folder, index))
+        }
+        None => None,
+    };
+    let stored = revisions::store(
+        &layout,
+        &definition.name,
+        &definition.version,
+        previous.as_ref().map(|(folder, index)| (folder.as_str(), index)),
+        &contents,
+    )
+    .await?;
+
+    // The first load of a version keeps the version as written; a rebuild of one that is
+    // already catalogued is `<version>+<stamp>`, so nothing needs a manual version bump.
+    let catalog_version = if known.iter().any(|row| base_version(&row.version) == definition.version) {
+        format!("{}+{}", definition.version, stored.revision)
+    } else {
+        definition.version.clone()
+    };
+    let artifact_path = artifact_logical
+        .as_ref()
+        .and_then(|logical| stored.index.files.get(logical).map(|entry| (logical, entry)))
+        .map(|(logical, entry)| {
+            revisions::relative_path(&definition.name, entry, logical)
+                .to_string_lossy()
+                .into_owned()
+        });
+    write_view_files(&layout, &definition.name, &catalog_version, &pages).await?;
 
     let record = NewPlugin {
         name: definition.name.clone(),
@@ -426,7 +547,7 @@ pub async fn load_plugin(
         } else {
             definition.label.clone()
         },
-        version: definition.version.clone(),
+        version: catalog_version.clone(),
         description: definition.description.clone(),
         long_description: definition.long_description.clone(),
         icon_path: definition.icon_path.clone(),
@@ -455,6 +576,7 @@ pub async fn load_plugin(
         artifact_path: artifact_path.clone(),
         artifact_hash: wasm_hash,
         content_hash,
+        revision: Some(stored.revision.clone()),
         app,
         public_functions: definition.public_functions.clone(),
         is_builtin: definition.is_builtin,
@@ -525,7 +647,14 @@ pub async fn load_plugin(
     .await?
     .check()?;
 
-    Ok(summary(true))
+    Ok(summary(
+        catalog_version,
+        artifact_path,
+        true,
+        Some(stored.revision),
+        stored.written.len(),
+        stored.reused.len(),
+    ))
 }
 
 /// The launcher tile for a plugin that declares `[app]`. Its `route` must be a
@@ -686,44 +815,6 @@ struct Artifact {
     name: PathBuf,
 }
 
-/// Copy `files` (package-relative, layout preserved) and the `artifact`
-/// (flattened to the destination root) from `package_dir` into `destination`.
-/// Files already at their destination are left alone.
-async fn copy_package(
-    package_dir: &Path,
-    destination: &Path,
-    files: &BTreeSet<PathBuf>,
-    artifact: Option<&Artifact>,
-) -> Result<(), CatalogError> {
-    tokio::fs::create_dir_all(destination)
-        .await
-        .map_err(io_error(destination))?;
-    let destination = tokio::fs::canonicalize(destination)
-        .await
-        .map_err(io_error(destination))?;
-
-    let transfers = files
-        .iter()
-        .map(|relative| (relative, relative))
-        .chain(artifact.map(|artifact| (&artifact.source, &artifact.name)));
-    for (from, to) in transfers {
-        let source = package_dir.join(from);
-        let target = destination.join(to);
-        if source == target {
-            continue;
-        }
-        if let Some(parent) = target.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(io_error(parent))?;
-        }
-        tokio::fs::copy(&source, &target)
-            .await
-            .map_err(io_error(&target))?;
-    }
-    Ok(())
-}
-
 /// A theme added to an organization by installing its plugin.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstalledTheme {
@@ -882,6 +973,114 @@ pub async fn install_plugins(
         report.installed.push((record.name, record.version));
     }
 
+    Ok(report)
+}
+
+/// Result of [`upgrade_plugins`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UpgradeReport {
+    /// `(name, from, to)` for each plugin moved to another catalog version.
+    pub upgraded: Vec<(String, String, String)>,
+    /// `(name, version)` for plugins already on the version asked for.
+    pub already_current: Vec<(String, String)>,
+}
+
+/// Move an organization to another catalog version of plugins it has installed: the newest
+/// loaded one, or the one named (`name@version`). Nothing is copied: catalog versions are
+/// already on disk, as revisions that share their unchanged files.
+///
+/// The target's dependencies must already be installed, and its pages must not take over a
+/// route another installed plugin serves. A theme the plugin ships is updated in place and
+/// stays active if it was.
+pub async fn upgrade_plugins(
+    db: &Surreal<Client>,
+    namespace: &str,
+    core_database: &str,
+    org_database: &str,
+    specs: &[PluginSpec],
+) -> Result<UpgradeReport, CatalogError> {
+    db.use_ns(namespace).await?;
+    db.use_db(core_database).await?;
+    let mut response = db
+        .query("SELECT db_name FROM org_databases WHERE db_name = $org LIMIT 1;")
+        .bind(("org", org_database.to_string()))
+        .await?
+        .check()?;
+    let orgs: Vec<OrgDatabaseRow> = response.take(0)?;
+    if orgs.is_empty() {
+        return Err(CatalogError::OrganizationNotFound(org_database.to_string()));
+    }
+
+    db.use_db(org_database).await?;
+    let mut response = db
+        .query("SELECT plugin_name, version FROM installed_plugins;")
+        .await?
+        .check()?;
+    let rows: Vec<InstalledRow> = response.take(0)?;
+    let mut installed: HashMap<String, String> =
+        rows.into_iter().map(|row| (row.plugin_name, row.version)).collect();
+
+    let mut report = UpgradeReport::default();
+    for spec in specs {
+        let Some(from) = installed.get(&spec.name).cloned() else {
+            return Err(CatalogError::NotInstalled(spec.name.clone()));
+        };
+        db.use_db(core_database).await?;
+        let target = select_catalog_version(db, spec).await?;
+        if target.version == from {
+            report.already_current.push((spec.name.clone(), from));
+            continue;
+        }
+        for dependency in target.dependencies.clone().unwrap_or_default() {
+            if !installed.contains_key(&dependency) {
+                return Err(CatalogError::MissingDependency {
+                    plugin: spec.name.clone(),
+                    dependency,
+                });
+            }
+        }
+        // The plugin's own old pages do not count against its new ones.
+        let others: HashMap<String, String> = installed
+            .iter()
+            .filter(|(name, _)| **name != spec.name)
+            .map(|(name, version)| (name.clone(), version.clone()))
+            .collect();
+        check_route_conflicts(db, &others, std::slice::from_ref(&target)).await?;
+        let theme = fetch_planned_themes(db, std::slice::from_ref(&target))
+            .await?
+            .into_iter()
+            .next();
+
+        db.use_db(org_database).await?;
+        db.query(
+            r#"
+            BEGIN TRANSACTION;
+            UPDATE type::record('installed_plugins', $name) SET version = $version;
+            IF $theme != NONE {
+                UPSERT type::record('ui_themes', $theme.name) MERGE {
+                    name: $theme.name,
+                    label: $theme.label,
+                    is_system: $theme.is_system,
+                    color_mode: $theme.color_mode,
+                    tokens: $theme.tokens,
+                    layout: $theme.layout,
+                    error_pages: $theme.error_pages,
+                    nav: $theme.nav,
+                    plugin_name: $name,
+                    plugin_version: $version
+                };
+            };
+            COMMIT TRANSACTION;
+            "#,
+        )
+        .bind(("theme", theme))
+        .bind(("name", spec.name.clone()))
+        .bind(("version", target.version.clone()))
+        .await?
+        .check()?;
+        installed.insert(spec.name.clone(), target.version.clone());
+        report.upgraded.push((spec.name.clone(), from, target.version));
+    }
     Ok(report)
 }
 
@@ -1086,18 +1285,18 @@ impl Plan<'_> {
     }
 }
 
-/// Pick the active catalog row for `spec`. Without an explicit version the
-/// name must resolve to exactly one active version.
+/// Pick the active catalog row for `spec`. Without an explicit version, the one loaded
+/// most recently.
 async fn select_catalog_version(
     db: &Surreal<Client>,
     spec: &PluginSpec,
 ) -> Result<PluginDbDefinition, CatalogError> {
     let mut response = db
-        .query("SELECT * FROM plugins WHERE name = $name AND is_active = true;")
+        .query("SELECT * FROM plugins WHERE name = $name AND is_active = true ORDER BY date_created DESC;")
         .bind(("name", spec.name.clone()))
         .await?
         .check()?;
-    let mut rows: Vec<PluginDbDefinition> = response.take(0)?;
+    let rows: Vec<PluginDbDefinition> = response.take(0)?;
 
     match &spec.version {
         Some(version) => rows
@@ -1107,18 +1306,10 @@ async fn select_catalog_version(
                 name: spec.name.clone(),
                 version: version.clone(),
             }),
-        None => match rows.len() {
-            0 => Err(CatalogError::PluginNotFound(spec.name.clone())),
-            1 => Ok(rows.remove(0)),
-            _ => {
-                let mut versions: Vec<_> = rows.into_iter().map(|row| row.version).collect();
-                versions.sort();
-                Err(CatalogError::AmbiguousVersion {
-                    name: spec.name.clone(),
-                    versions: versions.join(", "),
-                })
-            }
-        },
+        None => rows
+            .into_iter()
+            .next()
+            .ok_or_else(|| CatalogError::PluginNotFound(spec.name.clone())),
     }
 }
 
@@ -1153,37 +1344,6 @@ mod tests {
             sha256_hex(b"abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
-    }
-
-    #[tokio::test]
-    async fn copies_only_declared_files_into_the_app_dir() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let root = tempfile::tempdir()?;
-        let package = tokio::fs::canonicalize(root.path()).await?.join("src_pkg");
-        tokio::fs::create_dir_all(package.join("pages")).await?;
-        tokio::fs::create_dir_all(package.join("target")).await?;
-        tokio::fs::write(package.join("plugin.toml"), "x").await?;
-        tokio::fs::create_dir_all(package.join("out")).await?;
-        tokio::fs::write(package.join("out/plugin.wasm"), "wasm").await?;
-        tokio::fs::write(package.join("pages/partners.xml"), "<page route=\"/p\"/>").await?;
-        tokio::fs::write(package.join("target/huge.bin"), "junk").await?;
-
-        let pages = discover_pages(&package).await?;
-        let mut files = BTreeSet::from([PathBuf::from(MANIFEST_FILE)]);
-        files.extend(pages.iter().map(|page| page.source.clone()));
-        let artifact = Artifact {
-            source: resolve_package_file(&package, "out/plugin.wasm").await?,
-            name: PathBuf::from("plugin.wasm"),
-        };
-
-        let destination = root.path().join("app/plugins/partner/0.1.0");
-        copy_package(&package, &destination, &files, Some(&artifact)).await?;
-
-        assert!(destination.join("plugin.toml").is_file());
-        assert!(destination.join("plugin.wasm").is_file());
-        assert!(destination.join("pages/partners.xml").is_file());
-        assert!(!destination.join("target").exists());
-        Ok(())
     }
 
     #[tokio::test]

@@ -212,7 +212,10 @@ async fn identify_inner(
     {
         let memberships =
             membership_db_names(state, &record_id_string(&session.user.id)).await?;
+        // A developer who left their organization stays out of every one.
+        let left = super::organizations::session_left_organization(session);
         match memberships.as_slice() {
+            _ if left => {}
             [only] => org_db = Some(only.clone()),
             [] => {}
             // Several organizations and no hint: the user has to choose.

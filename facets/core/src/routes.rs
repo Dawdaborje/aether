@@ -29,11 +29,10 @@ pub fn routes() -> Router<AppState> {
         .merge(web)
         .merge(crate::theme_api::routes())
         .merge(crate::apps_api::routes())
+        .merge(crate::bridges_api::routes())
         .merge(crate::catalog_api::routes())
-        .route(
-            "/api/ui/ws/notifications",
-            get(crate::websocket::notifications_ws),
-        )
+        .merge(crate::org_admin_api::routes())
+        .merge(crate::notifications::api::routes())
         .route(
             "/api/plugins/{plugin}/{function}",
             post(crate::plugin_manager::api::invoke_plugin),

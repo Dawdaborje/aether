@@ -8,8 +8,17 @@
 	import { authSession } from '$lib/auth/session.svelte';
 	import { gotoLogin, landingPath } from '$lib/auth/landing';
 	import { orgStore } from '$lib/org/orgStore.svelte';
+	import { PageState, setPageState } from '$lib/pages/pageContext.svelte';
 
 	let { data, params } = $props();
+
+	// The plugin and route values widgets on this page call functions with.
+	const pageState = new PageState();
+	setPageState(pageState);
+	$effect.pre(() => {
+		pageState.plugin = data.body?.plugin ?? '';
+		pageState.params = data.body?.params ?? {};
+	});
 
 	const atRoot = $derived(params.slug === '');
 
