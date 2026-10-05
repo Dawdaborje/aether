@@ -36,6 +36,12 @@ pub enum OrganizationError {
     #[error("organization `{0}` already exists")]
     AlreadyExists(String),
 
+    #[error("could not give the administrator role: {0}")]
+    Role(String),
+
+    #[error("a user called `{0}` (or with that email) already exists")]
+    UserExists(String),
+
     #[error("invalid organization database name: {0}")]
     InvalidDatabaseName(String),
 
@@ -241,6 +247,7 @@ pub async fn create_organization(
             date_updated: now.clone(),
         })
         .await?;
+    let user_id_for_role = user_id.clone();
     let _: Option<OrgUser> = db
         .create::<Option<OrgUser>>(("org_users", slugify(&user_id)))
         .content(OrgUser {
@@ -251,6 +258,10 @@ pub async fn create_organization(
             date_updated: now,
         })
         .await?;
+    // Whoever creates an organization administers it.
+    crate::roles::grant_by_id(db, &user_id_for_role, crate::roles::ORG_ADMIN)
+        .await
+        .map_err(|error| OrganizationError::Role(error.to_string()))?;
 
     Ok((db_name, org_storage))
 }
@@ -329,6 +340,41 @@ pub async fn assign_user(
         .await?;
 
     Ok(())
+}
+
+/// Create a login account. It belongs to no organization until `assign_user` puts it in one.
+pub async fn create_user(
+    db: &Surreal<Client>,
+    namespace: &str,
+    username: &str,
+    email: &str,
+    password: &str,
+) -> Result<String, OrganizationError> {
+    if username.trim().is_empty() || email.trim().is_empty() || password.is_empty() {
+        return Err(OrganizationError::MissingUserCredentials);
+    }
+    db.use_ns(namespace).await?;
+    db.use_db("core").await?;
+    if find_existing_user_id(db, username, email).await?.is_some() {
+        return Err(OrganizationError::UserExists(username.to_string()));
+    }
+    let hashed_password = hash_password(password).map_err(|err| OrganizationError::PasswordHash(err.to_string()))?;
+    let now = Datetime::now();
+    let _: Option<CoreUser> = db
+        .create::<Option<CoreUser>>("users")
+        .content(NewCoreUser {
+            username: username.to_string(),
+            email: email.to_string(),
+            display_name: username.to_string(),
+            hashed_password,
+            is_super_user: false,
+            is_active: true,
+            is_email_verified: false,
+            date_created: now.clone(),
+            date_updated: now,
+        })
+        .await?;
+    find_existing_user_id(db, username, email).await?.ok_or(OrganizationError::UserCreationReturnedNoId)
 }
 
 async fn find_existing_user_id(

@@ -151,7 +151,20 @@ pub struct Args {
 
     // User space
     #[arg(long, action = clap::ArgAction::SetTrue)]
+    /// Create a login account (`--username`, `--email`, `--password`); `--org-db-name` also puts it in that organization
     pub create_user: bool,
+
+    #[arg(long, value_name = "ROLE")]
+    /// Give a role to the user named by `--username` (a username or email) in the organization `--org`, such as `hr.hr_manager` or `org_admin`
+    pub grant_role: Option<String>,
+
+    #[arg(long, value_name = "ROLE")]
+    /// Take a role away from the user named by `--username` in the organization `--org`
+    pub revoke_role: Option<String>,
+
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    /// List the roles of the organization `--org` and who holds them
+    pub list_roles: bool,
 
     #[arg(long)]
     pub username: Option<String>,

@@ -63,6 +63,23 @@ impl IdentityError {
     }
 }
 
+/// Answers to rule variables (`$hr.employee`), kept for one request so a rule is not worked out
+/// again by every query. Shared by the plugins a request calls.
+#[derive(Debug, Clone, Default)]
+pub struct RuleCache(pub std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, serde_json::Value>>>);
+
+impl RuleCache {
+    pub fn get(&self, name: &str) -> Option<serde_json::Value> {
+        self.0.lock().ok().and_then(|map| map.get(name).cloned())
+    }
+
+    pub fn set(&self, name: &str, value: serde_json::Value) {
+        if let Ok(mut map) = self.0.lock() {
+            map.insert(name.to_string(), value);
+        }
+    }
+}
+
 /// The outcome of [`identify`].
 #[derive(Debug, Clone)]
 pub struct Identity {
@@ -80,6 +97,8 @@ pub struct Identity {
     /// Raw token of a visitor created during this request; the caller must
     /// set it as the `aether_visitor` cookie.
     pub new_visitor_token: Option<String>,
+    /// Answers to rule variables for this request.
+    pub rule_cache: RuleCache,
 }
 
 #[derive(Debug, SurrealValue)]
@@ -298,6 +317,7 @@ async fn identify_inner(
         foreign_user,
         client_ip: ip,
         new_visitor_token: None,
+        rule_cache: RuleCache::default(),
     })
 }
 

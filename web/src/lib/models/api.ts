@@ -5,11 +5,13 @@ export type FieldType =
 	| 'text'
 	| 'int'
 	| 'float'
+	| 'decimal'
 	| 'bool'
 	| 'date'
 	| 'datetime'
 	| 'select'
 	| 'link'
+	| 'many2many'
 	| 'json';
 
 export const FIELD_TYPES: { value: FieldType; label: string }[] = [
@@ -17,11 +19,13 @@ export const FIELD_TYPES: { value: FieldType; label: string }[] = [
 	{ value: 'text', label: 'Text (long)' },
 	{ value: 'int', label: 'Whole number' },
 	{ value: 'float', label: 'Number' },
+	{ value: 'decimal', label: 'Exact decimal (money)' },
 	{ value: 'bool', label: 'Yes / no' },
 	{ value: 'date', label: 'Date' },
 	{ value: 'datetime', label: 'Date and time' },
 	{ value: 'select', label: 'Choice' },
 	{ value: 'link', label: 'Link to a record' },
+	{ value: 'many2many', label: 'Links to several records' },
 	{ value: 'json', label: 'JSON' }
 ];
 

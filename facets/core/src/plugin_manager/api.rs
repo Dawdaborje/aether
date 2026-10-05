@@ -294,7 +294,7 @@ async fn run_call(
         })?;
 
     let manifest = &loaded.manifest;
-    let (granted, models) = if anonymous {
+    let (granted, mut models) = if anonymous {
         let models = anonymous_grants(manifest, &loaded.schemas, &public_models);
         let readable = models.values().any(|grant| grant.can_read);
         (anonymous_capabilities(manifest, readable), models)
@@ -304,6 +304,12 @@ async fn run_call(
             user_grants(manifest, &loaded.schemas),
         )
     };
+    for (name, grant) in models.iter_mut() {
+        grant.rules = loaded.rules.get(name).cloned();
+    }
+    // The kernel's own jobs are not held to a person's rules, and neither are the small
+    // functions (`rule_var_*`) that answer a rule's variables: they would need the rules they feed.
+    let bypass_rules = matches!(identity.actor, Actor::System(_)) || function.starts_with(crate::kernel::host::guard::VARIABLE_PREFIX);
     let host = PluginHostContext::new(
         plugin_name,
         granted,
@@ -314,6 +320,7 @@ async fn run_call(
         CallInfo::new(identity.audit.clone(), function),
     )
     .with_event_depth(event_depth)
+    .with_rules(bypass_rules, identity.rule_cache.clone())
     .with_bridges(manifest.plugin.bridges.clone())
     .with_http_hosts(manifest.plugin.http_hosts.clone())
     .with_plugin_calls(
@@ -451,6 +458,7 @@ pub async fn run_system_call_as(
             user_agent: Some("kernel".into()),
         },
         new_visitor_token: None,
+        rule_cache: Default::default(),
     };
     let trail = vec![format!("{plugin}.{function}")];
     // A handler of an event knows how many handlers came before it (see `plugin_events`).

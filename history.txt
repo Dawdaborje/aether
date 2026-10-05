@@ -1,2 +1,0 @@
-#V2
-SELECT name, object::keys(i18n) AS locales FROM plugins;

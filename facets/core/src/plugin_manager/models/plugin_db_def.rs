@@ -65,6 +65,9 @@ pub struct PluginDbDefinition {
     pub watches: Option<Vec<serde_json::Value>>,
     /// The events the plugin listens to, copied into an organization when it installs the plugin.
     pub event_listeners: Option<Vec<serde_json::Value>>,
+    /// The roles the plugin offers, created in an organization when it installs the plugin.
+    #[serde(default)]
+    pub roles: Option<Vec<serde_json::Value>>,
     pub workspace: Option<String>,
     pub kind: Option<String>,
     pub artifact_path: Option<String>,

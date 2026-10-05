@@ -20,6 +20,7 @@ pub mod org_admin_api;
 pub mod org_storage;
 pub mod pages_api;
 pub mod request_log;
+pub mod roles;
 pub mod plugin_events;
 pub mod plugin_files;
 pub mod plugin_manager;

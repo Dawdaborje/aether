@@ -38,9 +38,42 @@ readable name as a `COMMENT`. So:
 
 `string` (short text, optional `max_length`), `text`, `int`, `float`, `bool`, `date`
 (`YYYY-MM-DD`), `datetime` (RFC 3339), `select` (one of `options`, each with its own id so an option
-can be renamed too), `link` (a record id of another model, its `target`: of the same plugin, or of another plugin, see below) and `json`.
+can be renamed too), `link` (a record id of another model, its `target`: of the same plugin, or of another plugin, see below), `json`,
+`decimal` and `many2many`, described next.
 A field can be `required`, have a `default`, and be indexed (`"index": "plain"` or `"unique"`).
 The tables are schemafull: the database enforces the types as well.
+
+### Decimal: exact numbers
+
+`{"name": "salary", "type": "decimal", "scale": 2}` holds money, pay or days of leave without
+floating point. `scale` is the number of digits after the point (default 2, at most 9) and cannot change
+once records exist. Plugins send and receive decimals as **text** (`"1234.50"`; a JSON number is accepted
+as input); more digits than the scale are refused, never rounded. The database stores whole units of the
+smallest digit (`123450`), so `sum`, `avg`, comparisons, ordering and `db::increment` are exact and done
+by the database. Aggregates over a decimal come back as text too.
+
+### Several fields in one index
+
+`"indexes": [{"fields": ["person", "post"], "unique": true}]` on the model indexes fields together
+(2 to 8, in the order you filter by). Each index has its own stable `idx_` id, so renaming a field never
+rebuilds it; `aether --sync-models` assigns the ids.
+
+### Trees and many-to-many: graph edges
+
+* `{"name": "parent", "type": "link", "target": "unit", "hierarchy": true}` on a model that links to
+  itself makes a **tree** (org units, reporting lines). The column stays the source of truth, and the
+  kernel keeps a SurrealDB graph edge from parent to child in step with it, in the same transaction as
+  every write. A parent that does not exist, a parent that would make a loop, and deleting a record that
+  still has children are all refused. `db::tree` returns descendants (`down`) or ancestors (`up`) to any
+  depth (default and maximum 64) in one query, with `include_self`.
+* `{"name": "skills", "type": "many2many", "target": "skill"}` has no column at all, only edges from this
+  model's records to records of the target. `db::relate` / `db::unrelate` change them (linking twice is
+  harmless, targets must exist and be of the target model), `db::related` reads them, forwards or
+  `reverse`. Deleting a record removes its edges.
+
+The edge tables are named after the model and field ids (`edg_<model id>_<field id>`), are `ENFORCED`
+relations, and are never named by plugins: they name a field of a model they were granted, so the usual
+grants and audit apply. Making an existing link a hierarchy builds its edges from the column.
 
 ## Links to another plugin's model
 
@@ -113,7 +146,7 @@ API (developers only): `GET /api/ui/models`, `POST /api/ui/models/{plugin}/plan`
 
 ## Not yet
 
-Composite indexes, `decimal` and `file` fields, a data migration for unsafe type changes (shipped
+`file` fields, one-to-many child lines, a data migration for unsafe type changes (shipped
 by the plugin), and per-organization custom fields on top of a plugin's models.
 
 ## Extending and inheriting models (design, decided; not built yet)

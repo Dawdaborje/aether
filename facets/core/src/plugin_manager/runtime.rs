@@ -82,6 +82,8 @@ pub enum PluginRuntimeError {
     ArtifactHashMismatch { name: String, version: String },
     #[error("plugin manifest identity does not match catalog record for `{name}@{version}`")]
     ManifestIdentityMismatch { name: String, version: String },
+    #[error("plugin `{name}`: its rules are wrong: {problems}")]
+    Rules { name: String, problems: String },
     #[error("plugin `{name}@{version}` is not an active catalog version")]
     NotInCatalog { name: String, version: String },
     #[error(
@@ -168,6 +170,8 @@ pub struct LoadedPlugin {
     pub models: Vec<crate::data_model::ModelDef>,
     /// How each model's fields are stored, by model name.
     pub schemas: std::collections::HashMap<String, Arc<crate::data_model::ModelSchema>>,
+    /// Who may see and change which records and fields, by model name (`rules/*.json`).
+    pub rules: std::collections::HashMap<String, Arc<crate::data_model::RuleSet>>,
     pub compiled: Executable,
     /// What this plugin is estimated to hold in memory while it is kept ready.
     pub estimated_mb: f64,
@@ -637,6 +641,7 @@ impl PluginRuntime {
         }
 
         let models = self.load_models(&record, &artifact_path).await?;
+        let rules = self.load_rules(&record, &artifact_path, &models).await?;
 
         let name = manifest.plugin.name.clone();
         let version = manifest.plugin.version.clone();
@@ -655,6 +660,7 @@ impl PluginRuntime {
                 manifest,
                 models,
                 schemas,
+                rules,
                 compiled: Executable::Script(Arc::new(program)),
                 estimated_mb,
                 wasm_bytes,
@@ -714,6 +720,7 @@ impl PluginRuntime {
             manifest,
             models,
             schemas,
+            rules,
             compiled: Executable::Wasm(Arc::new(compiled)),
             estimated_mb,
             wasm_bytes,
@@ -753,6 +760,41 @@ impl PluginRuntime {
         }
         crate::data_model::validate_set(&models)?;
         Ok(models)
+    }
+
+    /// The rule files of this version, checked against its models.
+    async fn load_rules(
+        &self,
+        record: &PluginDbDefinition,
+        artifact_path: &Path,
+        models: &[crate::data_model::ModelDef],
+    ) -> Result<std::collections::HashMap<String, Arc<crate::data_model::RuleSet>>, PluginRuntimeError> {
+        let mut paths = Vec::new();
+        if let Some(revision) = &record.revision {
+            let layout = AppDir::new(self.inner.app_dir.as_path());
+            if let Some(index) = super::revisions::read_index(&layout, &record.name, revision).await? {
+                for (logical, entry) in &index.files {
+                    if logical.starts_with("rules/") && logical.ends_with(".json") {
+                        paths.push((logical.clone(), layout.revision_dir(&record.name, &entry.revision)?.join(logical)));
+                    }
+                }
+            }
+        } else if let Some(parent) = artifact_path.parent() {
+            if let Ok(mut entries) = tokio::fs::read_dir(parent.join("rules")).await {
+                while let Some(entry) = entries.next_entry().await? {
+                    paths.push((format!("rules/{}", entry.file_name().to_string_lossy()), entry.path()));
+                }
+            }
+        }
+        paths.sort();
+        let mut files = Vec::with_capacity(paths.len());
+        for (logical, path) in paths {
+            files.push((logical, tokio::fs::read_to_string(&path).await?));
+        }
+        let sets = crate::data_model::rules::parse_all(&files, models).map_err(|problems| {
+            PluginRuntimeError::Rules { name: record.name.clone(), problems: problems.join("; ") }
+        })?;
+        Ok(sets.into_iter().map(|set| (set.model.clone(), Arc::new(set))).collect())
     }
 
     /// Where this version's `plugin.toml` is: in its revision's file index (the file may be
@@ -936,6 +978,7 @@ mod tests {
             i18n: None,
             watches: None,
             event_listeners: None,
+            roles: None,
             workspace: None,
             kind: None,
             artifact_path: Some(format!("plugins/{name}/{version}/plugin.wasm")),

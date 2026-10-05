@@ -1,7 +1,12 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as JsonValue};
 
+use crate::data_model::query::{Unchecked, compile_filter};
+use crate::data_model::{Aggregate, Filter};
+
 use super::context::{ModelGrant, PluginHostContext};
+use super::guard;
+use crate::data_model::Operation;
 use super::error::HostError;
 
 #[derive(Debug, Deserialize)]
@@ -41,13 +46,14 @@ pub struct IncrementRequest {
     pub model: String,
     pub id: String,
     pub field: String,
-    /// What to add; negative subtracts. Defaults to one.
+    /// What to add; negative subtracts. Defaults to one. A decimal field takes text (`"0.5"`)
+    /// or a number.
     #[serde(default = "one")]
-    pub by: f64,
+    pub by: JsonValue,
 }
 
-fn one() -> f64 {
-    1.0
+fn one() -> JsonValue {
+    JsonValue::from(1)
 }
 
 #[derive(Debug, Deserialize)]
@@ -62,7 +68,7 @@ pub struct DbResponse {
     pub data: JsonValue,
 }
 
-fn require_model<'a>(
+pub(super) fn require_model<'a>(
     ctx: &'a PluginHostContext,
     name: &str,
     write: bool,
@@ -84,7 +90,7 @@ fn require_model<'a>(
     Ok(grant)
 }
 
-fn validate_ident(name: &str) -> Result<(), HostError> {
+pub(super) fn validate_ident(name: &str) -> Result<(), HostError> {
     if name.is_empty()
         || !name
             .chars()
@@ -101,7 +107,7 @@ fn validate_field_name(name: &str) -> Result<(), HostError> {
     validate_ident(name)
 }
 
-fn parse_req<T: serde::de::DeserializeOwned>(payload: &JsonValue) -> Result<T, HostError> {
+pub(super) fn parse_req<T: serde::de::DeserializeOwned>(payload: &JsonValue) -> Result<T, HostError> {
     serde_json::from_value(payload.clone())
         .map_err(|e| HostError::InvalidPayload(e.to_string()))
 }
@@ -153,9 +159,9 @@ const RETURN_INDEX: usize = 3;
 /// Statements run in the same transaction as the work, before it and after the audit row.
 /// Every entry must be exactly one statement, so the return index can be counted.
 #[derive(Default)]
-struct Extra {
-    before: Vec<String>,
-    after: Vec<String>,
+pub(super) struct Extra {
+    pub(super) before: Vec<String>,
+    pub(super) after: Vec<String>,
 }
 
 impl Extra {
@@ -214,17 +220,17 @@ fn chatter_extra(grant: &ModelGrant, operation: &str) -> Result<Extra, HostError
     Ok(extra)
 }
 
-struct Access<'a> {
-    operation: &'static str,
-    model: String,
-    table: &'a str,
+pub(super) struct Access<'a> {
+    pub(super) operation: &'static str,
+    pub(super) model: String,
+    pub(super) table: &'a str,
 }
 
 /// Run `body` (which must `LET $rows = …;`) and record the access in
 /// `data_access` inside one transaction. If the audit row cannot be written,
 /// nothing is applied and the call fails. `ids` is the SurrealQL expression for
 /// the record ids touched.
-async fn run_audited(
+pub(super) async fn run_audited(
     ctx: &PluginHostContext,
     access: Access<'_>,
     body: &str,
@@ -271,11 +277,64 @@ async fn run_audited(
     for (name, value) in binds {
         query = query.bind((name, value));
     }
-    let mut response = query.await?.check()?;
+    let mut response = checked(query.await.map_err(map_db_error)?)?;
     Ok(response.take(extra.return_index())?)
 }
 
-fn record_binds(grant: &ModelGrant, id: &str) -> Vec<(String, JsonValue)> {
+/// A rule the kernel enforces inside a write (`THROW 'aether: …'`) reaches the plugin as a plain
+/// message about its own request, not as a database failure.
+pub(super) fn map_db_error(error: surrealdb::Error) -> HostError {
+    let text = error.to_string();
+    if let Some((_, message)) = text.split_once("aether-denied: ") {
+        return HostError::Denied(message.trim_end_matches(['\'', '"']).to_string());
+    }
+    match text.split_once("aether: ") {
+        Some((_, message)) => HostError::InvalidPayload(message.trim_end_matches(['\'', '"']).to_string()),
+        None => HostError::Db(error),
+    }
+}
+
+/// A response with every statement succeeded. When one fails inside a transaction the others
+/// come back as "not executed", so the statement that actually failed is the one to report.
+fn checked(mut response: surrealdb::IndexedResults) -> Result<surrealdb::IndexedResults, HostError> {
+    let errors = response.take_errors();
+    if errors.is_empty() {
+        return Ok(response);
+    }
+    let mut ordered: Vec<(usize, surrealdb::Error)> = errors.into_iter().collect();
+    ordered.sort_by_key(|(index, _)| *index);
+    let culprit = ordered
+        .iter()
+        .position(|(_, error)| !error.to_string().contains("not executed"))
+        .unwrap_or(0);
+    let (_, error) = ordered.swap_remove(culprit);
+    Err(map_db_error(error))
+}
+
+/// Before a write to one record: refuse it, and undo nothing because nothing has happened yet,
+/// unless the record is one the model's rules let the caller change.
+fn add_record_check(
+    extra: &mut Extra,
+    binds: &mut Vec<(String, JsonValue)>,
+    scope: guard::Scope,
+    model: &str,
+    what: &str,
+) {
+    if scope.sql.is_empty() {
+        return;
+    }
+    extra.before.insert(
+        0,
+        format!(
+            "IF array::len((SELECT VALUE id FROM type::record($__table, $__key) WHERE {})) = 0 \
+             {{ THROW 'aether-denied: you may not {what} this `{model}` record'; }};",
+            scope.sql
+        ),
+    );
+    binds.extend(scope.binds);
+}
+
+pub(super) fn record_binds(grant: &ModelGrant, id: &str) -> Vec<(String, JsonValue)> {
     vec![
         ("__table".to_string(), JsonValue::String(grant.table.clone())),
         (
@@ -285,7 +344,7 @@ fn record_binds(grant: &ModelGrant, id: &str) -> Vec<(String, JsonValue)> {
     ]
 }
 
-const RECORD_ID: &str = "[type::record($__table, $__key)]";
+pub(super) const RECORD_ID: &str = "[type::record($__table, $__key)]";
 
 /// One write, ready to run: the statement, what it binds, and the audit facts about it. A single
 /// command runs one plan in its own transaction; `db::transaction` runs several in one.
@@ -301,11 +360,12 @@ struct Plan<'a> {
 async fn run_plan(ctx: &PluginHostContext, plan: Plan<'_>) -> Result<JsonValue, HostError> {
     let grant = plan.grant;
     let rows = run_audited(ctx, plan.access, &plan.body, &plan.ids, plan.binds, plan.extra).await?;
-    Ok(serde_json::json!({ "ok": true, "data": rows.into_iter().next().map(|row| decode(grant, row)) }))
+    let (hidden, _) = guard::field_limits(ctx, grant).await?;
+    Ok(serde_json::json!({ "ok": true, "data": rows.into_iter().next().map(|row| guard::strip(&hidden, decode(grant, row))) }))
 }
 
 /// A record as the plugin sees it: field names, not the ids it is stored under.
-fn decode(grant: &ModelGrant, row: JsonValue) -> JsonValue {
+pub(super) fn decode(grant: &ModelGrant, row: JsonValue) -> JsonValue {
     match &grant.schema {
         Some(schema) => schema.decode(&row),
         None => row,
@@ -317,16 +377,152 @@ pub async fn db_get(ctx: &PluginHostContext, payload: &JsonValue) -> Result<Json
     let req: GetRequest = parse_req(payload)?;
     let grant = require_model(ctx, &req.model, false)?;
 
+    // A record the rules do not let the caller read is answered as if it were not there.
+    let Some(scope) = guard::scope(ctx, grant, Operation::Read, "r").await? else {
+        return Ok(serde_json::json!({ "ok": true, "data": JsonValue::Null }));
+    };
+    let (hidden, _) = guard::field_limits(ctx, grant).await?;
+    let mut binds = record_binds(grant, &req.id);
+    binds.extend(scope.binds);
+    let body = if scope.sql.is_empty() {
+        "LET $rows = SELECT * FROM type::record($__table, $__key);".to_string()
+    } else {
+        format!("LET $rows = SELECT * FROM type::record($__table, $__key) WHERE {};", scope.sql)
+    };
     let rows = run_audited(
         ctx,
         Access { operation: "read", model: req.model.clone(), table: &grant.table },
-        "LET $rows = SELECT * FROM type::record($__table, $__key);",
+        &body,
         RECORD_ID,
-        record_binds(grant, &req.id),
+        binds,
         Extra::default(),
     )
     .await?;
-    Ok(serde_json::json!({ "ok": true, "data": rows.into_iter().next().map(|row| decode(grant, row)) }))
+    Ok(serde_json::json!({ "ok": true, "data": rows.into_iter().next().map(|row| guard::strip(&hidden, decode(grant, row))) }))
+}
+
+/// The `WHERE` condition for a filter over `grant`'s model, with the values it binds (the table
+/// is always bound as `$__table`), narrowed by what the model's rules let the caller read. The
+/// condition is empty when everything matches. `None`: the rules let the caller read nothing.
+/// Also answers which fields the caller may not see.
+async fn guarded_condition(
+    ctx: &PluginHostContext,
+    grant: &ModelGrant,
+    model: &str,
+    filter: &Map<String, JsonValue>,
+) -> Result<Option<(String, Vec<(String, JsonValue)>, std::collections::HashSet<String>)>, HostError> {
+    let parsed = Filter::parse(filter)?;
+    let (hidden, _) = guard::field_limits(ctx, grant).await?;
+    guard::check_unreadable(&hidden, parsed.fields(), model)?;
+    let compiled = match &grant.schema {
+        Some(schema) => compile_filter(&parsed, schema.as_ref(), "f")?,
+        None => compile_filter(&parsed, &Unchecked, "f")?,
+    };
+    let Some(scope) = guard::scope(ctx, grant, Operation::Read, "r").await? else { return Ok(None) };
+    let mut binds = vec![("__table".to_string(), JsonValue::String(grant.table.clone()))];
+    binds.extend(compiled.binds);
+    binds.extend(scope.binds);
+    let condition = match (compiled.sql.is_empty(), scope.sql.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => compiled.sql,
+        (true, false) => scope.sql,
+        (false, false) => format!("({}) AND ({})", compiled.sql, scope.sql),
+    };
+    Ok(Some((condition, binds, hidden)))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CountRequest {
+    pub model: String,
+    #[serde(default)]
+    pub filter: Map<String, JsonValue>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AggregateRequest {
+    pub model: String,
+    #[serde(default)]
+    pub filter: Map<String, JsonValue>,
+    #[serde(default)]
+    pub group_by: Vec<String>,
+    pub aggs: Map<String, JsonValue>,
+}
+
+/// How many records match a filter, without reading them.
+pub async fn db_count(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
+    ctx.require_cap("db::query")?;
+    let req: CountRequest = parse_req(payload)?;
+    let grant = require_model(ctx, &req.model, false)?;
+    let Some((condition, binds, _)) = guarded_condition(ctx, grant, &req.model, &req.filter).await? else {
+        return Ok(serde_json::json!({ "ok": true, "data": 0 }));
+    };
+    let mut body = String::from("LET $rows = SELECT count() AS n FROM type::table($__table)");
+    if !condition.is_empty() {
+        body.push_str(" WHERE ");
+        body.push_str(&condition);
+    }
+    body.push_str(" GROUP ALL;");
+    let rows = run_audited(
+        ctx,
+        Access { operation: "read", model: req.model.clone(), table: &grant.table },
+        &body,
+        "[]",
+        binds,
+        Extra::default(),
+    )
+    .await?;
+    // No matching record leaves no group at all.
+    let count = rows.first().and_then(|row| row.get("n")).and_then(JsonValue::as_u64).unwrap_or(0);
+    Ok(serde_json::json!({ "ok": true, "data": count }))
+}
+
+/// Grouped figures over the records that match a filter: counts, sums, averages, minimums and
+/// maximums, per value of the `group_by` fields (or one row for the whole set).
+pub async fn db_aggregate(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
+    ctx.require_cap("db::query")?;
+    let req: AggregateRequest = parse_req(payload)?;
+    let grant = require_model(ctx, &req.model, false)?;
+    let Some((condition, binds, hidden)) = guarded_condition(ctx, grant, &req.model, &req.filter).await? else {
+        return Ok(serde_json::json!({ "ok": true, "data": [] }));
+    };
+    let aggregate = Aggregate::parse(&req.group_by, &req.aggs)?;
+    guard::check_unreadable(&hidden, aggregate.fields(), &req.model)?;
+    let (select, group) = match &grant.schema {
+        Some(schema) => aggregate.compile(schema.as_ref())?,
+        None => aggregate.compile(&Unchecked)?,
+    };
+    let decimals = match &grant.schema {
+        Some(schema) => aggregate.decimal_results(schema.as_ref()),
+        None => Vec::new(),
+    };
+    let mut body = format!("LET $rows = SELECT {select} FROM type::table($__table)");
+    if !condition.is_empty() {
+        body.push_str(" WHERE ");
+        body.push_str(&condition);
+    }
+    body.push_str(&format!(" {group} LIMIT {MAX_ROWS_PER_FIND};"));
+    let rows = run_audited(
+        ctx,
+        Access { operation: "read", model: req.model.clone(), table: &grant.table },
+        &body,
+        "[]",
+        binds,
+        Extra::default(),
+    )
+    .await?;
+    let rows: Vec<JsonValue> = rows
+        .into_iter()
+        .map(|mut row| {
+            for (name, scale) in &decimals {
+                if let Some(value) = row.get(name) {
+                    let shown = crate::data_model::decimal::present(value, *scale);
+                    row[name.as_str()] = shown;
+                }
+            }
+            row
+        })
+        .collect();
+    Ok(serde_json::json!({ "ok": true, "data": rows }))
 }
 
 pub async fn db_find(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
@@ -334,27 +530,13 @@ pub async fn db_find(ctx: &PluginHostContext, payload: &JsonValue) -> Result<Jso
     let req: FindRequest = parse_req(payload)?;
     let grant = require_model(ctx, &req.model, false)?;
 
-    let mut where_parts = Vec::new();
-    let mut binds: Vec<(String, JsonValue)> = vec![(
-        "__table".to_string(),
-        JsonValue::String(grant.table.clone()),
-    )];
-    for (i, (field, value)) in req.filter.iter().enumerate() {
-        // With a model definition the field is looked up by name and stored under its id.
-        let (column, value) = match &grant.schema {
-            Some(schema) => (schema.column_id(field)?.to_string(), schema.filter_value(field, value)?),
-            None => (field.clone(), value.clone()),
-        };
-        validate_field_name(&column)?;
-        let placeholder = format!("f{i}");
-        where_parts.push(format!("{column} = ${placeholder}"));
-        binds.push((placeholder, value));
-    }
-
+    let Some((condition, mut binds, hidden)) = guarded_condition(ctx, grant, &req.model, &req.filter).await? else {
+        return Ok(serde_json::json!({ "ok": true, "data": [] }));
+    };
     let mut body = String::from("LET $rows = SELECT * FROM type::table($__table)");
-    if !where_parts.is_empty() {
+    if !condition.is_empty() {
         body.push_str(" WHERE ");
-        body.push_str(&where_parts.join(" AND "));
+        body.push_str(&condition);
     }
     if let Some(order) = &req.order {
         // A leading `-` sorts the other way (`-rate_date`: newest first).
@@ -362,6 +544,7 @@ pub async fn db_find(ctx: &PluginHostContext, payload: &JsonValue) -> Result<Jso
             Some(name) => (name, " DESC"),
             None => (order.as_str(), ""),
         };
+        guard::check_unreadable(&hidden, [name], &req.model)?;
         let column = match &grant.schema {
             Some(schema) => schema.column_id(name)?.to_string(),
             None => name.to_string(),
@@ -385,21 +568,24 @@ pub async fn db_find(ctx: &PluginHostContext, payload: &JsonValue) -> Result<Jso
         Extra::default(),
     )
     .await?;
-    let rows: Vec<JsonValue> = rows.into_iter().map(|row| decode(grant, row)).collect();
+    let rows: Vec<JsonValue> = rows.into_iter().map(|row| guard::strip(&hidden, decode(grant, row))).collect();
     Ok(serde_json::json!({ "ok": true, "data": rows }))
 }
 
 pub async fn db_create(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
-    run_plan(ctx, plan_create(ctx, payload)?).await
+    run_plan(ctx, plan_create(ctx, payload).await?).await
 }
 
-fn plan_create<'a>(ctx: &'a PluginHostContext, payload: &JsonValue) -> Result<Plan<'a>, HostError> {
+async fn plan_create<'a>(ctx: &'a PluginHostContext, payload: &JsonValue) -> Result<Plan<'a>, HostError> {
     ctx.require_cap("db::mutate")?;
     let req: CreateRequest = parse_req(payload)?;
     let grant = require_model(ctx, &req.model, true)?;
     if req.data.is_empty() {
         return Err(HostError::InvalidPayload("data must not be empty".into()));
     }
+    let (_, locked) = guard::field_limits(ctx, grant).await?;
+    guard::check_locked(&locked, req.data.keys(), &req.model)?;
+    let scope = guard::scope(ctx, grant, Operation::Create, "d8").await?.ok_or_else(|| guard::denied(&req.model, "create"))?;
     // Checked against the model and keyed by field id, or (without one) as given.
     let data = match &grant.schema {
         Some(schema) => schema.encode_create(&req.data)?,
@@ -409,33 +595,51 @@ fn plan_create<'a>(ctx: &'a PluginHostContext, payload: &JsonValue) -> Result<Pl
         validate_field_name(key)?;
     }
 
-    let binds = vec![
+    let mut binds = vec![
         ("__table".to_string(), JsonValue::String(grant.table.clone())),
-        ("__data".to_string(), JsonValue::Object(data)),
+        ("__data".to_string(), JsonValue::Object(data.clone())),
     ];
+    let mut extra = chatter_extra(grant, "create")?;
+    if let Some(schema) = &grant.schema {
+        super::graph::create_extra(schema, &data, &mut binds, &mut extra);
+    }
+    if !scope.sql.is_empty() {
+        // The new record must be one the rules let this person create; if not, the whole write is undone.
+        extra.after.push(format!(
+            "IF array::len((SELECT VALUE id FROM $rows[0].id WHERE {})) = 0 {{ THROW 'aether-denied: you may not create `{}` records like this'; }};",
+            scope.sql, req.model
+        ));
+        binds.extend(scope.binds);
+    }
     Ok(Plan {
         access: Access { operation: "create", model: req.model, table: &grant.table },
         grant,
         body: "LET $rows = (CREATE type::table($__table) CONTENT $__data RETURN AFTER);".into(),
         ids: "$rows.id".into(),
         binds,
-        extra: chatter_extra(grant, "create")?,
+        extra,
     })
 }
 
 pub async fn db_update(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
-    run_plan(ctx, plan_update(ctx, payload)?).await
+    run_plan(ctx, plan_update(ctx, payload).await?).await
 }
 
-fn plan_update<'a>(ctx: &'a PluginHostContext, payload: &JsonValue) -> Result<Plan<'a>, HostError> {
+async fn plan_update<'a>(ctx: &'a PluginHostContext, payload: &JsonValue) -> Result<Plan<'a>, HostError> {
     ctx.require_cap("db::mutate")?;
     let req: UpdateRequest = parse_req(payload)?;
     let grant = require_model(ctx, &req.model, true)?;
+    let (_, locked) = guard::field_limits(ctx, grant).await?;
+    guard::check_locked(&locked, req.data.keys(), &req.model)?;
+    let scope = guard::scope(ctx, grant, Operation::Write, "d8").await?.ok_or_else(|| guard::denied(&req.model, "change"))?;
     let mut binds = record_binds(grant, &req.id);
+    let mut extra = chatter_extra(grant, "update")?;
+    add_record_check(&mut extra, &mut binds, scope, &req.model, "change");
     let body = match &grant.schema {
         Some(schema) => {
             // One statement that sets the changed columns (by id) and clears the ones set to null.
             let (set, clear) = schema.encode_update(&req.data)?;
+            super::graph::update_extra(schema, &set, &clear, &mut binds, &mut extra);
             let mut assignments = Vec::new();
             for (index, (column, value)) in set.into_iter().enumerate() {
                 validate_field_name(&column)?;
@@ -467,7 +671,7 @@ fn plan_update<'a>(ctx: &'a PluginHostContext, payload: &JsonValue) -> Result<Pl
         body,
         ids: RECORD_ID.into(),
         binds,
-        extra: chatter_extra(grant, "update")?,
+        extra,
     })
 }
 
@@ -475,57 +679,70 @@ fn plan_update<'a>(ctx: &'a PluginHostContext, payload: &JsonValue) -> Result<Pl
 /// callers incrementing at once both count: use it for counters and sequences, never read, add and
 /// write back.
 pub async fn db_increment(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
-    run_plan(ctx, plan_increment(ctx, payload)?).await
+    run_plan(ctx, plan_increment(ctx, payload).await?).await
 }
 
-fn plan_increment<'a>(ctx: &'a PluginHostContext, payload: &JsonValue) -> Result<Plan<'a>, HostError> {
+async fn plan_increment<'a>(ctx: &'a PluginHostContext, payload: &JsonValue) -> Result<Plan<'a>, HostError> {
     ctx.require_cap("db::mutate")?;
     let req: IncrementRequest = parse_req(payload)?;
-    if !req.by.is_finite() {
-        return Err(HostError::InvalidPayload("`by` must be a finite number".into()));
-    }
     let grant = require_model(ctx, &req.model, true)?;
-    let column = match &grant.schema {
-        Some(schema) => schema.numeric_column(&req.field)?.to_string(),
-        None => req.field.clone(),
+    let (column, by) = match &grant.schema {
+        Some(schema) => (schema.numeric_column(&req.field)?.to_string(), schema.increment_by(&req.field, &req.by)?),
+        None => (req.field.clone(), req.by.clone()),
+    };
+    let number = by.as_f64().filter(|n| n.is_finite());
+    let Some(number) = number else {
+        return Err(HostError::InvalidPayload("`by` must be a finite number".into()));
     };
     validate_field_name(&column)?;
+    let (_, locked) = guard::field_limits(ctx, grant).await?;
+    guard::check_locked(&locked, [&req.field], &req.model)?;
+    let scope = guard::scope(ctx, grant, Operation::Write, "d8").await?.ok_or_else(|| guard::denied(&req.model, "change"))?;
     let mut binds = record_binds(grant, &req.id);
     // A whole `by` stays a whole number in the database.
-    let by = if req.by.fract() == 0.0 && req.by.abs() < 9e15 {
-        JsonValue::from(req.by as i64)
+    let by = if number.fract() == 0.0 && number.abs() < 9e15 {
+        JsonValue::from(number as i64)
     } else {
-        JsonValue::from(req.by)
+        JsonValue::from(number)
     };
     binds.push(("__by".to_string(), by));
     let body = format!(
         "LET $rows = (UPDATE type::record($__table, $__key) SET {column} = ({column} ?? 0) + $__by RETURN AFTER);"
     );
+    let mut extra = chatter_extra(grant, "update")?;
+    add_record_check(&mut extra, &mut binds, scope, &req.model, "change");
     Ok(Plan {
         access: Access { operation: "update", model: req.model, table: &grant.table },
         grant,
         body,
         ids: RECORD_ID.into(),
         binds,
-        extra: chatter_extra(grant, "update")?,
+        extra,
     })
 }
 
 pub async fn db_delete(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
-    run_plan(ctx, plan_delete(ctx, payload)?).await
+    run_plan(ctx, plan_delete(ctx, payload).await?).await
 }
 
-fn plan_delete<'a>(ctx: &'a PluginHostContext, payload: &JsonValue) -> Result<Plan<'a>, HostError> {
+async fn plan_delete<'a>(ctx: &'a PluginHostContext, payload: &JsonValue) -> Result<Plan<'a>, HostError> {
     ctx.require_cap("db::mutate")?;
     let req: DeleteRequest = parse_req(payload)?;
     let grant = require_model(ctx, &req.model, true)?;
+    let scope = guard::scope(ctx, grant, Operation::Delete, "d8").await?.ok_or_else(|| guard::denied(&req.model, "delete"))?;
+    let mut binds = record_binds(grant, &req.id);
+    let mut extra = chatter_extra(grant, "delete")?;
+    if let Some(schema) = &grant.schema {
+        super::graph::delete_extra(schema, &mut extra);
+    }
+    add_record_check(&mut extra, &mut binds, scope, &req.model, "delete");
     Ok(Plan {
         access: Access { operation: "delete", model: req.model, table: &grant.table },
         grant,
         body: "LET $rows = (DELETE type::record($__table, $__key) RETURN BEFORE);".into(),
         ids: RECORD_ID.into(),
-        binds: record_binds(grant, &req.id),
-        extra: chatter_extra(grant, "delete")?,
+        binds,
+        extra,
     })
 }
 
@@ -584,10 +801,10 @@ pub async fn db_transaction(ctx: &PluginHostContext, payload: &JsonValue) -> Res
     for (index, op) in ops.iter().enumerate() {
         let name = op.get("op").and_then(JsonValue::as_str).unwrap_or_default();
         let plan = match name {
-            "create" => plan_create(ctx, op),
-            "update" => plan_update(ctx, op),
-            "delete" => plan_delete(ctx, op),
-            "increment" => plan_increment(ctx, op),
+            "create" => plan_create(ctx, op).await,
+            "update" => plan_update(ctx, op).await,
+            "delete" => plan_delete(ctx, op).await,
+            "increment" => plan_increment(ctx, op).await,
             other => Err(HostError::InvalidPayload(format!(
                 "write {index}: `op` must be create, update, delete or increment, not `{other}`"
             ))),
@@ -599,6 +816,10 @@ pub async fn db_transaction(ctx: &PluginHostContext, payload: &JsonValue) -> Res
         plans.push(plan);
     }
 
+    let mut hiddens = Vec::with_capacity(plans.len());
+    for plan in &plans {
+        hiddens.push(guard::field_limits(ctx, plan.grant).await?.0);
+    }
     let mut statements = String::from("BEGIN TRANSACTION;\n");
     let mut binds: Vec<(String, JsonValue)> = Vec::new();
     let mut statement_count = 1; // BEGIN
@@ -642,17 +863,18 @@ pub async fn db_transaction(ctx: &PluginHostContext, payload: &JsonValue) -> Res
     for (name, value) in binds {
         query = query.bind((name, value));
     }
-    let mut response = query.await?.check()?;
+    let mut response = checked(query.await.map_err(map_db_error)?)?;
     let results: Vec<Vec<JsonValue>> = response.take(statement_count)?;
     let data: Vec<JsonValue> = results
         .into_iter()
         .zip(&plans)
-        .map(|(rows, plan)| rows.into_iter().next().map_or(JsonValue::Null, |row| decode(plan.grant, row)))
+        .zip(&hiddens)
+        .map(|((rows, plan), hidden)| rows.into_iter().next().map_or(JsonValue::Null, |row| guard::strip(hidden, decode(plan.grant, row))))
         .collect();
     Ok(serde_json::json!({ "ok": true, "data": data }))
 }
 
-fn strip_table_prefix<'a>(id: &'a str, table: &str) -> &'a str {
+pub(super) fn strip_table_prefix<'a>(id: &'a str, table: &str) -> &'a str {
     id.strip_prefix(&format!("{table}:")).unwrap_or(id)
 }
 

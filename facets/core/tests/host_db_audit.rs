@@ -57,6 +57,7 @@ async fn context(db: &Surreal<Client>, org: &str, actor: Actor, grants: &[(&str,
                     can_read: *read,
                     can_write: *write,
                     schema: None,
+                    rules: None,
                 },
             )
         })
@@ -370,5 +371,116 @@ async fn a_transaction_applies_every_write_or_none() -> TestResult {
         kernel_command(&no_cap, "db::transaction", json!({ "ops": [{ "op": "delete", "model": "message", "id": "x" }] })).await,
         Err(HostError::Capability(_))
     ));
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "needs SurrealDB (AETHER_TEST_DB)"]
+async fn filters_counts_and_aggregates_read_what_they_say() -> TestResult {
+    let Some(db) = connect().await? else { return Ok(()) };
+    let org = fresh_org(&db, "query").await?;
+    let ctx = context(&db, &org, Actor::User("users:u1".into()), &[("staff", "hr_staff", true, true)], &["db::query", "db::mutate"]).await?;
+
+    for (name, dept, pay) in [("Ann", "it", 10), ("Bob", "it", 30), ("Cy", "hr", 20), ("Di", "ops", 40)] {
+        kernel_command(&ctx, "db::create", json!({ "model": "staff", "data": { "name": name, "dept": dept, "pay": pay } })).await?;
+    }
+    // A record with no department at all.
+    kernel_command(&ctx, "db::create", json!({ "model": "staff", "data": { "name": "Ed", "pay": 5 } })).await?;
+
+    let names = |reply: Value| -> Vec<String> {
+        let mut found: Vec<String> = reply["data"]
+            .as_array()
+            .map(|rows| rows.iter().filter_map(|row| row["name"].as_str().map(str::to_string)).collect())
+            .unwrap_or_default();
+        found.sort();
+        found
+    };
+    let find = |filter: Value| kernel_command(&ctx, "db::find", json!({ "model": "staff", "filter": filter }));
+
+    assert_eq!(names(find(json!({ "pay": { "gte": 20, "lt": 40 } })).await?), ["Bob", "Cy"]);
+    assert_eq!(names(find(json!({ "dept": { "in": ["hr", "ops"] } })).await?), ["Cy", "Di"]);
+    // A record with no value is "not in" any list, so Ed is here too.
+    assert_eq!(names(find(json!({ "dept": { "nin": ["it"] } })).await?), ["Cy", "Di", "Ed"]);
+    assert_eq!(names(find(json!({ "dept": { "null": true } })).await?), ["Ed"]);
+    assert_eq!(names(find(json!({ "or": [{ "name": "Ann" }, { "pay": { "gt": 35 } }] })).await?), ["Ann", "Di"]);
+    assert_eq!(names(find(json!({ "not": { "dept": "it" } })).await?), ["Cy", "Di", "Ed"]);
+    assert_eq!(names(find(json!({ "name": { "like": "AN" } })).await?), ["Ann"]);
+
+    let count = kernel_command(&ctx, "db::count", json!({ "model": "staff", "filter": { "dept": "it" } })).await?;
+    assert_eq!(count["data"], json!(2));
+    let none = kernel_command(&ctx, "db::count", json!({ "model": "staff", "filter": { "dept": "nowhere" } })).await?;
+    assert_eq!(none["data"], json!(0));
+
+    let by_dept = kernel_command(
+        &ctx,
+        "db::aggregate",
+        json!({ "model": "staff", "filter": { "dept": { "null": false } }, "group_by": ["dept"],
+                "aggs": { "n": "count", "total": { "sum": "pay" }, "mean": { "avg": "pay" }, "top": { "max": "pay" } } }),
+    )
+    .await?;
+    let mut groups = by_dept["data"].as_array().cloned().unwrap_or_default();
+    groups.sort_by_key(|g| g["dept"].as_str().map(str::to_string));
+    assert_eq!(groups.len(), 3);
+    assert_eq!(groups[1]["dept"], json!("it"));
+    assert_eq!(groups[1]["n"], json!(2));
+    assert_eq!(groups[1]["total"], json!(40));
+    assert_eq!(groups[1]["mean"].as_f64(), Some(20.0));
+    assert_eq!(groups[1]["top"], json!(30));
+
+    let whole = kernel_command(&ctx, "db::aggregate", json!({ "model": "staff", "aggs": { "n": "count" } })).await?;
+    assert_eq!(whole["data"], json!([{ "n": 5 }]));
+
+    // Bad requests are refused, and nothing is deleted by them.
+    for bad in [json!({ "name; DELETE hr_staff": 1 }), json!({ "pay": { "bogus": 1 } })] {
+        let result = find(bad).await;
+        assert!(matches!(result, Err(HostError::InvalidPayload(_))), "{result:?}");
+    }
+    let rows = audit_rows(&db, &org).await?;
+    assert!(rows.iter().any(|row| row["operation"] == "read" && row["record_count"] == json!(3)), "aggregate is audited: {rows:?}");
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "needs SurrealDB (AETHER_TEST_DB)"]
+async fn decimals_add_up_exactly_in_the_database() -> TestResult {
+    use aether_core::data_model::{ModelDef, ModelSchema, sync_ids};
+    use std::sync::Arc;
+
+    let Some(db) = connect().await? else { return Ok(()) };
+    let org = fresh_org(&db, "decimal").await?;
+    let mut model: ModelDef = serde_json::from_value(json!({
+        "name": "pay", "fields": [
+            { "name": "who", "type": "string" },
+            { "name": "amount", "type": "decimal" },
+            { "name": "balance", "type": "decimal", "scale": 1 }
+        ]
+    }))?;
+    sync_ids(&mut model);
+    let schema = ModelSchema::new(&model, std::slice::from_ref(&model)).ok_or("no schema")?;
+    let table = schema.table.clone();
+    // The columns exist as the planner would define them.
+    let applied = aether_core::data_model::apply::plan("hr", &model, None, 0);
+    db.use_ns(NAMESPACE).use_db(&org).await?;
+    aether_core::data_model::apply::apply_plans(&db, &[(applied, None)]).await?;
+
+    let mut ctx = context(&db, &org, Actor::User("users:u1".into()), &[("pay", &table, true, true)], &["db::query", "db::mutate"]).await?;
+    if let Some(grant) = ctx.models.get_mut("pay") {
+        grant.schema = Some(Arc::new(schema));
+    }
+    // 0.10 + 0.20 is exact, unlike a float.
+    for amount in ["0.10", "0.20", "10.00"] {
+        kernel_command(&ctx, "db::create", json!({ "model": "pay", "data": { "who": "a", "amount": amount } })).await?;
+    }
+    let sum = kernel_command(&ctx, "db::aggregate", json!({ "model": "pay", "aggs": { "total": { "sum": "amount" }, "top": { "max": "amount" } } })).await?;
+    assert_eq!(sum["data"], json!([{ "total": "10.30", "top": "10.00" }]));
+    let found = kernel_command(&ctx, "db::find", json!({ "model": "pay", "filter": { "amount": { "gt": "0.15", "lt": "5" } }, "order": "-amount" })).await?;
+    assert_eq!(found["data"].as_array().map(Vec::len), Some(1));
+    assert_eq!(found["data"][0]["amount"], json!("0.20"));
+    let counter = kernel_command(&ctx, "db::create", json!({ "model": "pay", "data": { "who": "leave", "balance": "20.0" } })).await?;
+    let id = counter["data"]["id"].as_str().ok_or("no id")?.to_string();
+    let after = kernel_command(&ctx, "db::increment", json!({ "model": "pay", "id": id, "field": "balance", "by": "-1.5" })).await?;
+    assert_eq!(after["data"]["balance"], json!("18.5"));
+    let too_fine = kernel_command(&ctx, "db::create", json!({ "model": "pay", "data": { "amount": "0.001" } })).await;
+    assert!(matches!(too_fine, Err(HostError::InvalidPayload(_))), "{too_fine:?}");
     Ok(())
 }

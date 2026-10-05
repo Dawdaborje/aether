@@ -31,6 +31,40 @@ struct Column {
     id: String,
     /// For a link: the table its records are in.
     link_table: Option<String>,
+    /// For a decimal: digits after the point.
+    scale: Option<u32>,
+}
+
+impl Column {
+    /// A value as the database keeps it: a decimal becomes a whole number of its smallest unit.
+    fn stored(&self, value: &Value) -> Result<Value, String> {
+        match self.scale {
+            Some(scale) => super::decimal::to_scaled(value, scale).map(Value::from),
+            None => Ok(value.clone()),
+        }
+    }
+}
+
+/// The graph edge table of a hierarchy link or many2many field. Field ids are only unique inside
+/// one model, so the model's id is part of the name.
+pub fn edge_table(model_id: &str, field_id: &str) -> String {
+    format!("edg_{model_id}_{field_id}")
+}
+
+/// A many2many field: edges from this model's records to records of `target_table`.
+#[derive(Debug, Clone)]
+pub struct Relation {
+    pub field: String,
+    pub edge: String,
+    pub target_table: String,
+}
+
+/// A hierarchy link: the parent column, and the edges (parent to child) kept in step with it.
+#[derive(Debug, Clone)]
+pub struct Hierarchy {
+    pub field: String,
+    pub column: String,
+    pub edge: String,
 }
 
 /// One model as plugin code sees it: its fields by name, with the ids they are stored under.
@@ -47,6 +81,10 @@ pub struct ModelSchema {
     pub title_column: Option<String>,
     columns: Vec<Column>,
     by_name: HashMap<String, usize>,
+    /// The model's many2many fields.
+    pub relations: Vec<Relation>,
+    /// The model's hierarchy links.
+    pub hierarchies: Vec<Hierarchy>,
 }
 
 impl ModelSchema {
@@ -55,13 +93,30 @@ impl ModelSchema {
     pub fn new(model: &ModelDef, all: &[ModelDef]) -> Option<Self> {
         let table = model.model_id.clone()?;
         let mut columns = Vec::new();
+        let mut relations = Vec::new();
+        let mut hierarchies = Vec::new();
         for field in model.live_fields() {
+            if field.kind == super::definition::FieldType::Many2many {
+                let target_table = field.target.as_ref().and_then(|target| match super::definition::foreign_target(target) {
+                    Some(_) => field.target_id.clone(),
+                    None => all.iter().find(|other| &other.name == target).and_then(|other| other.model_id.clone()),
+                });
+                if let (Some(target_table), Some(id)) = (target_table, field.id.as_deref()) {
+                    relations.push(Relation { field: field.name.clone(), edge: edge_table(&table, id), target_table });
+                }
+                continue;
+            }
             let link_table = field.target.as_ref().and_then(|target| match super::definition::foreign_target(target) {
                 // Another plugin's model: its id was written into the field by `--sync-models`.
                 Some(_) => field.target_id.clone(),
                 None => all.iter().find(|other| &other.name == target).and_then(|other| other.model_id.clone()),
             });
-            columns.push(Column { def: field.clone(), id: field.id.clone()?, link_table });
+            let scale = (field.kind == super::definition::FieldType::Decimal)
+                .then(|| field.scale.unwrap_or(super::decimal::DEFAULT_SCALE));
+            if field.hierarchy {
+                hierarchies.push(Hierarchy { field: field.name.clone(), column: field.id.clone()?, edge: edge_table(&table, field.id.as_deref()?) });
+            }
+            columns.push(Column { def: field.clone(), id: field.id.clone()?, link_table, scale });
         }
         let by_name = columns
             .iter()
@@ -82,7 +137,7 @@ impl ModelSchema {
             .as_ref()
             .and_then(|title| columns.iter().find(|column| &column.def.name == title))
             .map(|column| column.id.clone());
-        Some(Self { name: model.name.clone(), table, chatter, tracked, title_column, columns, by_name })
+        Some(Self { name: model.name.clone(), table, chatter, tracked, title_column, columns, by_name, relations, hierarchies })
     }
 
     fn column(&self, name: &str) -> Result<&Column, SchemaError> {
@@ -114,6 +169,7 @@ impl ModelSchema {
                     "name": column.def.name,
                     "label": column.def.label.clone().unwrap_or_else(|| column.def.name.clone()),
                     "type": column.def.kind.as_str(),
+                    "scale": column.scale,
                     "options": column.def.options.iter().map(|o| serde_json::json!({
                         "value": o.value,
                         "label": o.label.clone().unwrap_or_else(|| o.value.clone()),
@@ -127,8 +183,42 @@ impl ModelSchema {
     pub fn numeric_column(&self, name: &str) -> Result<&str, SchemaError> {
         let column = self.column(name)?;
         match column.def.kind {
-            super::definition::FieldType::Int | super::definition::FieldType::Float => Ok(&column.id),
-            _ => Err(self.invalid(name, "only a whole number or number field can be incremented")),
+            super::definition::FieldType::Int
+            | super::definition::FieldType::Float
+            | super::definition::FieldType::Decimal => Ok(&column.id),
+            _ => Err(self.invalid(name, "only a whole number, number or decimal field can be incremented")),
+        }
+    }
+
+    /// The many2many field called `name`.
+    pub fn relation(&self, name: &str) -> Result<&Relation, SchemaError> {
+        self.relations.iter().find(|relation| relation.field == name).ok_or_else(|| {
+            self.invalid(name, "is not a many2many field of this model")
+        })
+    }
+
+    /// The hierarchy link called `name`.
+    pub fn hierarchy(&self, name: &str) -> Result<&Hierarchy, SchemaError> {
+        self.hierarchies.iter().find(|hierarchy| hierarchy.field == name).ok_or_else(|| {
+            self.invalid(name, "is not a hierarchy link of this model")
+        })
+    }
+
+    /// Digits after the point of a decimal field; `None` for any other kind.
+    pub fn scale_of(&self, name: &str) -> Result<Option<u32>, SchemaError> {
+        Ok(self.column(name)?.scale)
+    }
+
+    /// An amount to add to `name`, as the database keeps it. A decimal takes text or a number
+    /// (and must fit its scale); any other numeric field takes a number as it is.
+    pub fn increment_by(&self, name: &str, by: &Value) -> Result<Value, SchemaError> {
+        let column = self.column(name)?;
+        match column.scale {
+            Some(scale) => super::decimal::to_scaled(by, scale)
+                .map(Value::from)
+                .map_err(|reason| self.invalid(name, reason)),
+            None if by.is_number() => Ok(by.clone()),
+            None => Err(self.invalid(name, "`by` must be a number")),
         }
     }
 
@@ -144,7 +234,7 @@ impl ModelSchema {
             return Err(self.invalid(name, "cannot filter by null"));
         }
         self.check(column, value)?;
-        Ok(value.clone())
+        column.stored(value).map_err(|reason| self.invalid(name, reason))
     }
 
     /// A new record, keyed by field id: values checked, defaults filled in, required fields present.
@@ -157,7 +247,7 @@ impl ModelSchema {
                 continue;
             }
             self.check(column, value)?;
-            stored.insert(column.id.clone(), value.clone());
+            stored.insert(column.id.clone(), column.stored(value).map_err(|reason| self.invalid(name, reason))?);
         }
         for column in &self.columns {
             if stored.contains_key(&column.id) {
@@ -165,7 +255,8 @@ impl ModelSchema {
             }
             match &column.def.default {
                 Some(default) => {
-                    stored.insert(column.id.clone(), default.clone());
+                    let default = column.stored(default).map_err(|reason| self.invalid(&column.def.name, reason))?;
+                    stored.insert(column.id.clone(), default);
                 }
                 None if column.def.required => {
                     return Err(SchemaError::Required { model: self.name.clone(), field: column.def.name.clone() });
@@ -194,7 +285,7 @@ impl ModelSchema {
                 continue;
             }
             self.check(column, value)?;
-            set.insert(column.id.clone(), value.clone());
+            set.insert(column.id.clone(), column.stored(value).map_err(|reason| self.invalid(name, reason))?);
         }
         Ok((set, clear))
     }
@@ -211,7 +302,11 @@ impl ModelSchema {
         }
         for column in &self.columns {
             if let Some(value) = stored.get(&column.id) {
-                record.insert(column.def.name.clone(), value.clone());
+                let shown = match column.scale {
+                    Some(scale) => super::decimal::present(value, scale),
+                    None => value.clone(),
+                };
+                record.insert(column.def.name.clone(), shown);
             }
         }
         Value::Object(record)
@@ -250,6 +345,7 @@ pub fn check_value(field: &FieldDef, value: &Value, link_table: Option<&str>) ->
                 Err("must be a number".into())
             }
         }
+        FieldType::Decimal => super::decimal::to_scaled(value, field.scale.unwrap_or(super::decimal::DEFAULT_SCALE)).map(|_| ()),
         FieldType::Bool => value.as_bool().map(|_| ()).ok_or_else(|| "must be true or false".to_string()),
         FieldType::Date => {
             if text.is_some_and(is_date) {
@@ -286,6 +382,7 @@ pub fn check_value(field: &FieldDef, value: &Value, link_table: Option<&str>) ->
             }
         }
         FieldType::Json => Ok(()),
+        FieldType::Many2many => Err("is a relation: change it with db::relate, not as a value".into()),
     }
 }
 
@@ -380,6 +477,36 @@ mod tests {
 
     fn data(value: Value) -> Map<String, Value> {
         value.as_object().cloned().unwrap_or_default()
+    }
+
+    #[test]
+    fn a_decimal_is_stored_in_whole_units_and_shown_as_text() -> Result<(), SchemaError> {
+        let mut model: ModelDef = serde_json::from_value(json!({
+            "name": "pay",
+            "fields": [
+                { "name": "amount", "type": "decimal", "required": true },
+                { "name": "days", "type": "decimal", "scale": 1, "default": "1.5" }
+            ]
+        }))
+        .map_err(|e| SchemaError::InvalidValue { model: "pay".into(), field: String::new(), reason: e.to_string() })?;
+        sync_ids(&mut model);
+        let schema = ModelSchema::new(&model, std::slice::from_ref(&model))
+            .ok_or_else(|| SchemaError::UnknownField { model: "pay".into(), field: String::new() })?;
+        let id = |name: &str| model.fields.iter().find(|f| f.name == name).and_then(|f| f.id.clone()).unwrap_or_default();
+
+        let stored = schema.encode_create(&data(json!({ "amount": "12.34" })))?;
+        assert_eq!(stored[&id("amount")], json!(1234));
+        assert_eq!(stored[&id("days")], json!(15), "the default, in whole units");
+        let shown = schema.decode(&Value::Object(stored));
+        assert_eq!(shown["amount"], json!("12.34"));
+        assert_eq!(shown["days"], json!("1.5"));
+
+        assert!(schema.encode_create(&data(json!({ "amount": "1.005" }))).is_err(), "too many digits");
+        assert!(schema.encode_create(&data(json!({ "amount": "abc" }))).is_err());
+        assert_eq!(schema.filter_value("amount", &json!("0.10"))?, json!(10));
+        assert_eq!(schema.increment_by("amount", &json!("-2.5"))?, json!(-250));
+        assert_eq!(schema.increment_by("days", &json!(2))?, json!(20));
+        Ok(())
     }
 
     #[test]

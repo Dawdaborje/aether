@@ -1,6 +1,8 @@
 use std::{env, path::Path, str::FromStr};
 
 use aether_core::application::services::change_user_password;
+use aether_core::org_admin::create_user;
+use aether_core::roles;
 use aether_orm::{SchemaStatus, core_schema_status};
 use clap::Parser;
 use log::LevelFilter;
@@ -211,6 +213,69 @@ async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         match change_user_password(username, new_password, ctx.db).await {
             Ok(()) => println!("Password changed for user '{username}'."),
             Err(err) => log::error!("Failed to change password for '{username}': {err}"),
+        }
+        return Ok(());
+    }
+
+    if args.create_user {
+        let (Some(username), Some(email), Some(password)) = (&args.username, &args.email, &args.password) else {
+            log::error!("--username, --email and --password must be provided when creating a user");
+            return Ok(());
+        };
+        let ctx = get_db_context(&args).await;
+        match create_user(ctx.db, &ctx.namespace, username, email, password).await {
+            Ok(_) => {
+                println!("Created user '{username}'.");
+                // Put them in an organization straight away when one is named.
+                if let Some(org_db_name) = &args.org_db_name {
+                    match assign_user(ctx.db, &ctx.namespace, username, org_db_name).await {
+                        Ok(()) => println!("Assigned user '{username}' to organization '{org_db_name}'."),
+                        Err(err) => log::error!("Created the user but could not assign them to '{org_db_name}': {err}"),
+                    }
+                }
+            }
+            Err(err) => log::error!("Failed to create user '{username}': {err}"),
+        }
+        return Ok(());
+    }
+
+    if args.grant_role.is_some() || args.revoke_role.is_some() || args.list_roles {
+        let Some(org) = &args.org else {
+            log::error!("--org must name the organization database when working with roles");
+            return Ok(());
+        };
+        let ctx = get_db_context(&args).await;
+        if let Some(role) = &args.grant_role {
+            let Some(login) = &args.username else {
+                log::error!("--username must name the user to give '{role}' to");
+                return Ok(());
+            };
+            match roles::grant(ctx.db, &ctx.namespace, org, login, role).await {
+                Ok(()) => println!("'{login}' now has the role '{role}' in '{org}'."),
+                Err(err) => log::error!("Failed to give the role: {err}"),
+            }
+        }
+        if let Some(role) = &args.revoke_role {
+            let Some(login) = &args.username else {
+                log::error!("--username must name the user to take '{role}' from");
+                return Ok(());
+            };
+            match roles::revoke(ctx.db, &ctx.namespace, org, login, role).await {
+                Ok(()) => println!("'{login}' no longer has the role '{role}' in '{org}'."),
+                Err(err) => log::error!("Failed to take the role away: {err}"),
+            }
+        }
+        if args.list_roles {
+            match roles::list_in(ctx.db, &ctx.namespace, org).await {
+                Ok(found) if found.is_empty() => println!("No roles in '{org}' yet."),
+                Ok(found) => {
+                    for role in found {
+                        let holders = if role.holders.is_empty() { "nobody".to_string() } else { role.holders.join(", ") };
+                        println!("{:<28} {:<26} {}", role.name, role.label, holders);
+                    }
+                }
+                Err(err) => log::error!("Failed to list roles: {err}"),
+            }
         }
         return Ok(());
     }

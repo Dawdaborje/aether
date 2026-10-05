@@ -30,6 +30,10 @@ pub enum HostError {
 
     #[error("{0}")]
     Message(String),
+
+    /// The caller's role does not allow it (a record or field rule).
+    #[error("not allowed: {0}")]
+    Denied(String),
 }
 
 impl From<crate::data_model::SchemaError> for HostError {
@@ -50,7 +54,14 @@ impl HostError {
                 Self::Db(_) => "db",
                 Self::NotImplemented(_) => "not_implemented",
                 Self::Message(_) => "error",
+                Self::Denied(_) => "denied",
             }
         })
+    }
+}
+
+impl From<crate::data_model::QueryError> for HostError {
+    fn from(error: crate::data_model::QueryError) -> Self {
+        Self::InvalidPayload(error.to_string())
     }
 }

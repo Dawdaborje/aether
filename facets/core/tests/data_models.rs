@@ -291,8 +291,8 @@ async fn chatter_records_creation_tracked_changes_and_deletion_with_the_write() 
     kernel_command(&ctx, "db::update", json!({ "model": "ticket", "id": id, "data": { "status": "closed", "points": 3, "notes": "y" } })).await?;
     let lines = world.raw("chatter_messages").await?;
     assert_eq!(lines.len(), 2);
-    let change = &lines[1];
-    assert_eq!(change["kind"], "change");
+    // Record ids are random, so the rows come back in no particular order.
+    let change = lines.iter().find(|line| line["kind"] == "change").ok_or("no change line")?;
     assert_eq!(change["before"][id_of(&model, "status")], "open");
     assert_eq!(change["after"][id_of(&model, "status")], "closed");
     assert_eq!(change["after"][id_of(&model, "points")], 3);
@@ -386,4 +386,357 @@ async fn a_rhai_plugin_uses_the_same_models_grants_and_chatter() -> TestResult {
     read_only.granted_capabilities.remove("db::mutate");
     assert!(matches!(run(&program, &read_only, "add", json!({ "title": "x" })).await, Err(ScriptError::Failed(_))));
     Ok(())
+}
+
+#[tokio::test]
+#[ignore = "needs SurrealDB (AETHER_TEST_DB)"]
+async fn a_unique_multi_field_index_refuses_duplicates_and_follows_renames() -> TestResult {
+    let Some(world) = World::new("composite").await? else { return Ok(()) };
+    let mut model: ModelDef = serde_json::from_value(json!({
+        "name": "assignment",
+        "fields": [
+            { "name": "person", "type": "string" },
+            { "name": "post", "type": "string" },
+            { "name": "note", "type": "string" }
+        ],
+        "indexes": [ { "fields": ["person", "post"], "unique": true } ]
+    }))?;
+    sync_ids(&mut model);
+    world.apply(std::slice::from_ref(&model)).await?;
+    let ctx = world.ctx(std::slice::from_ref(&model));
+
+    let row = |person: &str, post: &str| json!({ "model": "assignment", "data": { "person": person, "post": post } });
+    kernel_command(&ctx, "db::create", row("ann", "clerk")).await?;
+    kernel_command(&ctx, "db::create", row("ann", "chief")).await?;
+    kernel_command(&ctx, "db::create", row("bob", "clerk")).await?;
+    let duplicate = kernel_command(&ctx, "db::create", row("ann", "clerk")).await;
+    assert!(matches!(duplicate, Err(HostError::Db(_))), "{duplicate:?}");
+
+    // Renaming a field is a refresh of the comment only: the index stays and still holds.
+    model.fields[0].name = "employee".into();
+    model.indexes[0].fields[0] = "employee".into();
+    world.apply(std::slice::from_ref(&model)).await?;
+    let ctx = world.ctx(std::slice::from_ref(&model));
+    let again = kernel_command(&ctx, "db::create", json!({ "model": "assignment", "data": { "employee": "bob", "post": "clerk" } })).await;
+    assert!(matches!(again, Err(HostError::Db(_))), "{again:?}");
+
+    // Dropping the index lets the duplicate in.
+    model.indexes.clear();
+    world.apply(std::slice::from_ref(&model)).await?;
+    let ctx = world.ctx(std::slice::from_ref(&model));
+    kernel_command(&ctx, "db::create", json!({ "model": "assignment", "data": { "employee": "bob", "post": "clerk" } })).await?;
+    Ok(())
+}
+
+fn org_models() -> Vec<ModelDef> {
+    let mut models: Vec<ModelDef> = serde_json::from_value(json!([
+        { "name": "unit", "fields": [
+            { "name": "name", "type": "string", "required": true },
+            { "name": "parent", "type": "link", "target": "unit", "hierarchy": true },
+            { "name": "skills", "type": "many2many", "target": "skill" }
+        ] },
+        { "name": "skill", "fields": [ { "name": "name", "type": "string" } ] }
+    ]))
+    .unwrap_or_else(|error| panic!("{error}"));
+    for model in &mut models {
+        sync_ids(model);
+    }
+    models
+}
+
+fn names(reply: &Value) -> Vec<String> {
+    let mut found: Vec<String> = reply["data"]
+        .as_array()
+        .map(|rows| rows.iter().filter_map(|row| row["name"].as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    found.sort();
+    found
+}
+
+#[tokio::test]
+#[ignore = "needs SurrealDB (AETHER_TEST_DB)"]
+async fn a_hierarchy_keeps_its_edges_refuses_loops_and_walks_any_depth() -> TestResult {
+    let Some(world) = World::new("tree").await? else { return Ok(()) };
+    let models = org_models();
+    world.apply(&models).await?;
+    let ctx = world.ctx(&models);
+
+    let make = |name: &str, parent: Option<&str>| {
+        let mut data = json!({ "name": name });
+        if let Some(parent) = parent {
+            data["parent"] = json!(parent);
+        }
+        json!({ "model": "unit", "data": data })
+    };
+    let ministry = kernel_command(&ctx, "db::create", make("ministry", None)).await?["data"]["id"].as_str().unwrap_or_default().to_string();
+    let dept = kernel_command(&ctx, "db::create", make("dept", Some(&ministry))).await?["data"]["id"].as_str().unwrap_or_default().to_string();
+    let unit = kernel_command(&ctx, "db::create", make("unit", Some(&dept))).await?["data"]["id"].as_str().unwrap_or_default().to_string();
+    let other = kernel_command(&ctx, "db::create", make("other", Some(&ministry))).await?["data"]["id"].as_str().unwrap_or_default().to_string();
+
+    let tree = |id: &str, direction: &str, depth: Option<u32>, include_self: bool| {
+        let mut payload = json!({ "model": "unit", "field": "parent", "id": id, "direction": direction, "include_self": include_self });
+        if let Some(depth) = depth {
+            payload["depth"] = json!(depth);
+        }
+        kernel_command(&ctx, "db::tree", payload)
+    };
+    assert_eq!(names(&tree(&ministry, "down", None, false).await?), ["dept", "other", "unit"]);
+    assert_eq!(names(&tree(&ministry, "down", Some(1), false).await?), ["dept", "other"]);
+    assert_eq!(names(&tree(&ministry, "down", None, true).await?), ["dept", "ministry", "other", "unit"]);
+    assert_eq!(names(&tree(&unit, "up", None, false).await?), ["dept", "ministry"]);
+    assert!(names(&tree(&other, "down", None, false).await?).is_empty());
+
+    // A parent that does not exist, a loop, and a record under itself are all refused...
+    let missing = kernel_command(&ctx, "db::create", make("ghost", Some(&format!("{}:nothing", ministry.split(':').next().unwrap_or_default())))).await;
+    assert!(matches!(missing, Err(HostError::InvalidPayload(ref m)) if m.contains("does not exist")), "{missing:?}");
+    for (record, parent) in [(&ministry, &unit), (&ministry, &ministry), (&dept, &unit)] {
+        let looped = kernel_command(&ctx, "db::update", json!({ "model": "unit", "id": record, "data": { "parent": parent } })).await;
+        assert!(matches!(looped, Err(HostError::InvalidPayload(ref m)) if m.contains("loop")), "{looped:?}");
+    }
+    // ...and a failed move changes nothing.
+    assert_eq!(names(&tree(&ministry, "down", None, false).await?), ["dept", "other", "unit"]);
+
+    // Moving a subtree is one write; the walk follows at once.
+    kernel_command(&ctx, "db::update", json!({ "model": "unit", "id": dept, "data": { "parent": other } })).await?;
+    assert_eq!(names(&tree(&other, "down", None, false).await?), ["dept", "unit"]);
+    assert_eq!(names(&tree(&unit, "up", None, false).await?), ["dept", "ministry", "other"]);
+    // Clearing the parent makes a root.
+    kernel_command(&ctx, "db::update", json!({ "model": "unit", "id": dept, "data": { "parent": null } })).await?;
+    assert!(names(&tree(&other, "down", None, false).await?).is_empty());
+    assert_eq!(names(&tree(&dept, "down", None, false).await?), ["unit"]);
+
+    // A record with children is not deleted; a leaf is.
+    let blocked = kernel_command(&ctx, "db::delete", json!({ "model": "unit", "id": dept })).await;
+    assert!(matches!(blocked, Err(HostError::InvalidPayload(ref m)) if m.contains("children")), "{blocked:?}");
+    kernel_command(&ctx, "db::delete", json!({ "model": "unit", "id": unit })).await?;
+    kernel_command(&ctx, "db::delete", json!({ "model": "unit", "id": dept })).await?;
+    assert_eq!(names(&tree(&ministry, "down", None, false).await?), ["other"]);
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "needs SurrealDB (AETHER_TEST_DB)"]
+async fn many_to_many_fields_are_edges_read_both_ways() -> TestResult {
+    let Some(world) = World::new("m2m").await? else { return Ok(()) };
+    let models = org_models();
+    world.apply(&models).await?;
+    let ctx = world.ctx(&models);
+
+    let id = |reply: Value| reply["data"]["id"].as_str().unwrap_or_default().to_string();
+    let unit = id(kernel_command(&ctx, "db::create", json!({ "model": "unit", "data": { "name": "u" } })).await?);
+    let other = id(kernel_command(&ctx, "db::create", json!({ "model": "unit", "data": { "name": "o" } })).await?);
+    let rust = id(kernel_command(&ctx, "db::create", json!({ "model": "skill", "data": { "name": "rust" } })).await?);
+    let go = id(kernel_command(&ctx, "db::create", json!({ "model": "skill", "data": { "name": "go" } })).await?);
+
+    kernel_command(&ctx, "db::relate", json!({ "model": "unit", "field": "skills", "id": unit, "to": [rust, go] })).await?;
+    kernel_command(&ctx, "db::relate", json!({ "model": "unit", "field": "skills", "id": other, "to": [rust] })).await?;
+    // Again is harmless.
+    kernel_command(&ctx, "db::relate", json!({ "model": "unit", "field": "skills", "id": unit, "to": [rust] })).await?;
+
+    let skills = kernel_command(&ctx, "db::related", json!({ "model": "unit", "field": "skills", "id": unit })).await?;
+    assert_eq!(names(&skills), ["go", "rust"]);
+    let who = kernel_command(&ctx, "db::related", json!({ "model": "unit", "field": "skills", "id": rust, "reverse": true })).await?;
+    assert_eq!(names(&who), ["o", "u"]);
+
+    kernel_command(&ctx, "db::unrelate", json!({ "model": "unit", "field": "skills", "id": unit, "to": [go] })).await?;
+    let skills = kernel_command(&ctx, "db::related", json!({ "model": "unit", "field": "skills", "id": unit })).await?;
+    assert_eq!(names(&skills), ["rust"]);
+
+    // Wrong target model, a record that is not there, a field that is not a relation: all refused.
+    let wrong = kernel_command(&ctx, "db::relate", json!({ "model": "unit", "field": "skills", "id": unit, "to": [other] })).await;
+    assert!(matches!(wrong, Err(HostError::InvalidPayload(_))), "{wrong:?}");
+    let table = rust.split(':').next().unwrap_or_default();
+    let ghost = kernel_command(&ctx, "db::relate", json!({ "model": "unit", "field": "skills", "id": unit, "to": [format!("{table}:nothing")] })).await;
+    assert!(matches!(ghost, Err(HostError::InvalidPayload(ref m)) if m.contains("does not exist")), "{ghost:?}");
+    let not_relation = kernel_command(&ctx, "db::relate", json!({ "model": "unit", "field": "name", "id": unit, "to": [rust] })).await;
+    assert!(matches!(not_relation, Err(HostError::InvalidPayload(_))), "{not_relation:?}");
+    // A many2many field is not a value either.
+    let as_value = kernel_command(&ctx, "db::update", json!({ "model": "unit", "id": unit, "data": { "skills": [rust] } })).await;
+    assert!(matches!(as_value, Err(HostError::InvalidPayload(_))), "{as_value:?}");
+
+    // Deleting a record takes its edges with it.
+    kernel_command(&ctx, "db::delete", json!({ "model": "skill", "id": rust })).await?;
+    let skills = kernel_command(&ctx, "db::related", json!({ "model": "unit", "field": "skills", "id": unit })).await?;
+    assert!(names(&skills).is_empty());
+    Ok(())
+}
+
+mod rules_enforcement {
+    use std::sync::Arc;
+
+    use aether_core::data_model::RuleSet;
+    use aether_core::kernel::PluginCaller;
+
+    use super::*;
+
+    /// Answers the plugin's one rule variable: the people on "ann"'s team.
+    struct Variables;
+
+    #[async_trait::async_trait]
+    impl PluginCaller for Variables {
+        async fn call(&self, _plugin: &str, function: &str, _payload: Value, _trail: Vec<String>) -> Result<Value, HostError> {
+            match function {
+                "rule_var_team" => Ok(json!(["users:bob"])),
+                "rule_var_nobody" => Ok(Value::Null),
+                other => Err(HostError::Message(format!("no variable {other}"))),
+            }
+        }
+    }
+
+    fn ticket_model() -> ModelDef {
+        let mut model: ModelDef = serde_json::from_value(json!({
+            "name": "ticket",
+            "fields": [
+                { "name": "owner", "type": "string", "required": true },
+                { "name": "title", "type": "string" },
+                { "name": "state", "type": "select", "default": "submitted",
+                  "options": [{ "value": "submitted" }, { "value": "approved" }] },
+                { "name": "notes", "type": "text" }
+            ]
+        }))
+        .unwrap_or_else(|error| panic!("{error}"));
+        sync_ids(&mut model);
+        model
+    }
+
+    fn rules() -> RuleSet {
+        RuleSet::parse(
+            &json!({
+                "model": "ticket",
+                "access": [
+                    { "name": "own", "operations": ["read", "create", "write", "delete"], "when": { "owner": "$user" } },
+                    { "name": "team", "roles": ["lead"], "operations": ["read"], "when": { "owner": { "in": "$team" } } },
+                    { "name": "approvers", "roles": ["approver"], "operations": ["read", "write"] }
+                ],
+                "restrict": [
+                    { "name": "pending_only", "operations": ["write", "delete"], "exempt_roles": ["approver"],
+                      "when": { "state": "submitted" } }
+                ],
+                "fields": [
+                    { "fields": ["state"], "write_roles": ["approver"] },
+                    { "fields": ["notes"], "read_roles": ["approver"] }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    async fn as_user(world: &World, model: &ModelDef, user: &str, roles: &[&str]) -> Result<PluginHostContext, Box<dyn std::error::Error>> {
+        // The user is a member of the organization with these roles.
+        let mut give = String::new();
+        for role in roles {
+            give.push_str(&format!(
+                "UPSERT roles SET name = '{role}', label = '{role}' WHERE name = '{role}'; \
+                 LET $u = (SELECT VALUE id FROM org_users WHERE core_user_id = '{user}' LIMIT 1)[0]; \
+                 LET $r = (SELECT VALUE id FROM roles WHERE name = '{role}' LIMIT 1)[0]; \
+                 UPSERT org_user_roles SET org_user = $u, role = $r WHERE org_user = $u AND role = $r;"
+            ));
+        }
+        world
+            .session
+            .query(format!(
+                "UPSERT org_users SET core_user_id = '{user}', display_name = '{user}', is_active = true WHERE core_user_id = '{user}'; {give}"
+            ))
+            .await?
+            .check()?;
+        let grants: HashMap<String, ModelGrant> = schemas_of(std::slice::from_ref(model))
+            .into_iter()
+            .map(|(name, schema)| {
+                let mut grant = ModelGrant::from_access(&name, &["read".into(), "write".into()], Some(&schema.table));
+                grant.schema = Some(schema);
+                grant.rules = Some(Arc::new(rules()));
+                (name, grant)
+            })
+            .collect();
+        Ok(PluginHostContext::new(
+            "desk",
+            ["db::query".to_string(), "db::mutate".to_string()].into_iter().collect(),
+            grants,
+            Arc::new(world.session.clone()),
+            DbScope::new(NAMESPACE, &world.org),
+            NotificationHub::default(),
+            CallInfo::new(
+                AuditContext { actor: Actor::User(user.into()), request_id: "r".into(), ip: None, user_agent: None },
+                "f",
+            ),
+        )
+        .with_plugin_calls(Vec::new(), Vec::new(), Arc::new(Variables)))
+    }
+
+    fn titles(reply: &Value) -> Vec<String> {
+        let mut found: Vec<String> = reply["data"]
+            .as_array()
+            .map(|rows| rows.iter().filter_map(|r| r["title"].as_str().map(str::to_string)).collect())
+            .unwrap_or_default();
+        found.sort();
+        found
+    }
+
+    #[tokio::test]
+    #[ignore = "needs SurrealDB (AETHER_TEST_DB)"]
+    async fn rules_decide_who_sees_and_changes_what() -> TestResult {
+        let Some(world) = World::new("rules").await? else { return Ok(()) };
+        let model = ticket_model();
+        world.apply(std::slice::from_ref(&model)).await?;
+        let ann = as_user(&world, &model, "users:ann", &["desk.lead"]).await?;
+        let bob = as_user(&world, &model, "users:bob", &[]).await?;
+        let cy = as_user(&world, &model, "users:cy", &[]).await?;
+        let carol = as_user(&world, &model, "users:carol", &["desk.approver"]).await?;
+        let root = as_user(&world, &model, "users:root", &["org_admin"]).await?;
+
+        async fn make(ctx: &PluginHostContext, owner: &str, title: &str) -> Result<Value, HostError> {
+            kernel_command(ctx, "db::create", json!({ "model": "ticket", "data": { "owner": owner, "title": title, "notes": "private" } })).await
+        }
+        // Everyone can create their own; nobody can create someone else's.
+        let ann_ticket = make(&ann, "users:ann", "ann-1").await?["data"]["id"].as_str().unwrap_or_default().to_string();
+        let bob_ticket = make(&bob, "users:bob", "bob-1").await?["data"]["id"].as_str().unwrap_or_default().to_string();
+        make(&cy, "users:cy", "cy-1").await?;
+        let forged = make(&bob, "users:cy", "forged").await;
+        assert!(matches!(forged, Err(HostError::Denied(_))), "{forged:?}");
+        assert_eq!(titles(&kernel_command(&root, "db::find", json!({ "model": "ticket" })).await?).len(), 3, "the refused create left nothing");
+
+        // Reading: your own; a lead also sees the team (the variable); an approver sees all; an admin all.
+        let all = json!({ "model": "ticket" });
+        assert_eq!(titles(&kernel_command(&bob, "db::find", all.clone()).await?), ["bob-1"]);
+        assert_eq!(titles(&kernel_command(&ann, "db::find", all.clone()).await?), ["ann-1", "bob-1"]);
+        assert_eq!(titles(&kernel_command(&carol, "db::find", all.clone()).await?), ["ann-1", "bob-1", "cy-1"]);
+        assert_eq!(titles(&kernel_command(&root, "db::find", all.clone()).await?).len(), 3);
+        assert_eq!(kernel_command(&bob, "db::count", all.clone()).await?["data"], 1);
+        assert_eq!(kernel_command(&carol, "db::count", all.clone()).await?["data"], 3);
+        // A record you may not read is as if it were not there.
+        let cy_ticket = kernel_command(&root, "db::find", json!({ "model": "ticket", "filter": { "owner": "users:cy" } })).await?["data"][0]["id"]
+            .as_str().unwrap_or_default().to_string();
+        assert!(kernel_command(&bob, "db::get", json!({ "model": "ticket", "id": cy_ticket })).await?["data"].is_null());
+        assert_eq!(kernel_command(&bob, "db::get", json!({ "model": "ticket", "id": bob_ticket })).await?["data"]["title"], "bob-1");
+
+        // Fields: notes are for approvers only; the state is theirs to set.
+        let mine = kernel_command(&bob, "db::get", json!({ "model": "ticket", "id": bob_ticket })).await?;
+        assert!(mine["data"].get("notes").is_none(), "hidden field: {mine}");
+        let approver_view = kernel_command(&carol, "db::get", json!({ "model": "ticket", "id": bob_ticket })).await?;
+        assert_eq!(approver_view["data"]["notes"], "private");
+        let search_hidden = kernel_command(&bob, "db::find", json!({ "model": "ticket", "filter": { "notes": "private" } })).await;
+        assert!(matches!(search_hidden, Err(HostError::Denied(_))), "{search_hidden:?}");
+        let self_approve = kernel_command(&bob, "db::update", json!({ "model": "ticket", "id": bob_ticket, "data": { "state": "approved" } })).await;
+        assert!(matches!(self_approve, Err(HostError::Denied(_))), "{self_approve:?}");
+
+        // Writing: your own while pending; never someone else's; approvers any, any time.
+        kernel_command(&bob, "db::update", json!({ "model": "ticket", "id": bob_ticket, "data": { "title": "bob-1b" } })).await?;
+        let others = kernel_command(&bob, "db::update", json!({ "model": "ticket", "id": cy_ticket, "data": { "title": "x" } })).await;
+        assert!(matches!(others, Err(HostError::Denied(_))), "{others:?}");
+        let lead_write = kernel_command(&ann, "db::update", json!({ "model": "ticket", "id": bob_ticket, "data": { "title": "x" } })).await;
+        assert!(matches!(lead_write, Err(HostError::Denied(_))), "a lead may read the team, not change it: {lead_write:?}");
+        kernel_command(&carol, "db::update", json!({ "model": "ticket", "id": bob_ticket, "data": { "state": "approved" } })).await?;
+        // Once approved, the owner can no longer change or delete it.
+        let after = kernel_command(&bob, "db::update", json!({ "model": "ticket", "id": bob_ticket, "data": { "title": "late" } })).await;
+        assert!(matches!(after, Err(HostError::Denied(_))), "{after:?}");
+        let removed = kernel_command(&bob, "db::delete", json!({ "model": "ticket", "id": bob_ticket })).await;
+        assert!(matches!(removed, Err(HostError::Denied(_))), "{removed:?}");
+        // ...but a pending one of their own can be deleted, and an approver can still change the approved one.
+        kernel_command(&cy, "db::delete", json!({ "model": "ticket", "id": cy_ticket })).await?;
+        kernel_command(&carol, "db::update", json!({ "model": "ticket", "id": bob_ticket, "data": { "title": "approved-1" } })).await?;
+        assert_eq!(titles(&kernel_command(&root, "db::find", all).await?), ["ann-1", "approved-1"]);
+        let _ = ann_ticket;
+        Ok(())
+    }
 }

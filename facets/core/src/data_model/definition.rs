@@ -17,6 +17,7 @@ const ID_LENGTH: usize = 10;
 pub const MODEL_PREFIX: &str = "mdl";
 pub const FIELD_PREFIX: &str = "fld";
 pub const OPTION_PREFIX: &str = "opt";
+pub const INDEX_PREFIX: &str = "idx";
 
 /// A fresh id such as `fld_k3v9xq2m7a`. Ids only have to be unique inside one model (field
 /// and option ids) or one catalog (model ids), so a short random one is plenty.
@@ -61,6 +62,9 @@ pub enum FieldType {
     Text,
     Int,
     Float,
+    /// An exact decimal with a fixed number of digits after the point (`scale`): money, pay,
+    /// days of leave. Sent and received as text; see [`super::decimal`].
+    Decimal,
     Bool,
     /// `YYYY-MM-DD`.
     Date,
@@ -70,6 +74,10 @@ pub enum FieldType {
     Select,
     /// The id (`table:key`) of a record of another model of the plugin: its `target`.
     Link,
+    /// Several records of the `target` model, kept as graph edges rather than in a column: a
+    /// person's skills, a group's members. Changed with `db::relate` / `db::unrelate`, read
+    /// with `db::related`.
+    Many2many,
     /// Any JSON.
     Json,
 }
@@ -81,11 +89,13 @@ impl FieldType {
             Self::Text => "text",
             Self::Int => "int",
             Self::Float => "float",
+            Self::Decimal => "decimal",
             Self::Bool => "bool",
             Self::Date => "date",
             Self::Datetime => "datetime",
             Self::Select => "select",
             Self::Link => "link",
+            Self::Many2many => "many2many",
             Self::Json => "json",
         }
     }
@@ -112,6 +122,20 @@ pub struct SelectOption {
     pub color: Option<String>,
 }
 
+/// An index over several fields together (for one field, use the field's own `index`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndexDef {
+    /// Stable, so fields can be renamed without rebuilding the index.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Field names, in the order the index sorts by: put the field you always filter on first.
+    pub fields: Vec<String>,
+    /// No two records may have the same values in all of these fields.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub unique: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FieldDef {
@@ -130,6 +154,15 @@ pub struct FieldDef {
     pub default: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_length: Option<u32>,
+    /// For a `link` to the model's own kind: the link is a parent pointer and the records form a
+    /// tree (org units, reporting lines). The kernel keeps a graph edge for every parent link, so
+    /// `db::tree` can walk ancestors and descendants of any depth in one query, and refuses a
+    /// parent that does not exist or would make a loop.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub hierarchy: bool,
+    /// For `decimal`: digits after the point (default 2, at most 9). Fixed once records exist.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub index: Option<IndexKind>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -255,6 +288,9 @@ pub struct ModelDef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title_field: Option<String>,
     pub fields: Vec<FieldDef>,
+    /// Indexes over several fields.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub indexes: Vec<IndexDef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub view: Option<ViewDef>,
     /// The record's conversation and history. Absent means off.
@@ -339,6 +375,36 @@ impl ModelDef {
             field_problems(model, field, &mut problems);
         }
 
+        let mut index_ids = BTreeSet::new();
+        for (position, index) in self.indexes.iter().enumerate() {
+            let label = format!("{model}: index #{}", position + 1);
+            match index.id.as_deref() {
+                None => problems.push(format!("{label} has no `id`")),
+                Some(id) if !is_id(INDEX_PREFIX, id) => problems.push(format!("{label}: id `{id}` is not like `idx_k3v9xq2m7a`")),
+                Some(id) => {
+                    if !index_ids.insert(id) {
+                        problems.push(format!("{label}: id `{id}` is used twice"));
+                    }
+                }
+            }
+            if !(2..=8).contains(&index.fields.len()) {
+                problems.push(format!("{label} needs 2 to 8 fields (one field takes `index` on the field itself)"));
+            }
+            let mut seen = BTreeSet::new();
+            for name in &index.fields {
+                match self.live_fields().find(|field| &field.name == name) {
+                    None => problems.push(format!("{label}: `{name}` is not a field")),
+                    Some(field) if matches!(field.kind, FieldType::Json | FieldType::Text) => {
+                        problems.push(format!("{label}: json and text fields cannot be indexed (`{name}`)"));
+                    }
+                    Some(_) => {}
+                }
+                if !seen.insert(name.as_str()) {
+                    problems.push(format!("{label}: `{name}` is listed twice"));
+                }
+            }
+        }
+
         if let Some(chatter) = &self.chatter {
             if chatter.visitors != VisitorChatter::None && !chatter.enabled {
                 problems.push(format!("{model}: `chatter.visitors` needs `chatter.enabled`"));
@@ -406,9 +472,28 @@ fn field_problems(model: &str, field: &FieldDef, problems: &mut Vec<String>) {
         }
         _ => {}
     }
+    if field.hierarchy {
+        if field.kind != FieldType::Link {
+            problems.push(format!("{model}.{name}: only a link can be a `hierarchy`"));
+        } else if field.target.as_deref() != Some(model) {
+            problems.push(format!("{model}.{name}: a `hierarchy` link must point at its own model (`{model}`)"));
+        }
+        if field.required {
+            problems.push(format!("{model}.{name}: a `hierarchy` link cannot be required (the root has no parent)"));
+        }
+    }
+    if field.kind == FieldType::Many2many {
+        if field.required || field.default.is_some() || field.index.is_some() || field.track {
+            problems.push(format!("{model}.{name}: a many2many field has no column, so it cannot be required, indexed, tracked or have a default"));
+        }
+        if field.target.is_none() {
+            problems.push(format!("{model}.{name}: a many2many field needs a `target` model"));
+        }
+    }
     match (field.kind, &field.target) {
+        (FieldType::Link | FieldType::Many2many, None) if field.kind == FieldType::Many2many => {}
         (FieldType::Link, None) => problems.push(format!("{model}.{name}: a link field needs a `target` model")),
-        (FieldType::Link, Some(target)) if foreign_target(target).is_some() => match &field.target_id {
+        (FieldType::Link | FieldType::Many2many, Some(target)) if foreign_target(target).is_some() => match &field.target_id {
             None => problems.push(format!(
                 "{model}.{name}: a link to `{target}` needs its `target_id`; run `aether --sync-models` (the other plugin must be loaded first)"
             )),
@@ -417,10 +502,10 @@ fn field_problems(model: &str, field: &FieldDef, problems: &mut Vec<String>) {
             }
             Some(_) => {}
         },
-        (FieldType::Link, Some(target)) if !is_name(target) => {
+        (FieldType::Link | FieldType::Many2many, Some(target)) if !is_name(target) => {
             problems.push(format!("{model}.{name}: `target` must be a model name, or `plugin.model` for another plugin's"));
         }
-        (FieldType::Link, Some(_)) => {
+        (FieldType::Link | FieldType::Many2many, Some(_)) => {
             if field.target_id.is_some() {
                 problems.push(format!("{model}.{name}: only a link to another plugin's model has a `target_id`"));
             }
@@ -430,6 +515,12 @@ fn field_problems(model: &str, field: &FieldDef, problems: &mut Vec<String>) {
     }
     if field.max_length.is_some() && !matches!(field.kind, FieldType::String | FieldType::Text) {
         problems.push(format!("{model}.{name}: `max_length` is only for string and text fields"));
+    }
+    if field.scale.is_some() && field.kind != FieldType::Decimal {
+        problems.push(format!("{model}.{name}: `scale` is only for decimal fields"));
+    }
+    if field.scale.is_some_and(|scale| scale > super::decimal::MAX_SCALE) {
+        problems.push(format!("{model}.{name}: `scale` is at most {}", super::decimal::MAX_SCALE));
     }
     if field.max_length == Some(0) {
         problems.push(format!("{model}.{name}: `max_length` must be at least 1"));
@@ -464,6 +555,12 @@ pub fn sync_ids(model: &mut ModelDef) -> usize {
                 option.id = Some(new_id(OPTION_PREFIX));
                 assigned += 1;
             }
+        }
+    }
+    for index in &mut model.indexes {
+        if index.id.is_none() {
+            index.id = Some(new_id(INDEX_PREFIX));
+            assigned += 1;
         }
     }
     assigned
@@ -881,5 +978,38 @@ mod tests {
         assert_eq!(written.fields[0].target_id.as_deref(), Some("mdl_k3v9xq2m7a"));
         assert_eq!(written.fields[1].target_id.as_deref(), Some("mdl_p4rty0000a"));
         Ok(())
+    }
+
+    #[test]
+    fn multi_field_indexes_are_checked() {
+        let mut model: ModelDef = serde_json::from_value(serde_json::json!({
+            "name": "pos", "fields": [
+                { "name": "a", "type": "string" }, { "name": "b", "type": "int" },
+                { "name": "t", "type": "text" }, { "name": "j", "type": "json" }
+            ],
+            "indexes": [ { "fields": ["a", "b"], "unique": true } ]
+        })).unwrap_or_else(|e| panic!("{e}"));
+        assert!(model.problems().iter().any(|p| p.contains("no `id`")));
+        sync_ids(&mut model);
+        assert!(model.problems().is_empty(), "{:?}", model.problems());
+        model.indexes[0].fields = vec!["a".into()];
+        assert!(model.problems().iter().any(|p| p.contains("2 to 8")));
+        model.indexes[0].fields = vec!["a".into(), "a".into()];
+        assert!(model.problems().iter().any(|p| p.contains("twice")));
+        model.indexes[0].fields = vec!["a".into(), "zzz".into()];
+        assert!(model.problems().iter().any(|p| p.contains("not a field")));
+        model.indexes[0].fields = vec!["a".into(), "t".into()];
+        assert!(model.problems().iter().any(|p| p.contains("cannot be indexed")));
+    }
+
+    #[test]
+    fn decimal_scale_is_checked() {
+        let mut model: ModelDef = serde_json::from_value(serde_json::json!({
+            "name": "pay", "fields": [ { "name": "a", "type": "decimal", "scale": 12 }, { "name": "b", "type": "int", "scale": 2 } ]
+        })).unwrap_or_else(|e| panic!("{e}"));
+        sync_ids(&mut model);
+        let problems = model.problems();
+        assert!(problems.iter().any(|p| p.contains("at most")), "{problems:?}");
+        assert!(problems.iter().any(|p| p.contains("only for decimal")), "{problems:?}");
     }
 }

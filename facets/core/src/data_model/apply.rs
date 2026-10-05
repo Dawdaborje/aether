@@ -47,6 +47,19 @@ pub struct AppliedField {
     pub index: Option<IndexKind>,
     /// Hidden: the column still exists.
     pub deprecated: bool,
+    /// For a decimal: digits after the point. Older snapshots have none.
+    #[serde(default)]
+    pub scale: Option<u32>,
+    /// A parent link kept as graph edges. Older snapshots have none.
+    #[serde(default)]
+    pub hierarchy: bool,
+}
+
+/// A multi-field index as it was last applied: the ids of its fields, in order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppliedIndex {
+    pub fields: Vec<String>,
+    pub unique: bool,
 }
 
 /// A model as it was last applied in one organization.
@@ -57,6 +70,12 @@ pub struct AppliedModel {
     pub name: String,
     /// Field id to what is applied.
     pub fields: BTreeMap<String, AppliedField>,
+    /// Index id to the multi-field index applied. Older snapshots have none.
+    #[serde(default)]
+    pub indexes: BTreeMap<String, AppliedIndex>,
+    /// The graph edge tables defined for the model's hierarchy and many2many fields.
+    #[serde(default)]
+    pub edges: std::collections::BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -65,6 +84,13 @@ pub enum Op {
     DefineField { table: String, field: String, surql_type: String, comment: String },
     DefineIndex { table: String, field: String, unique: bool },
     RemoveIndex { table: String, field: String },
+    /// A graph edge table: from this model's records to `to` (any table when none).
+    DefineEdge { edge: String, from: String, to: Option<String> },
+    /// Rebuild a hierarchy's edges from its parent column (the link was just made a hierarchy).
+    RebuildEdges { table: String, edge: String, column: String },
+    /// An index over several fields (given by id, in order), named after its own id.
+    DefineCompositeIndex { table: String, index: String, fields: Vec<String>, unique: bool },
+    RemoveCompositeIndex { table: String, index: String },
     /// Give records that lack a value the field's default.
     Backfill { table: String, field: String, default: Value },
 }
@@ -93,10 +119,10 @@ fn base_type(kind: FieldType) -> &'static str {
     match kind {
         FieldType::String | FieldType::Text | FieldType::Select | FieldType::Link
         | FieldType::Date | FieldType::Datetime => "string",
-        FieldType::Int => "int",
+        FieldType::Int | FieldType::Decimal => "int",
         FieldType::Float => "number",
         FieldType::Bool => "bool",
-        FieldType::Json => "any",
+        FieldType::Json | FieldType::Many2many => "any",
     }
 }
 
@@ -115,6 +141,16 @@ fn widens(from: FieldType, to: FieldType) -> bool {
         )
 }
 
+/// A default as the database keeps it (a decimal is a whole number of its smallest unit).
+fn stored_default(field: &FieldDef, default: &Value) -> Value {
+    match field.kind {
+        FieldType::Decimal => super::decimal::to_scaled(default, field.scale.unwrap_or(super::decimal::DEFAULT_SCALE))
+            .map(Value::from)
+            .unwrap_or_else(|_| default.clone()),
+        _ => default.clone(),
+    }
+}
+
 fn field_snapshot(field: &FieldDef) -> AppliedField {
     AppliedField {
         name: field.name.clone(),
@@ -122,6 +158,8 @@ fn field_snapshot(field: &FieldDef) -> AppliedField {
         required: field.required && !field.deprecated,
         index: field.index,
         deprecated: field.deprecated,
+        scale: (field.kind == FieldType::Decimal).then(|| field.scale.unwrap_or(super::decimal::DEFAULT_SCALE)),
+        hierarchy: field.hierarchy,
     }
 }
 
@@ -152,6 +190,8 @@ pub fn plan(plugin: &str, def: &ModelDef, applied: Option<&AppliedModel>, row_co
         plugin: plugin.to_string(),
         name: model.clone(),
         fields: BTreeMap::new(),
+        indexes: BTreeMap::new(),
+        edges: std::collections::BTreeSet::new(),
     };
 
     for field in &def.fields {
@@ -168,7 +208,7 @@ pub fn plan(plugin: &str, def: &ModelDef, applied: Option<&AppliedModel>, row_co
                 redefine = true;
                 if now.required && rows > 0 {
                     match &field.default {
-                        Some(default) => backfill = Some(Op::Backfill { table: table.clone(), field: id.to_string(), default: default.clone() }),
+                        Some(default) => backfill = Some(Op::Backfill { table: table.clone(), field: id.to_string(), default: stored_default(field, default) }),
                         None => blockers.push(format!(
                             "`{model}.{name}` is a new required field but {rows} record(s) exist: give it a `default`, or make it optional"
                         )),
@@ -192,11 +232,20 @@ pub fn plan(plugin: &str, def: &ModelDef, applied: Option<&AppliedModel>, row_co
                         ));
                     }
                 }
+                if before.kind == now.kind && before.scale != now.scale {
+                    if rows > 0 {
+                        blockers.push(format!(
+                            "`{model}.{name}` changes its decimal scale and {rows} record(s) exist: that needs a migration"
+                        ));
+                    } else {
+                        redefine = true;
+                    }
+                }
                 if before.required != now.required {
                     redefine = true;
                     if now.required && rows > 0 {
                         match &field.default {
-                            Some(default) => backfill = Some(Op::Backfill { table: table.clone(), field: id.to_string(), default: default.clone() }),
+                            Some(default) => backfill = Some(Op::Backfill { table: table.clone(), field: id.to_string(), default: stored_default(field, default) }),
                             None => blockers.push(format!(
                                 "`{model}.{name}` becomes required but {rows} record(s) exist: give it a `default`"
                             )),
@@ -211,7 +260,7 @@ pub fn plan(plugin: &str, def: &ModelDef, applied: Option<&AppliedModel>, row_co
                 }
             }
         }
-        if redefine {
+        if redefine && field.kind != FieldType::Many2many {
             ops.push(define_field(&table, &model, id, name, field.kind, now.required));
         }
         ops.extend(backfill);
@@ -242,7 +291,9 @@ pub fn plan(plugin: &str, def: &ModelDef, applied: Option<&AppliedModel>, row_co
             hidden.index = None;
             if !before.deprecated {
                 notes.push(format!("`{model}.{}` was removed: it is hidden and its data is kept", before.name));
-                ops.push(define_field(&table, &model, id, &before.name, before.kind, false));
+                if before.kind != FieldType::Many2many {
+                    ops.push(define_field(&table, &model, id, &before.name, before.kind, false));
+                }
                 if before.index.is_some() {
                     ops.push(Op::RemoveIndex { table: table.clone(), field: id.clone() });
                 }
@@ -251,7 +302,75 @@ pub fn plan(plugin: &str, def: &ModelDef, applied: Option<&AppliedModel>, row_co
         }
     }
 
+    plan_edges(def, applied, &table, &mut ops, &mut snapshot);
+    plan_indexes(def, applied, &snapshot.fields.clone(), &table, &mut ops, &mut snapshot);
     Plan { model, table, ops, blockers, notes, snapshot }
+}
+
+/// Graph edge tables for hierarchy links and many2many fields. A table is defined once and kept
+/// when its field goes away (the data stays, like a hidden column). A link that becomes a
+/// hierarchy over existing records has its edges built from the parent column.
+fn plan_edges(def: &ModelDef, applied: Option<&AppliedModel>, table: &str, ops: &mut Vec<Op>, snapshot: &mut AppliedModel) {
+    if let Some(applied) = applied {
+        snapshot.edges = applied.edges.clone();
+    }
+    for field in def.live_fields() {
+        let Some(id) = field.id.as_deref() else { continue };
+        let edge = super::runtime::edge_table(table, id);
+        let to = match (field.kind, field.hierarchy) {
+            (FieldType::Many2many, _) => None,
+            (_, true) => Some(table.to_string()),
+            _ => continue,
+        };
+        let before = applied.and_then(|a| a.fields.get(id));
+        let had_edges = snapshot.edges.contains(&edge);
+        if !had_edges {
+            ops.push(Op::DefineEdge { edge: edge.clone(), from: table.to_string(), to });
+            snapshot.edges.insert(edge.clone());
+        }
+        // Turned on for a link that already holds parents: build the edges from the column.
+        if field.hierarchy && before.is_some_and(|b| !b.hierarchy) {
+            ops.push(Op::RebuildEdges { table: table.to_string(), edge, column: id.to_string() });
+        }
+    }
+}
+
+/// Multi-field indexes follow the definition: new ones are defined, changed ones rebuilt, ones
+/// that are gone dropped. Fields are held by id, so renaming a field never touches an index.
+fn plan_indexes(
+    def: &ModelDef,
+    applied: Option<&AppliedModel>,
+    fields: &BTreeMap<String, AppliedField>,
+    table: &str,
+    ops: &mut Vec<Op>,
+    snapshot: &mut AppliedModel,
+) {
+    let id_of = |name: &str| def.fields.iter().find(|f| f.name == name).and_then(|f| f.id.clone());
+    for index in &def.indexes {
+        let Some(index_id) = index.id.clone() else { continue };
+        let ids: Vec<String> = index.fields.iter().filter_map(|name| id_of(name)).collect();
+        // A field that is hidden takes its indexes with it, and one that is missing is a
+        // definition error reported elsewhere.
+        if ids.len() != index.fields.len() || ids.iter().any(|id| fields.get(id).is_none_or(|f| f.deprecated)) {
+            continue;
+        }
+        let now = AppliedIndex { fields: ids.clone(), unique: index.unique };
+        let before = applied.and_then(|a| a.indexes.get(&index_id));
+        if before != Some(&now) {
+            if before.is_some() {
+                ops.push(Op::RemoveCompositeIndex { table: table.to_string(), index: index_id.clone() });
+            }
+            ops.push(Op::DefineCompositeIndex { table: table.to_string(), index: index_id.clone(), fields: ids, unique: index.unique });
+        }
+        snapshot.indexes.insert(index_id, now);
+    }
+    if let Some(applied) = applied {
+        for index_id in applied.indexes.keys() {
+            if !snapshot.indexes.contains_key(index_id) {
+                ops.push(Op::RemoveCompositeIndex { table: table.to_string(), index: index_id.clone() });
+            }
+        }
+    }
 }
 
 fn statements(plan: &Plan) -> Vec<String> {
@@ -270,6 +389,19 @@ fn statements(plan: &Plan) -> Vec<String> {
                 if *unique { " UNIQUE" } else { "" }
             ),
             Op::RemoveIndex { table, field } => format!("REMOVE INDEX IF EXISTS ix_{field} ON TABLE {table}"),
+            Op::DefineEdge { edge, from, to } => format!(
+                "DEFINE TABLE IF NOT EXISTS {edge} TYPE RELATION IN {from}{} ENFORCED",
+                to.as_ref().map(|to| format!(" OUT {to}")).unwrap_or_default()
+            ),
+            Op::RebuildEdges { table, edge, column } => format!(
+                "DELETE {edge}; FOR $r IN (SELECT id, {column} AS p FROM {table} WHERE {column} != NONE) {{ RELATE ($r.p)->{edge}->($r.id); }}"
+            ),
+            Op::DefineCompositeIndex { table, index, fields, unique } => format!(
+                "DEFINE INDEX OVERWRITE ix_{index} ON TABLE {table} FIELDS {}{}",
+                fields.join(", "),
+                if *unique { " UNIQUE" } else { "" }
+            ),
+            Op::RemoveCompositeIndex { table, index } => format!("REMOVE INDEX IF EXISTS ix_{index} ON TABLE {table}"),
             Op::Backfill { table, field, .. } => {
                 binds += 1;
                 format!("UPDATE {table} SET {field} = $backfill_{binds} WHERE {field} = NONE")
@@ -498,6 +630,50 @@ mod tests {
         let ops = plan("notes", &after, Some(&applied), 1).ops;
         assert!(ops.iter().any(|op| matches!(op, Op::DefineIndex { unique: false, .. })));
         assert!(ops.iter().any(|op| matches!(op, Op::RemoveIndex { .. })));
+    }
+
+    #[test]
+    fn multi_field_indexes_are_planned_rebuilt_and_dropped() {
+        let mut def = first();
+        def.indexes.push(super::super::definition::IndexDef { id: Some("idx_abcdef".into()), fields: vec!["title".into(), "pages".into()], unique: false });
+        let first_plan = plan("notes", &def, None, 0);
+        assert!(first_plan.ops.iter().any(|op| matches!(op, Op::DefineCompositeIndex { fields, unique: false, .. } if fields.len() == 2)));
+        let applied = first_plan.snapshot;
+        assert!(plan("notes", &def, Some(&applied), 5).is_noop(Some(&applied)));
+
+        // Renaming a field leaves the index alone: it is held by field id.
+        let mut renamed = def.clone();
+        renamed.fields[0].name = "heading".into();
+        renamed.indexes[0].fields[0] = "heading".into();
+        assert!(!plan("notes", &renamed, Some(&applied), 5).ops.iter().any(|op| matches!(op, Op::DefineCompositeIndex { .. } | Op::RemoveCompositeIndex { .. })));
+
+        // Making it unique rebuilds it; removing it drops it.
+        let mut unique = def.clone();
+        unique.indexes[0].unique = true;
+        let ops = plan("notes", &unique, Some(&applied), 5).ops;
+        assert!(ops.iter().any(|op| matches!(op, Op::RemoveCompositeIndex { .. })));
+        assert!(ops.iter().any(|op| matches!(op, Op::DefineCompositeIndex { unique: true, .. })));
+        let mut gone = def;
+        gone.indexes.clear();
+        assert!(plan("notes", &gone, Some(&applied), 5).ops.iter().any(|op| matches!(op, Op::RemoveCompositeIndex { .. })));
+    }
+
+    #[test]
+    fn an_old_snapshot_without_indexes_still_reads() -> Result<(), serde_json::Error> {
+        let old = json!({ "model_id": "mdl_x", "plugin": "p", "name": "n", "fields": {} });
+        let applied: AppliedModel = serde_json::from_value(old)?;
+        assert!(applied.indexes.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn a_decimal_scale_is_fixed_once_records_exist() {
+        let mut def = model(json!([{ "name": "pay", "type": "decimal" }]));
+        let applied = plan("hr", &def, None, 0).snapshot;
+        assert_eq!(applied.fields.values().next().and_then(|f| f.scale), Some(2));
+        def.fields[0].scale = Some(3);
+        assert!(!plan("hr", &def, Some(&applied), 4).blockers.is_empty());
+        assert!(plan("hr", &def, Some(&applied), 0).blockers.is_empty());
     }
 
     #[test]

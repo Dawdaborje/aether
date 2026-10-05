@@ -127,6 +127,12 @@ fn describe(op: &Op) -> Value {
         Op::DefineField { comment, surql_type, .. } => json!({ "kind": "define_field", "field": comment, "type": surql_type }),
         Op::DefineIndex { field, unique, .. } => json!({ "kind": "define_index", "field": field, "unique": unique }),
         Op::RemoveIndex { field, .. } => json!({ "kind": "remove_index", "field": field }),
+        Op::DefineEdge { edge, .. } => json!({ "kind": "define_edge", "edge": edge }),
+        Op::RebuildEdges { edge, .. } => json!({ "kind": "rebuild_edges", "edge": edge }),
+        Op::DefineCompositeIndex { index, fields, unique, .. } => {
+            json!({ "kind": "define_composite_index", "index": index, "fields": fields, "unique": unique })
+        }
+        Op::RemoveCompositeIndex { index, .. } => json!({ "kind": "remove_composite_index", "index": index }),
         Op::Backfill { field, .. } => json!({ "kind": "backfill", "field": field }),
     }
 }

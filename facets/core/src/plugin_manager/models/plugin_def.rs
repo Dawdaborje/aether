@@ -404,6 +404,9 @@ pub struct PluginManifest {
     /// changes, the kernel runs one of the plugin's functions.
     #[serde(default)]
     pub watch: Vec<PluginWatchDef>,
+    /// Roles the plugin offers (`[[roles]]`); see [`PluginRoleDef`].
+    #[serde(default)]
+    pub roles: Vec<PluginRoleDef>,
 }
 
 /// What can happen to a watched file.
@@ -543,6 +546,33 @@ pub struct PluginCommandDef {
     pub args: Vec<CommandArgDef>,
 }
 
+/// A role a plugin offers: something an administrator gives to people, which the plugin's code
+/// then checks (`hr_manager`, `approver`). In an organization it is called `<plugin>.<name>`.
+///
+/// ```toml
+/// [[roles]]
+/// name = "hr_manager"
+/// label = "HR manager"
+/// description = "Hires, changes and ends employment"
+/// ```
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct PluginRoleDef {
+    pub name: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+impl PluginRoleDef {
+    pub fn validate(&self) -> Result<(), String> {
+        if !plain_name(&self.name, |c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
+            return Err(format!("role name `{}`: use 1 to 64 lower-case letters, digits or `_`", self.name));
+        }
+        Ok(())
+    }
+}
+
 fn plain_name(name: &str, allowed: fn(char) -> bool) -> bool {
     !name.is_empty() && name.len() <= 64 && name.chars().all(allowed)
 }
@@ -619,6 +649,9 @@ pub enum ManifestError {
     #[error("`bridges`: {0}")]
     Bridge(String),
 
+    #[error("`[[roles]]`: {0}")]
+    Role(String),
+
     #[error(
         "`[[models]]` is no longer supported: define each model in `models/<name>.json` \
          (`aether --sync-models` assigns the ids)"
@@ -663,6 +696,13 @@ impl PluginManifest {
             watch.validate().map_err(ManifestError::Watch)?;
             if !watches.insert(watch.name.clone()) {
                 return Err(ManifestError::Watch(format!("two watches are named `{}`", watch.name)));
+            }
+        }
+        let mut roles = std::collections::HashSet::new();
+        for role in &manifest.roles {
+            role.validate().map_err(ManifestError::Role)?;
+            if !roles.insert(role.name.clone()) {
+                return Err(ManifestError::Role(format!("two roles are named `{}`", role.name)));
             }
         }
         if let Some(unknown) = manifest.plugin.bridges.iter().find(|name| crate::bridges::find(name).is_none()) {

@@ -17,6 +17,9 @@ pub struct ModelGrant {
     /// How the model's fields are stored; none for a grant made without a model definition.
     #[serde(skip)]
     pub schema: Option<std::sync::Arc<crate::data_model::ModelSchema>>,
+    /// Who may see and change which records and fields; none: nothing beyond the grant.
+    #[serde(skip)]
+    pub rules: Option<std::sync::Arc<crate::data_model::RuleSet>>,
 }
 
 impl ModelGrant {
@@ -31,6 +34,7 @@ impl ModelGrant {
                 || perms.contains("update")
                 || perms.contains("delete"),
             schema: None,
+            rules: None,
         }
     }
 
@@ -175,6 +179,13 @@ pub struct PluginHostContext {
     pub event_depth: u32,
     /// The bridges this plugin may call (`bridges` in plugin.toml).
     pub bridge_names: Vec<String>,
+    /// Record and field rules are not applied to this call: the kernel's own jobs, and the small
+    /// functions that answer a rule's variables (they would otherwise need the rules they feed).
+    pub bypass_rules: bool,
+    /// The caller's roles, read once per call when a rule needs them.
+    pub roles_cache: std::sync::Arc<tokio::sync::OnceCell<Vec<String>>>,
+    /// Answers to rule variables for the whole request, shared by the plugins it calls.
+    pub rule_cache: crate::access::identity::RuleCache,
 }
 
 impl PluginHostContext {
@@ -204,7 +215,18 @@ impl PluginHostContext {
             caller: None,
             event_depth: 0,
             bridge_names: Vec::new(),
+            bypass_rules: false,
+            roles_cache: std::sync::Arc::default(),
+            rule_cache: Default::default(),
         }
+    }
+
+    /// Say whether the rules apply to this call, and share the request's answers to rule variables.
+    #[must_use]
+    pub fn with_rules(mut self, bypass: bool, cache: crate::access::identity::RuleCache) -> Self {
+        self.bypass_rules = bypass;
+        self.rule_cache = cache;
+        self
     }
 
     /// Give the call access to the kernel's cache and storage.

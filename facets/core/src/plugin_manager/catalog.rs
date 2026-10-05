@@ -35,6 +35,9 @@ pub enum CatalogError {
     #[error("{0}")]
     ForeignLink(String),
 
+    #[error("the rules of plugin `{plugin}` are wrong: {problems}")]
+    Rules { plugin: String, problems: String },
+
     #[error("the schedules of `{0}` could not be set up: {1}")]
     Schedule(String, String),
 
@@ -251,6 +254,8 @@ struct NewPlugin {
     watches: Vec<serde_json::Value>,
     /// The events the manifest listens to.
     event_listeners: Vec<serde_json::Value>,
+    /// The manifest's `[[roles]]`.
+    roles: Vec<serde_json::Value>,
     is_builtin: bool,
     is_active: bool,
 }
@@ -313,6 +318,23 @@ struct ModelIdOwner {
 /// `0.1.0+20261003T210100Z` is a rebuild of `0.1.0`.
 pub fn base_version(version: &str) -> &str {
     version.split('+').next().unwrap_or(version)
+}
+
+/// The plugin's `rules/*.json`, as package-relative paths with their text.
+async fn read_rule_files(package_dir: &Path) -> Result<Vec<(PathBuf, String)>, CatalogError> {
+    let directory = package_dir.join(crate::data_model::rules::RULE_DIR);
+    let mut found = Vec::new();
+    let Ok(mut entries) = tokio::fs::read_dir(&directory).await else { return Ok(found) };
+    while let Some(entry) = entries.next_entry().await.map_err(io_error(&directory))? {
+        let path = entry.path();
+        if path.extension().is_some_and(|extension| extension == "json") {
+            let text = tokio::fs::read_to_string(&path).await.map_err(io_error(&path))?;
+            let relative = path.strip_prefix(package_dir).unwrap_or(&path).to_path_buf();
+            found.push((relative, text));
+        }
+    }
+    found.sort();
+    Ok(found)
 }
 
 /// A package-relative path as it is written in `files.json`.
@@ -446,8 +468,15 @@ pub async fn load_plugin(
 
     let theme = read_theme(&manifest, &manifest_path, &package_dir).await?;
     let app = read_app(&manifest, &manifest_path, &pages)?;
+    let rule_files = read_rule_files(&package_dir).await?;
+    crate::data_model::rules::parse_all(
+        &rule_files.iter().map(|(path, text)| (logical_path(path), text.clone())).collect::<Vec<_>>(),
+        &models,
+    )
+    .map_err(|problems| CatalogError::Rules { plugin: manifest.plugin.name.clone(), problems: problems.join("; ") })?;
 
     let mut files = BTreeSet::from([PathBuf::from(MANIFEST_FILE)]);
+    files.extend(rule_files.iter().map(|(path, _)| path.clone()));
     files.extend(pages.iter().map(|page| page.source.clone()));
     for (path, _) in &model_files {
         if let Ok(relative) = path.strip_prefix(&package_dir) {
@@ -530,6 +559,8 @@ pub async fn load_plugin(
         manifest.command.iter().filter_map(|command| serde_json::to_value(command).ok()).collect();
     let watches: Vec<serde_json::Value> =
         manifest.watch.iter().filter_map(|watch| serde_json::to_value(watch).ok()).collect();
+    let roles: Vec<serde_json::Value> =
+        manifest.roles.iter().filter_map(|role| serde_json::to_value(role).ok()).collect();
     let event_listeners: Vec<serde_json::Value> = manifest
         .events
         .iter()
@@ -708,6 +739,7 @@ pub async fn load_plugin(
         i18n: text_catalogs.as_ref().map(|found| super::i18n::to_value(&found.catalogs)),
         watches,
         event_listeners,
+        roles,
         is_builtin: definition.is_builtin,
         is_active: true,
     };
@@ -1130,6 +1162,7 @@ pub async fn install_plugins(
         sync_schedules(db, &record.name, record.schedules.as_deref()).await?;
         crate::plugin_files::watch::sync_watches(db, &record.name, record.watches.as_deref()).await?;
         crate::plugin_events::sync_listeners(db, &record.name, record.event_listeners.as_deref()).await?;
+        crate::roles::sync_roles(db, &record.name, record.roles.as_deref()).await?;
         if let Some(theme) = theme {
             report.themes.push(InstalledTheme {
                 name: theme.name,
@@ -1255,6 +1288,7 @@ pub async fn upgrade_plugins(
         sync_schedules(db, &spec.name, target.schedules.as_deref()).await?;
         crate::plugin_files::watch::sync_watches(db, &spec.name, target.watches.as_deref()).await?;
         crate::plugin_events::sync_listeners(db, &spec.name, target.event_listeners.as_deref()).await?;
+        crate::roles::sync_roles(db, &spec.name, target.roles.as_deref()).await?;
         installed.insert(spec.name.clone(), target.version.clone());
         report.upgraded.push((spec.name.clone(), from, target.version));
     }

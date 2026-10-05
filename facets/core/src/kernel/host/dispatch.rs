@@ -3,7 +3,7 @@ use serde_json::Value as JsonValue;
 use super::context::PluginHostContext;
 use super::db;
 use super::error::HostError;
-use super::{bridge_call, communication, files, http, plugin_call, scheduling, storage, store};
+use super::{bridge_call, communication, files, graph, http, plugin_call, scheduling, storage, store};
 
 /// Dispatch a kernel host command for a plugin.
 ///
@@ -18,6 +18,12 @@ pub async fn kernel_command(
         // Structured DB — no raw SurQL from the plugin.
         "db::get" => db::db_get(ctx, &payload).await,
         "db::find" | "db::query" => db::db_find(ctx, &payload).await,
+        "db::relate" => graph::db_relate(ctx, &payload).await,
+        "db::unrelate" => graph::db_unrelate(ctx, &payload).await,
+        "db::related" => graph::db_related(ctx, &payload).await,
+        "db::tree" => graph::db_tree(ctx, &payload).await,
+        "db::count" => db::db_count(ctx, &payload).await,
+        "db::aggregate" => db::db_aggregate(ctx, &payload).await,
         "db::create" => db::db_create(ctx, &payload).await,
         "db::update" => db::db_update(ctx, &payload).await,
         "db::delete" => db::db_delete(ctx, &payload).await,
@@ -69,15 +75,25 @@ pub async fn kernel_command(
         }
         // Who is calling and where. Needs no capability: it only tells the plugin about
         // the request it is already serving.
-        "context::get" => Ok(serde_json::json!({
+        "context::get" => {
+            // The roles an administrator gave this person. Visitors and anonymous callers have none.
+            let roles = match ctx.audit.actor.id() {
+                Some(user) if ctx.audit.actor.kind() == "user" => {
+                    crate::roles::roles_of(&ctx.db, user).await.map_err(HostError::Db)?
+                }
+                _ => Vec::new(),
+            };
+            Ok(serde_json::json!({
             "ok": true,
+            "roles": roles,
             "now": surrealdb::types::Datetime::now().to_string(),
             "plugin": ctx.plugin_name,
             "function": ctx.function,
             "organization": ctx.database,
             "request_id": ctx.audit.request_id,
             "actor": { "kind": ctx.audit.actor.kind(), "id": ctx.audit.actor.id() },
-        })),
+            }))
+        }
         "notify::send" => {
             ctx.require_cap(command)?;
             notify_send(ctx, &payload).await
@@ -264,7 +280,7 @@ mod tests {
     async fn every_capability_a_command_checks_is_in_the_catalog() {
         let catalog = aether_security::capabilities::CapabilityCatalog::builtin().unwrap();
         let commands = [
-            "db::get", "db::find", "db::query", "db::create", "db::update", "db::delete", "db::increment",
+            "db::get", "db::find", "db::query", "db::count", "db::aggregate", "db::relate", "db::unrelate", "db::related", "db::tree", "db::create", "db::update", "db::delete", "db::increment",
             "db::mutate", "db::transaction", "cache::get", "cache::set", "cache::invalidate",
             "cache::clear", "storage::read", "storage::write", "storage::delete",
             "storage::list", "fs::read", "fs::write", "fs::list", "fs::stat", "fs::rename", "fs::delete", "communication::send", "events::emit", "events::subscribe", "events::unsubscribe",
