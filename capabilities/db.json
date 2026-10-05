@@ -11,7 +11,7 @@
     {
       "code": "mutate",
       "name": "Mutate",
-      "description": "Structured writes: create, update and delete by model name. This is the capability the kernel checks for db::create, db::update and db::delete."
+      "description": "Structured writes: create, update, delete and increment by model name. This is the capability the kernel checks for db::create, db::update, db::delete and db::increment."
     },
     {
       "code": "create",

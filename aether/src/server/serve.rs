@@ -92,6 +92,7 @@ pub async fn run_server(
 
     let retention_task = aether_core::access::audit::spawn_retention_task(&state);
     let notification_cleanup = aether_core::notifications::spawn_cleanup(&state);
+    let chatter_cleanup = aether_core::chatter::spawn_cleanup(&state);
     let notification_hub = state.notifications.clone();
 
     let app = Router::new()
@@ -173,6 +174,7 @@ pub async fn run_server(
         task.abort();
     }
     notification_cleanup.abort();
+    chatter_cleanup.abort();
     // End the database session cleanly. The connection itself closes when the
     // process exits, which follows immediately.
     match db_conn.invalidate().await {

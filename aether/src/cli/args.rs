@@ -99,6 +99,10 @@ pub struct Args {
     /// Install catalog plugins for an organization (e.g. `--install-plugin partner crm@0.2.0 --org acme`)
     pub install_plugin: Option<Vec<PluginSpec>>,
 
+    #[arg(long, value_name = "PATH", num_args = 1..)]
+    /// Give the models in a plugin's `models/*.json` their ids and write them back (e.g. `--sync-models plugins/test/notes`)
+    pub sync_models: Option<Vec<PathBuf>>,
+
     #[arg(long, value_name = "DB_NAME")]
     /// Organization database that `--install-plugin`, `--upgrade-plugin` and `--activate-theme` act on
     pub org: Option<String>,

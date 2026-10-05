@@ -32,6 +32,12 @@ pub enum HostError {
     Message(String),
 }
 
+impl From<crate::data_model::SchemaError> for HostError {
+    fn from(error: crate::data_model::SchemaError) -> Self {
+        Self::InvalidPayload(error.to_string())
+    }
+}
+
 impl HostError {
     pub fn to_json(&self) -> JsonValue {
         serde_json::json!({

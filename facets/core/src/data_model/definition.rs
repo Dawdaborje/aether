@@ -137,6 +137,9 @@ pub struct FieldDef {
     /// Hidden from plugins and pages; the stored data is kept.
     #[serde(default, skip_serializing_if = "is_false")]
     pub deprecated: bool,
+    /// Record changes to this field in the record's chatter. Needs the model's chatter on.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub track: bool,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -172,6 +175,57 @@ pub struct SortKey {
     pub dir: Option<String>,
 }
 
+/// Whether anonymous visitors may use a record's chatter.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VisitorChatter {
+    /// Visitors never see it. The default.
+    #[default]
+    None,
+    /// Visitors can read messages, on records they can read.
+    Read,
+    /// Visitors can read and post messages (never notes).
+    ReadWrite,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// The conversation and history panel of a record. A model has none unless it asks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatterDef {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Messages, which notify the record's followers.
+    #[serde(default = "yes")]
+    pub messages: bool,
+    /// Internal notes, which notify nobody (except people mentioned).
+    #[serde(default = "yes")]
+    pub notes: bool,
+    #[serde(default = "yes")]
+    pub followers: bool,
+    /// Record the changes to fields marked `track`.
+    #[serde(default = "yes")]
+    pub track_changes: bool,
+    #[serde(default)]
+    pub visitors: VisitorChatter,
+}
+
+impl Default for ChatterDef {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            messages: true,
+            notes: true,
+            followers: true,
+            track_changes: true,
+            visitors: VisitorChatter::None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelDef {
@@ -191,6 +245,9 @@ pub struct ModelDef {
     pub fields: Vec<FieldDef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub view: Option<ViewDef>,
+    /// The record's conversation and history. Absent means off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chatter: Option<ChatterDef>,
 }
 
 #[derive(Debug, Error)]
@@ -216,6 +273,11 @@ pub enum ModelFileError {
 }
 
 impl ModelDef {
+    /// The model's chatter settings when it has chatter switched on.
+    pub fn chatter_on(&self) -> Option<&ChatterDef> {
+        self.chatter.as_ref().filter(|chatter| chatter.enabled)
+    }
+
     /// The fields that are in use (not hidden).
     pub fn live_fields(&self) -> impl Iterator<Item = &FieldDef> {
         self.fields.iter().filter(|field| !field.deprecated)
@@ -265,6 +327,20 @@ impl ModelDef {
             field_problems(model, field, &mut problems);
         }
 
+        if let Some(chatter) = &self.chatter {
+            if chatter.visitors != VisitorChatter::None && !chatter.enabled {
+                problems.push(format!("{model}: `chatter.visitors` needs `chatter.enabled`"));
+            }
+            if chatter.visitors == VisitorChatter::ReadWrite && !chatter.messages {
+                problems.push(format!("{model}: visitors post messages, so `visitors: read_write` needs `messages`"));
+            }
+        }
+        if let Some(tracked) = self.fields.iter().find(|field| field.track && field.kind == FieldType::Json) {
+            problems.push(format!("{model}.{}: json fields cannot be tracked", tracked.name));
+        }
+        if self.fields.iter().any(|field| field.track) && !self.chatter_on().is_some_and(|c| c.track_changes) {
+            problems.push(format!("{model}: a field is marked `track` but the model's chatter (with `track_changes`) is not on"));
+        }
         if let Some(title) = &self.title_field
             && !self.live_fields().any(|field| &field.name == title)
         {
@@ -423,6 +499,57 @@ pub fn read_models(package_dir: &Path) -> Result<Vec<(PathBuf, ModelDef)>, Model
     Ok(models)
 }
 
+/// What [`sync_package`] did to one file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Synced {
+    pub path: PathBuf,
+    pub model: String,
+    /// Ids written into the file (0: it already had them all).
+    pub assigned: usize,
+}
+
+/// Give every model, field and select option in a package's `models/*.json` that has no id one,
+/// and write the file back. Ids are never changed once set. A hand-written model starts without
+/// ids; this is how it gets them, so that renaming a field later cannot be mistaken for
+/// deleting it and adding another.
+pub fn sync_package(package_dir: &Path) -> Result<Vec<Synced>, ModelFileError> {
+    let directory = package_dir.join(MODEL_DIR);
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(&directory)
+        .map_err(|source| ModelFileError::Io { path: directory.clone(), source })?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("json"))
+        .collect();
+    paths.sort();
+
+    let mut synced = Vec::new();
+    let mut models = Vec::new();
+    for path in paths {
+        let text = std::fs::read_to_string(&path)
+            .map_err(|source| ModelFileError::Io { path: path.clone(), source })?;
+        let mut model: ModelDef = serde_json::from_str(&text)
+            .map_err(|source| ModelFileError::Parse { path: path.clone(), source })?;
+        let assigned = sync_ids(&mut model);
+        if assigned > 0 {
+            let mut written = serde_json::to_string_pretty(&model)
+                .map_err(|source| ModelFileError::Parse { path: path.clone(), source })?;
+            written.push('\n');
+            std::fs::write(&path, written).map_err(|source| ModelFileError::Io { path: path.clone(), source })?;
+        }
+        synced.push(Synced { path: path.clone(), model: model.name.clone(), assigned });
+        models.push((path, model));
+    }
+    // Whatever is still wrong (a bad name, a link to nothing) is reported now, not at load time.
+    for (path, model) in &models {
+        let problems = model.problems();
+        if !problems.is_empty() {
+            return Err(ModelFileError::Invalid { path: path.clone(), problems });
+        }
+    }
+    validate_set(&models.iter().map(|(_, model)| model.clone()).collect::<Vec<_>>())?;
+    Ok(synced)
+}
+
 /// Parse one model file's text and check it (including that its ids are assigned).
 pub fn parse_model(text: &str, path: &Path) -> Result<ModelDef, ModelFileError> {
     let model: ModelDef = serde_json::from_str(text)
@@ -540,6 +667,74 @@ mod tests {
         // No models folder at all is fine: a plugin may have no data.
         let empty = tempfile::tempdir().unwrap();
         assert!(read_models(empty.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn chatter_is_off_unless_the_model_asks_and_its_rules_are_checked() {
+        let mut model = note();
+        assert!(model.chatter_on().is_none(), "off by default");
+        model.chatter = Some(ChatterDef::default());
+        assert!(model.chatter_on().is_none(), "present but not enabled is still off");
+        model.chatter = Some(ChatterDef { enabled: true, ..ChatterDef::default() });
+        assert!(model.chatter_on().is_some());
+        assert!(model.problems().is_empty(), "{:?}", model.problems());
+
+        // Tracking needs chatter; visitors need it too; json cannot be tracked.
+        let mut tracked = note();
+        tracked.fields[0].track = true;
+        assert!(tracked.problems().join(";").contains("track"), "chatter is off");
+        tracked.chatter = Some(ChatterDef { enabled: true, ..ChatterDef::default() });
+        assert!(tracked.problems().is_empty());
+        tracked.chatter = Some(ChatterDef { enabled: true, track_changes: false, ..ChatterDef::default() });
+        assert!(!tracked.problems().is_empty(), "track_changes is off");
+
+        let mut visitors = note();
+        visitors.chatter = Some(ChatterDef { visitors: VisitorChatter::Read, ..ChatterDef::default() });
+        assert!(visitors.problems().join(";").contains("visitors"), "not enabled");
+        visitors.chatter = Some(ChatterDef { enabled: true, messages: false, visitors: VisitorChatter::ReadWrite, ..ChatterDef::default() });
+        assert!(!visitors.problems().is_empty(), "visitors post messages");
+
+        let mut json_field = note();
+        json_field.fields.push(serde_json::from_value(json!({ "id": "fld_jjjjjjjjjj", "name": "extra", "type": "json", "track": true })).unwrap());
+        json_field.chatter = Some(ChatterDef { enabled: true, ..ChatterDef::default() });
+        assert!(json_field.problems().join(";").contains("json fields cannot be tracked"));
+    }
+
+    #[test]
+    fn syncing_assigns_ids_once_writes_them_back_and_never_changes_them() {
+        let directory = tempfile::tempdir().unwrap();
+        let models = directory.path().join(MODEL_DIR);
+        std::fs::create_dir_all(&models).unwrap();
+        std::fs::write(
+            models.join("note.json"),
+            r#"{ "name": "note", "fields": [{ "name": "title", "type": "string" }] }"#,
+        )
+        .unwrap();
+
+        let first = sync_package(directory.path()).unwrap();
+        assert_eq!(first[0].assigned, 2, "the model and its field");
+        let text = std::fs::read_to_string(models.join("note.json")).unwrap();
+        let written: ModelDef = serde_json::from_str(&text).unwrap();
+        assert!(written.problems().is_empty());
+
+        // Run again, and after renaming the field by hand: the ids stay.
+        assert_eq!(sync_package(directory.path()).unwrap()[0].assigned, 0);
+        let renamed = text.replace("\"title\"", "\"heading\"");
+        std::fs::write(models.join("note.json"), renamed).unwrap();
+        sync_package(directory.path()).unwrap();
+        let after: ModelDef = serde_json::from_str(&std::fs::read_to_string(models.join("note.json")).unwrap()).unwrap();
+        assert_eq!(after.fields[0].name, "heading");
+        assert_eq!(after.fields[0].id, written.fields[0].id, "a rename keeps the column");
+        assert_eq!(after.model_id, written.model_id);
+    }
+
+    #[test]
+    fn syncing_reports_what_else_is_wrong() {
+        let directory = tempfile::tempdir().unwrap();
+        let models = directory.path().join(MODEL_DIR);
+        std::fs::create_dir_all(&models).unwrap();
+        std::fs::write(models.join("note.json"), r#"{ "name": "note", "fields": [{ "name": "Bad Name", "type": "string" }] }"#).unwrap();
+        assert!(matches!(sync_package(directory.path()), Err(ModelFileError::Invalid { .. })));
     }
 
     #[test]

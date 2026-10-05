@@ -8,6 +8,8 @@ use aether_core::config_manager::models::{CompileCacheConfig, PluginRuntimeConfi
 use aether_core::plugin_manager::catalog::{
     CatalogError, PluginSpec, install_plugins, load_plugin, upgrade_plugins,
 };
+use aether_core::data_model::{ModelDef, sync_package};
+use aether_core::plugin_manager::model_edit::publish_models;
 use aether_core::plugin_manager::revisions::{INDEX_FILE, read_index};
 use aether_core::plugin_manager::runtime::PluginRuntime;
 use surrealdb::{Surreal, engine::remote::ws::{Client, Ws}, opt::auth::Root};
@@ -218,5 +220,81 @@ async fn manifests_are_checked_against_the_capability_catalog() -> TestResult {
         let result = world.load().await;
         assert!(result.is_err(), "{capabilities} / {public} should be refused");
     }
+    Ok(())
+}
+
+const NOTE_MODEL: &str = r#"{
+  "name": "note",
+  "fields": [
+    { "name": "title", "type": "string", "required": true },
+    { "name": "body", "type": "text" }
+  ]
+}"#;
+
+#[tokio::test]
+#[ignore = "needs SurrealDB (AETHER_TEST_DB)"]
+async fn an_edited_model_is_a_new_version_that_stores_only_the_model_file() -> TestResult {
+    let Some(world) = World::new().await? else { return Ok(()) };
+    world.organization("acme").await?;
+    tokio::fs::create_dir_all(world.package.join("models")).await?;
+    tokio::fs::write(world.package.join("models/note.json"), NOTE_MODEL).await?;
+    // Hand-written models get their ids from the tool, not from loading.
+    assert!(world.load().await.is_err(), "loading refuses models without ids");
+    sync_package(&world.package)?;
+    let first = world.load().await?;
+    let first_folder = first.revision.clone().ok_or("no revision")?;
+    install_plugins(&world.db, &world.namespace, "core", "acme", &["notes".parse::<PluginSpec>()?]).await?;
+
+    // Edit in the "web app": add a field and relabel the model.
+    let text = tokio::fs::read_to_string(world.package.join("models/note.json")).await?;
+    let mut model: ModelDef = serde_json::from_str(&text)?;
+    model.label = Some("Note".into());
+    model.fields.push(serde_json::from_value(serde_json::json!({ "name": "tags", "type": "string" }))?);
+    aether_core::data_model::sync_ids(&mut model);
+
+    let core = world.db.clone();
+    core.use_ns(&world.namespace).use_db("core").await?;
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let published = publish_models(&core, &AppDir::new(&world.app_dir), "notes", None, std::slice::from_ref(&model)).await?;
+    assert_eq!(published.from, "0.1.0");
+    assert_eq!(published.version, format!("0.1.0+{}", published.revision));
+    assert_eq!(published.written, ["models/note.json"], "only the model file is stored");
+    assert_eq!(world.files_in(&published.revision)?, [INDEX_FILE, "models/note.json"]);
+
+    // The catalog entry, pages and models were carried over to the new version.
+    let mut response = core
+        .query("SELECT count() AS count FROM plugin_ui_pages WHERE plugin.version = $v GROUP ALL; SELECT VALUE definition.label FROM plugin_models WHERE plugin.version = $v;")
+        .bind(("v", published.version.clone()))
+        .await?
+        .check()?;
+    let pages: Vec<serde_json::Value> = response.take(0)?;
+    assert_eq!(pages[0]["count"], 1);
+    let labels: Vec<Option<String>> = response.take(1)?;
+    assert_eq!(labels, [Some("Note".to_string())]);
+
+    // The runtime reads the new version's model through its revision.
+    let runtime = PluginRuntime::new(
+        world.app_dir.clone(),
+        PluginRuntimeConfig {
+            compile_cache: CompileCacheConfig { enabled: false, ..Default::default() },
+            ..Default::default()
+        },
+    )?;
+    let loaded = runtime.ensure_loaded(&core, "notes", &published.version).await?;
+    assert_eq!(loaded.models[0].fields.len(), 3);
+
+    // Upgrading the organization adds the new column and changes no record.
+    let report = upgrade_plugins(&world.db, &world.namespace, "core", "acme", &["notes".parse::<PluginSpec>()?]).await?;
+    assert_eq!(report.upgraded.len(), 1);
+
+    // Writing the same JSON to the source file ("write to file" mode) makes the source equal to the
+    // database: loading that folder again is recognised as the same content, not as a new revision.
+    let mut file = serde_json::to_string_pretty(&model)?;
+    file.push('\n');
+    tokio::fs::write(world.package.join("models/note.json"), file).await?;
+    let again = world.load().await?;
+    assert!(!again.created, "file and database agree, so there is nothing new to load");
+    assert_eq!(again.version, published.version);
+    assert_ne!(first_folder, published.revision);
     Ok(())
 }

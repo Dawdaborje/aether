@@ -20,6 +20,7 @@ pub async fn kernel_command(
         "db::create" => db::db_create(ctx, &payload).await,
         "db::update" => db::db_update(ctx, &payload).await,
         "db::delete" => db::db_delete(ctx, &payload).await,
+        "db::increment" => db::db_increment(ctx, &payload).await,
         "db::mutate" => {
             // Generic mutate entry: expects `{ "op": "create"|"update"|"delete", ... }`
             let op = payload
@@ -57,6 +58,7 @@ pub async fn kernel_command(
         // the request it is already serving.
         "context::get" => Ok(serde_json::json!({
             "ok": true,
+            "now": surrealdb::types::Datetime::now().to_string(),
             "plugin": ctx.plugin_name,
             "function": ctx.function,
             "organization": ctx.database,
@@ -217,6 +219,7 @@ mod tests {
                 table: "base_partner".into(),
                 can_read: true,
                 can_write: true,
+                schema: None,
             },
         );
         // Surreal::init is fine for constructing context; we only test cap denial paths.
@@ -281,7 +284,7 @@ mod tests {
     async fn every_capability_a_command_checks_is_in_the_catalog() {
         let catalog = aether_security::capabilities::CapabilityCatalog::builtin().unwrap();
         let commands = [
-            "db::get", "db::find", "db::query", "db::create", "db::update", "db::delete",
+            "db::get", "db::find", "db::query", "db::create", "db::update", "db::delete", "db::increment",
             "db::mutate", "db::transaction", "cache::get", "cache::set", "cache::invalidate",
             "cache::clear", "storage::read", "storage::write", "storage::delete",
             "storage::list", "email::send", "sms::send", "events::emit", "events::subscribe",

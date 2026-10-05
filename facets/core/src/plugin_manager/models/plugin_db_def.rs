@@ -103,6 +103,7 @@ impl From<PluginDbDefinition> for PluginDefinition {
             api: None,
             meta: None,
             wasm_file: plugin.artifact_path,
+            script: None,
             plugin_base_path: String::new(),
         }
     }

@@ -47,6 +47,7 @@ pub async fn seed_system(
 #[derive(Debug, Deserialize)]
 struct GlobalSettingsSeed {
     groups: Vec<SettingsGroupSeed>,
+    #[serde(default)]
     auth_providers: Vec<AuthProviderSeed>,
 }
 
@@ -83,15 +84,31 @@ struct AuthProviderSeed {
     config: Option<Value>,
 }
 
+/// Apply every settings file in `seeds/settings`, each once (tracked as `settings/<name>`), so a
+/// new file reaches databases that were seeded before it existed.
 async fn seed_global_settings(db: &Surreal<Client>) -> Result<Vec<String>, SeedError> {
-    let version = "settings/global_settings";
-    let filename = "global_settings.json";
+    let mut names: Vec<String> = SEEDS_SETTINGS_FILES
+        .files()
+        .filter_map(|file| file.path().file_name()?.to_str().map(str::to_string))
+        .filter(|name| name.ends_with(".json"))
+        .collect();
+    // The global catalog first: later files may add to its groups.
+    names.sort_by_key(|name| (name != "global_settings.json", name.clone()));
+    let mut applied_now = Vec::new();
+    for name in names {
+        applied_now.extend(seed_settings_file(db, &name).await?);
+    }
+    Ok(applied_now)
+}
+
+async fn seed_settings_file(db: &Surreal<Client>, filename: &str) -> Result<Vec<String>, SeedError> {
+    let version = &format!("settings/{}", filename.trim_end_matches(".json"));
     let applied = load_applied_seeds(db).await?;
     if applied.contains(version) {
         log::debug!("Skipping already-applied seed {version}");
         return Ok(Vec::new());
     }
-    if applied.contains("0002_global_settings") {
+    if filename == "global_settings.json" && applied.contains("0002_global_settings") {
         record_seed(db, version, filename).await?;
         log::info!("Skipping JSON settings seed; legacy SQL settings are already applied");
         return Ok(vec![version.to_string()]);

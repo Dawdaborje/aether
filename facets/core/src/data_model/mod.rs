@@ -19,7 +19,7 @@ pub mod definition;
 pub mod runtime;
 
 pub use definition::{
-    FieldDef, FieldType, IndexKind, ModelDef, ModelFileError, SelectOption, ViewDef, new_id,
-    read_models, sync_ids, validate_set,
+    ChatterDef, FieldDef, FieldType, IndexKind, ModelDef, ModelFileError, SelectOption, ViewDef, new_id,
+    parse_model, read_models, sync_ids, sync_package, validate_set, VisitorChatter,
 };
-pub use runtime::{ModelSchema, SchemaError};
+pub use runtime::{ModelSchema, SchemaError, schemas_of};

@@ -61,6 +61,18 @@ fn init_logger(args: &Args) {
 async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let current_path = env::current_dir()?;
 
+    if let Some(plugin_paths) = &args.sync_models {
+        for path in plugin_paths {
+            for synced in aether_core::data_model::sync_package(path)? {
+                if synced.assigned > 0 {
+                    println!("Model '{}': {} id(s) written to {}.", synced.model, synced.assigned, synced.path.display());
+                } else {
+                    println!("Model '{}': ids already assigned.", synced.model);
+                }
+            }
+        }
+    }
+
     if let Some(plugin_paths) = &args.load_plugin {
         let ctx = get_db_context(&args).await;
         let loaded = load_plugins(

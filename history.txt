@@ -19,3 +19,8 @@ SELECT version, filename FROM seed_migrations;
 USE NS aether DB core;
 SELECT category, count() FROM bridges GROUP BY category;
 SELECT name, label, category, enabled_globally, is_builtin, version FROM bridges LIMIT 2;
+USE NS aether DB initech;
+SELECT * FROM mdl_4fs4ygtivr ORDER BY id;
+SELECT model_id, plugin, name, snapshot FROM model_schema;
+INFO FOR TABLE mdl_4fs4ygtivr;
+USE NS aether DB initech; SELECT * FROM mdl_4fs4ygtivr ORDER BY id; INFO FOR TABLE mdl_4fs4ygtivr;

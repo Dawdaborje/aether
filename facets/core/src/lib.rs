@@ -10,6 +10,8 @@ pub mod data_model;
 pub mod error_pages;
 pub mod kernel;
 pub mod media;
+pub mod models_api;
+pub mod chatter;
 pub mod notifications;
 pub mod org_admin;
 pub mod org_admin_api;

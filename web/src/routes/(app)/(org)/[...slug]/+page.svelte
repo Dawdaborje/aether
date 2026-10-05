@@ -17,6 +17,8 @@
 	setPageState(pageState);
 	$effect.pre(() => {
 		pageState.plugin = data.body?.plugin ?? '';
+		const model = (data.body?.page as { model?: unknown } | undefined)?.model;
+		pageState.model = typeof model === 'string' ? model : '';
 		pageState.params = data.body?.params ?? {};
 	});
 

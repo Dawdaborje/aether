@@ -32,7 +32,9 @@ pub fn routes() -> Router<AppState> {
         .merge(crate::bridges_api::routes())
         .merge(crate::catalog_api::routes())
         .merge(crate::org_admin_api::routes())
+        .merge(crate::models_api::routes())
         .merge(crate::notifications::api::routes())
+        .merge(crate::chatter::api::routes())
         .route(
             "/api/plugins/{plugin}/{function}",
             post(crate::plugin_manager::api::invoke_plugin),

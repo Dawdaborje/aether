@@ -20,6 +20,8 @@ export interface CallResult {
  */
 export class PageState {
 	plugin = $state('');
+	/** The model the page is about (`<page model="note">`), when it names one. */
+	model = $state('');
 	params = $state<Record<string, string>>({});
 	/** Goes up whenever something changed data, so lists on the page load again. */
 	tick = $state(0);

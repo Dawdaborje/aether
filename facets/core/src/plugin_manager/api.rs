@@ -291,13 +291,13 @@ async fn run_call(
 
     let manifest = &loaded.manifest;
     let (granted, models) = if anonymous {
-        let models = anonymous_grants(manifest, &public_models);
+        let models = anonymous_grants(manifest, &loaded.schemas, &public_models);
         let readable = models.values().any(|grant| grant.can_read);
         (anonymous_capabilities(manifest, readable), models)
     } else {
         (
             manifest.plugin.capabilities.iter().cloned().collect(),
-            user_grants(manifest),
+            user_grants(manifest, &loaded.schemas),
         )
     };
     let host = PluginHostContext::new(

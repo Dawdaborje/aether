@@ -37,10 +37,13 @@ const MAX_USER_ERROR_CHARS: usize = 300;
 impl PluginRuntimeError {
     /// The message the plugin wrote for the caller, when it wrote one.
     pub fn user_message(&self) -> Option<String> {
-        let Self::Invoke(error) = self else {
-            return None;
+        let text = match self {
+            Self::Invoke(error) => error.to_string(),
+            Self::Script { source: super::script::ScriptError::User(message), .. } => {
+                format!("{USER_ERROR_PREFIX}{message}")
+            }
+            _ => return None,
         };
-        let text = error.to_string();
         let message = text.split_once(USER_ERROR_PREFIX)?.1;
         Some(
             message
@@ -125,10 +128,19 @@ pub enum PluginRuntimeError {
     },
     #[error("plugin invocation failed: {0}")]
     Invoke(#[source] extism::Error),
+    #[error("plugin `{name}@{version}`: {source}")]
+    Script {
+        name: String,
+        version: String,
+        #[source]
+        source: super::script::ScriptError,
+    },
     #[error(transparent)]
     AppDir(#[from] AppDirError),
     #[error(transparent)]
     Revision(#[from] super::revisions::RevisionError),
+    #[error(transparent)]
+    Models(#[from] crate::data_model::ModelFileError),
     /// The same failure, shared by every caller that was waiting on one load.
     #[error(transparent)]
     Shared(Arc<PluginRuntimeError>),
@@ -144,9 +156,19 @@ impl PluginRuntimeError {
     }
 }
 
+/// What a loaded plugin runs: a compiled WebAssembly module or a checked Rhai script.
+pub enum Executable {
+    Wasm(Arc<CompiledPlugin>),
+    Script(Arc<super::script::ScriptProgram>),
+}
+
 pub struct LoadedPlugin {
     pub manifest: PluginManifest,
-    pub compiled: Arc<CompiledPlugin>,
+    /// The plugin's models, from its `models/` files.
+    pub models: Vec<crate::data_model::ModelDef>,
+    /// How each model's fields are stored, by model name.
+    pub schemas: std::collections::HashMap<String, Arc<crate::data_model::ModelSchema>>,
+    pub compiled: Executable,
     /// What this plugin is estimated to hold in memory while it is kept ready.
     pub estimated_mb: f64,
     pub wasm_bytes: u64,
@@ -423,6 +445,22 @@ impl PluginRuntime {
         let artifact_path = self.resolve_app_path(artifact).await?;
         let wasm_bytes = tokio::fs::metadata(&artifact_path).await?.len();
 
+        if artifact_path.extension().is_some_and(|extension| extension == "rhai") {
+            if wasm_bytes > super::script::MAX_SCRIPT_BYTES {
+                return Err(PluginRuntimeError::Script {
+                    name: record.name,
+                    version: record.version,
+                    source: super::script::ScriptError::Failed(format!(
+                        "the script is {wasm_bytes} bytes, over the {} byte limit",
+                        super::script::MAX_SCRIPT_BYTES
+                    )),
+                });
+            }
+            // A script is text held as a syntax tree: small, with no engine of its own.
+            let estimated_mb = (wasm_bytes as f64 / BYTES_PER_MB * 50.0).max(0.1);
+            return Ok(Prepared { record, artifact_path, wasm_bytes, estimated_mb });
+        }
+
         let size_mb = wasm_bytes as f64 / BYTES_PER_MB;
         if size_mb > config.max_wasm_size_mb as f64 {
             return Err(PluginRuntimeError::WasmTooLarge {
@@ -507,9 +545,29 @@ impl PluginRuntime {
         .map_err(|_| PluginRuntimeError::Busy)?
         .map_err(|_| PluginRuntimeError::Busy)?;
 
+        if let Executable::Script(program) = &loaded.compiled {
+            let program = program.clone();
+            let name = name.clone();
+            let version = version.clone();
+            return tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                if !program.has_function(&function) {
+                    return Err(PluginRuntimeError::FunctionNotFound { name, version, function });
+                }
+                program
+                    .call(&function, payload, host, runtime_handle)
+                    .map_err(|source| PluginRuntimeError::Script { name, version, source })
+            })
+            .await
+            .map_err(|error| PluginRuntimeError::Worker(error.to_string()))?;
+        }
+        let Executable::Wasm(compiled) = &loaded.compiled else {
+            return Err(PluginRuntimeError::Worker("plugin has no code".into()));
+        };
+        let compiled = compiled.clone();
         let output = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            let mut plugin = extism::Plugin::new_from_compiled(&loaded.compiled)
+            let mut plugin = extism::Plugin::new_from_compiled(&compiled)
                 .map_err(PluginRuntimeError::Invoke)?;
             if !plugin.function_exists(&function) {
                 return Err(PluginRuntimeError::FunctionNotFound {
@@ -578,8 +636,30 @@ impl PluginRuntime {
             });
         }
 
+        let models = self.load_models(&record, &artifact_path).await?;
+
         let name = manifest.plugin.name.clone();
         let version = manifest.plugin.version.clone();
+        if manifest.plugin.is_script() {
+            drop(permit);
+            let script_error = |source| PluginRuntimeError::Script {
+                name: name.clone(),
+                version: version.clone(),
+                source,
+            };
+            let source = String::from_utf8(bytes)
+                .map_err(|error| script_error(super::script::ScriptError::Compile(error.to_string())))?;
+            let program = super::script::ScriptProgram::compile(&source).map_err(script_error)?;
+            let schemas = crate::data_model::schemas_of(&models);
+            return Ok(LoadedPlugin {
+                manifest,
+                models,
+                schemas,
+                compiled: Executable::Script(Arc::new(program)),
+                estimated_mb,
+                wasm_bytes,
+            });
+        }
         // wasmtime counts memory in 64 KiB pages: 16 to the megabyte.
         let memory_pages = u64::from(self.inner.config.instance_memory_mb) * 16;
         let disk_cache = self.inner.disk_cache_config.clone();
@@ -629,12 +709,50 @@ impl PluginRuntime {
             })?
             .map_err(|error| PluginRuntimeError::Worker(error.to_string()))??;
 
+        let schemas = crate::data_model::schemas_of(&models);
         Ok(LoadedPlugin {
             manifest,
-            compiled: Arc::new(compiled),
+            models,
+            schemas,
+            compiled: Executable::Wasm(Arc::new(compiled)),
             estimated_mb,
             wasm_bytes,
         })
+    }
+
+    /// The model definitions of this version: the `models/*.json` of its revision's file index.
+    /// A plugin stored before models existed has none.
+    async fn load_models(
+        &self,
+        record: &PluginDbDefinition,
+        artifact_path: &Path,
+    ) -> Result<Vec<crate::data_model::ModelDef>, PluginRuntimeError> {
+        let mut paths = Vec::new();
+        if let Some(revision) = &record.revision {
+            let layout = AppDir::new(self.inner.app_dir.as_path());
+            if let Some(index) = super::revisions::read_index(&layout, &record.name, revision).await? {
+                for (logical, entry) in &index.files {
+                    if logical.starts_with("models/") && logical.ends_with(".json") {
+                        paths.push(layout.revision_dir(&record.name, &entry.revision)?.join(logical));
+                    }
+                }
+            }
+        } else if let Some(parent) = artifact_path.parent() {
+            let directory = parent.join("models");
+            if let Ok(mut entries) = tokio::fs::read_dir(&directory).await {
+                while let Some(entry) = entries.next_entry().await? {
+                    paths.push(entry.path());
+                }
+            }
+        }
+        paths.sort();
+        let mut models = Vec::with_capacity(paths.len());
+        for path in paths {
+            let text = tokio::fs::read_to_string(&path).await?;
+            models.push(crate::data_model::parse_model(&text, &path)?);
+        }
+        crate::data_model::validate_set(&models)?;
+        Ok(models)
     }
 
     /// Where this version's `plugin.toml` is: in its revision's file index (the file may be

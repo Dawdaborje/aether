@@ -21,6 +21,7 @@ use super::models::plugin_db_def::{PluginDbAuthor, PluginDbCategory, PluginDbDef
 use super::models::plugin_def::{ManifestError, PluginManifest};
 use super::pages::{PageDocument, PageError, discover_pages, write_view_files};
 use super::revisions;
+use crate::data_model::{ModelDef, ModelFileError, apply as model_apply, read_models};
 use super::themes::{ThemeDocument, ThemeError, parse_theme};
 
 const MANIFEST_FILE: &str = "plugin.toml";
@@ -86,8 +87,17 @@ pub enum CatalogError {
     #[error("manifest {0} must declare a non-empty plugin name and version")]
     IncompleteManifest(PathBuf),
 
-    #[error("manifest {0} does not declare `plugin.wasm_file`")]
+    #[error("manifest {0} does not declare `plugin.wasm_file` or `plugin.script`")]
     MissingWasmFile(PathBuf),
+
+    #[error("manifest {0} declares both `plugin.wasm_file` and `plugin.script`; a plugin has one")]
+    BothWasmAndScript(PathBuf),
+
+    #[error("script {path} does not compile: {message}")]
+    ScriptInvalid { path: PathBuf, message: String },
+
+    #[error("script {path} must end in `.rhai`")]
+    ScriptExtension { path: PathBuf },
 
     #[error("{path} is not a regular file inside the plugin package {package}")]
     FileOutsidePackage { path: PathBuf, package: PathBuf },
@@ -122,6 +132,18 @@ pub enum CatalogError {
 
     #[error(transparent)]
     Revision(#[from] super::revisions::RevisionError),
+
+    #[error(transparent)]
+    ModelFile(#[from] ModelFileError),
+
+    #[error(transparent)]
+    ModelSchema(#[from] model_apply::ApplyError),
+
+    #[error("{path}: `{name}` is listed in `{list}` but there is no model of that name; define it in `models/{name}.json`")]
+    UnknownGrantedModel { path: PathBuf, name: String, list: &'static str },
+
+    #[error("model id `{model_id}` ({model}) is already used by plugin `{plugin}`; ids must be unique across plugins")]
+    ModelIdTaken { model_id: String, model: String, plugin: String },
 
     #[error("organization database `{0}` was not found")]
     OrganizationNotFound(String),
@@ -204,6 +226,8 @@ struct NewPlugin {
     content_hash: String,
     /// The folder under `plugins/<name>/` holding this version's file index.
     revision: Option<String>,
+    /// Where the package was loaded from.
+    source_path: Option<String>,
     /// The launcher tile, when the plugin is an app.
     app: Option<NewApp>,
     /// Functions anonymous visitors may call; checked before a module is compiled.
@@ -218,6 +242,14 @@ struct NewApp {
     icon: Option<String>,
     route: String,
     description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, SurrealValue)]
+struct NewModelRow {
+    name: String,
+    model_id: String,
+    label: Option<String>,
+    definition: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, SurrealValue)]
@@ -251,6 +283,12 @@ struct KnownVersion {
     version: String,
     content_hash: Option<String>,
     revision: Option<String>,
+}
+
+#[derive(Debug, Deserialize, SurrealValue)]
+struct ModelIdOwner {
+    model_id: String,
+    plugin: String,
 }
 
 /// `0.1.0+20261003T210100Z` is a rebuild of `0.1.0`.
@@ -380,7 +418,10 @@ pub async fn load_plugin(
     }
 
     let pages = discover_pages(&package_dir).await?;
-    validate_page_models(&manifest, &pages)?;
+    let model_files = read_models(&package_dir)?;
+    let models: Vec<ModelDef> = model_files.iter().map(|(_, model)| model.clone()).collect();
+    validate_page_models(&manifest, &models, &pages)?;
+    validate_granted_models(&manifest, &models, &manifest_path)?;
     validate_capabilities(&manifest, &manifest_path)?;
 
     let theme = read_theme(&manifest, &manifest_path, &package_dir).await?;
@@ -388,15 +429,27 @@ pub async fn load_plugin(
 
     let mut files = BTreeSet::from([PathBuf::from(MANIFEST_FILE)]);
     files.extend(pages.iter().map(|page| page.source.clone()));
+    for (path, _) in &model_files {
+        if let Ok(relative) = path.strip_prefix(&package_dir) {
+            files.insert(relative.to_path_buf());
+        }
+    }
     for declared in declared_files(&manifest) {
         files.insert(resolve_package_file(&package_dir, declared).await?);
     }
 
     // The artifact may live in a build folder such as `out/`; it is stored beside
     // `plugin.toml`, under its own file name.
-    let artifact = match manifest.plugin.wasm_file.as_deref().filter(|file| !file.is_empty()) {
-        Some(wasm_file) => {
-            let source = resolve_package_file(&package_dir, wasm_file).await?;
+    let declares = |file: &Option<String>| file.as_deref().is_some_and(|file| !file.is_empty());
+    if declares(&manifest.plugin.wasm_file) && declares(&manifest.plugin.script) {
+        return Err(CatalogError::BothWasmAndScript(manifest_path.clone()));
+    }
+    let artifact = match manifest.plugin.code_file() {
+        Some(code_file) => {
+            let source = resolve_package_file(&package_dir, code_file).await?;
+            if manifest.plugin.is_script() && source.extension().is_none_or(|extension| extension != "rhai") {
+                return Err(CatalogError::ScriptExtension { path: source });
+            }
             let name = source
                 .file_name()
                 .map(PathBuf::from)
@@ -422,6 +475,12 @@ pub async fn load_plugin(
     if let Some(artifact) = &artifact {
         let source = package_dir.join(&artifact.source);
         let bytes = tokio::fs::read(&source).await.map_err(io_error(&source))?;
+        // A script that does not compile is refused now, not at the first call.
+        if manifest.plugin.is_script() {
+            let text = String::from_utf8_lossy(&bytes);
+            super::script::ScriptProgram::compile(&text)
+                .map_err(|error| CatalogError::ScriptInvalid { path: source.clone(), message: error.to_string() })?;
+        }
         wasm_hash = Some(sha256_hex(&bytes));
         content.update(artifact.name.to_string_lossy().as_bytes());
         content.update(&bytes);
@@ -469,6 +528,24 @@ pub async fn load_plugin(
         .check()?;
     let known: Vec<KnownVersion> = response.take(0)?;
     let same_version = |row: &&KnownVersion| base_version(&row.version) == definition.version;
+
+    // A model id belongs to one plugin, in every version of it.
+    if !models.is_empty() {
+        let ids: Vec<String> = models.iter().filter_map(|model| model.model_id.clone()).collect();
+        let mut response = db
+            .query("SELECT model_id, plugin.name AS plugin FROM plugin_models WHERE model_id IN $ids;")
+            .bind(("ids", ids))
+            .await?
+            .check()?;
+        let taken: Vec<ModelIdOwner> = response.take(0)?;
+        if let Some(other) = taken.into_iter().find(|owner| owner.plugin != definition.name) {
+            let model = models
+                .iter()
+                .find(|model| model.model_id.as_deref() == Some(other.model_id.as_str()))
+                .map_or_else(String::new, |model| model.name.clone());
+            return Err(CatalogError::ModelIdTaken { model_id: other.model_id, model, plugin: other.plugin });
+        }
+    }
 
     // The same content again is not a new revision.
     if let Some(same) = known
@@ -577,11 +654,21 @@ pub async fn load_plugin(
         artifact_hash: wasm_hash,
         content_hash,
         revision: Some(stored.revision.clone()),
+        source_path: Some(package_dir.to_string_lossy().into_owned()),
         app,
         public_functions: definition.public_functions.clone(),
         is_builtin: definition.is_builtin,
         is_active: true,
     };
+    let model_rows: Vec<NewModelRow> = models
+        .iter()
+        .map(|model| NewModelRow {
+            name: model.name.clone(),
+            model_id: model.model_id.clone().unwrap_or_default(),
+            label: model.label.clone(),
+            definition: serde_json::to_value(model).unwrap_or(serde_json::Value::Null),
+        })
+        .collect();
     let rows: Vec<NewUiPage> = pages
         .iter()
         .map(|page| NewUiPage {
@@ -614,6 +701,16 @@ pub async fn load_plugin(
                 nav: $theme.nav
             };
         };
+        FOR $m IN $models {
+            CREATE plugin_models CONTENT {
+                plugin: $plugin,
+                name: $m.name,
+                table_name: $m.model_id,
+                model_id: $m.model_id,
+                label: $m.label,
+                definition: $m.definition
+            };
+        };
         FOR $page IN $pages {
             CREATE plugin_ui_pages CONTENT {
                 plugin: $plugin,
@@ -644,6 +741,7 @@ pub async fn load_plugin(
         nav: theme.nav,
     })))
     .bind(("pages", rows))
+    .bind(("models", model_rows))
     .await?
     .check()?;
 
@@ -731,26 +829,15 @@ async fn read_theme(
     Ok(Some(parse_theme(&text, &path, &theme.name, theme.label.as_deref())?))
 }
 
-/// Every model a page names must be one the plugin declares, either in
-/// `[[models]]` or in an access list. A page may write the model as
-/// `workspace.name`; only the part after the last `.` is the model name.
+/// Every model a page names must be one the plugin defines in `models/`. A page may write the
+/// model as `workspace.name`; only the part after the last `.` is the model name.
 fn validate_page_models(
     manifest: &PluginManifest,
+    models: &[ModelDef],
     pages: &[PageDocument],
 ) -> Result<(), CatalogError> {
-    let plugin = &manifest.plugin;
-    let declared: BTreeSet<&str> = manifest
-        .models
-        .iter()
-        .map(|model| model.name.as_str())
-        .chain(plugin.access_models.iter().map(|model| model.name.as_str()))
-        .chain(
-            plugin
-                .public_access_models
-                .iter()
-                .map(|model| model.name.as_str()),
-        )
-        .collect();
+    let _ = manifest;
+    let declared: BTreeSet<&str> = models.iter().map(|model| model.name.as_str()).collect();
     for page in pages {
         for model in &page.models {
             if !declared.contains(model_name(model)) {
@@ -759,6 +846,26 @@ fn validate_page_models(
                     model: model.clone(),
                 });
             }
+        }
+    }
+    Ok(())
+}
+
+/// The models a plugin is granted access to must exist.
+fn validate_granted_models(
+    manifest: &PluginManifest,
+    models: &[ModelDef],
+    manifest_path: &Path,
+) -> Result<(), CatalogError> {
+    let declared: BTreeSet<&str> = models.iter().map(|model| model.name.as_str()).collect();
+    let plugin = &manifest.plugin;
+    for (list, entries) in [("access_models", &plugin.access_models), ("public_access_models", &plugin.public_access_models)] {
+        if let Some(entry) = entries.iter().find(|entry| !declared.contains(entry.name.as_str())) {
+            return Err(CatalogError::UnknownGrantedModel {
+                path: manifest_path.to_path_buf(),
+                name: entry.name.clone(),
+                list,
+            });
         }
     }
     Ok(())
@@ -773,15 +880,9 @@ pub fn model_name(reference: &str) -> &str {
 /// the manifest points at.
 fn declared_files(manifest: &PluginManifest) -> Vec<&str> {
     manifest
-        .models
+        .theme
         .iter()
-        .filter_map(|model| model.file.as_deref())
-        .chain(
-            manifest
-                .theme
-                .iter()
-                .filter_map(|theme| theme.tokens_file.as_deref()),
-        )
+        .filter_map(|theme| theme.tokens_file.as_deref())
         .filter(|file| !file.is_empty())
         .collect()
 }
@@ -899,8 +1000,20 @@ pub async fn install_plugins(
     } = plan;
     check_route_conflicts(db, &installed, &order).await?;
     let themes = fetch_planned_themes(db, &order).await?;
+    let planned_models = fetch_planned_models(db, &order).await?;
 
     db.use_db(org_database).await?;
+    // Work out what every model needs before changing anything: one that cannot be applied
+    // (a new required field with no default over existing records, ...) stops the install.
+    let mut model_plans = Vec::with_capacity(order.len());
+    for record in &order {
+        let defs = models_of(&planned_models, &record.id);
+        let plans = model_apply::plan_models(db, &record.name, &defs).await?;
+        if let Some((model, problems)) = model_apply::blockers(&plans).into_iter().next() {
+            return Err(model_apply::ApplyError::Blocked { model, problems }.into());
+        }
+        model_plans.push(plans);
+    }
     let mut report = InstallReport {
         installed: Vec::with_capacity(order.len()),
         already_installed,
@@ -914,9 +1027,10 @@ pub async fn install_plugins(
         let configured: Vec<surrealdb::types::RecordId> = response.take(0)?;
         !configured.is_empty()
     };
-    for record in order {
+    for (index, record) in order.into_iter().enumerate() {
         let dependencies = record.dependencies.clone().unwrap_or_default();
         let theme = themes.iter().find(|theme| theme.plugin == record.id).cloned();
+        model_apply::apply_plans(db, &model_plans[index]).await?;
         db.query(
             r#"
             BEGIN TRANSACTION;
@@ -1050,8 +1164,14 @@ pub async fn upgrade_plugins(
             .await?
             .into_iter()
             .next();
+        let planned_models = fetch_planned_models(db, std::slice::from_ref(&target)).await?;
 
         db.use_db(org_database).await?;
+        // Make the organization's data match the new version's models first. A change that
+        // cannot be applied safely stops the upgrade before the version is moved.
+        let defs = models_of(&planned_models, &target.id);
+        let plans = model_apply::plan_models(db, &spec.name, &defs).await?;
+        model_apply::apply_plans(db, &plans).await?;
         db.query(
             r#"
             BEGIN TRANSACTION;
@@ -1082,6 +1202,40 @@ pub async fn upgrade_plugins(
         report.upgraded.push((spec.name.clone(), from, target.version));
     }
     Ok(report)
+}
+
+#[derive(Debug, Deserialize, SurrealValue)]
+struct PlannedModel {
+    plugin: surrealdb::types::RecordId,
+    definition: serde_json::Value,
+}
+
+/// The models of the plugin versions about to be installed. Caller must be on the core database.
+async fn fetch_planned_models(
+    db: &Surreal<Client>,
+    order: &[PluginDbDefinition],
+) -> Result<Vec<(surrealdb::types::RecordId, ModelDef)>, CatalogError> {
+    if order.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids: Vec<_> = order.iter().map(|record| record.id.clone()).collect();
+    let mut response = db
+        .query("SELECT plugin, definition, name FROM plugin_models WHERE plugin IN $ids ORDER BY name;")
+        .bind(("ids", ids))
+        .await?
+        .check()?;
+    let rows: Vec<PlannedModel> = response.take(0)?;
+    rows.into_iter()
+        .map(|row| {
+            serde_json::from_value::<ModelDef>(row.definition)
+                .map(|model| (row.plugin, model))
+                .map_err(|source| CatalogError::ModelFile(ModelFileError::Parse { path: PathBuf::from("plugin_models"), source }))
+        })
+        .collect()
+}
+
+fn models_of(all: &[(surrealdb::types::RecordId, ModelDef)], plugin: &surrealdb::types::RecordId) -> Vec<ModelDef> {
+    all.iter().filter(|(id, _)| id == plugin).map(|(_, model)| model.clone()).collect()
 }
 
 /// The themes shipped by the plugins about to be installed. Caller must be on

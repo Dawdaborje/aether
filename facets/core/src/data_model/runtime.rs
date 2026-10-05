@@ -39,6 +39,12 @@ pub struct ModelSchema {
     pub name: String,
     /// The table: the model's id.
     pub table: String,
+    /// The model's chatter, when it is on.
+    pub chatter: Option<super::definition::ChatterDef>,
+    /// Ids of the fields whose changes are recorded in the chatter.
+    pub tracked: Vec<String>,
+    /// Id of the field that titles a record (for notifications).
+    pub title_column: Option<String>,
     columns: Vec<Column>,
     by_name: HashMap<String, usize>,
 }
@@ -60,7 +66,21 @@ impl ModelSchema {
             .enumerate()
             .map(|(index, column)| (column.def.name.clone(), index))
             .collect();
-        Some(Self { name: model.name.clone(), table, columns, by_name })
+        let chatter = model.chatter_on().cloned();
+        let tracked = match &chatter {
+            Some(chatter) if chatter.track_changes => columns
+                .iter()
+                .filter(|column| column.def.track)
+                .map(|column| column.id.clone())
+                .collect(),
+            _ => Vec::new(),
+        };
+        let title_column = model
+            .title_field
+            .as_ref()
+            .and_then(|title| columns.iter().find(|column| &column.def.name == title))
+            .map(|column| column.id.clone());
+        Some(Self { name: model.name.clone(), table, chatter, tracked, title_column, columns, by_name })
     }
 
     fn column(&self, name: &str) -> Result<&Column, SchemaError> {
@@ -77,6 +97,37 @@ impl ModelSchema {
     fn check(&self, column: &Column, value: &Value) -> Result<(), SchemaError> {
         check_value(&column.def, value, column.link_table.as_deref())
             .map_err(|reason| self.invalid(&column.def.name, reason))
+    }
+
+    /// What the chatter panel needs to show a tracked change: for each tracked field id, its
+    /// current name, label, type and (for a choice) the options. Looked up by id, so a field
+    /// renamed after the change was recorded still reads correctly.
+    pub fn tracked_fields(&self) -> Vec<Value> {
+        self.columns
+            .iter()
+            .filter(|column| self.tracked.contains(&column.id))
+            .map(|column| {
+                serde_json::json!({
+                    "id": column.id,
+                    "name": column.def.name,
+                    "label": column.def.label.clone().unwrap_or_else(|| column.def.name.clone()),
+                    "type": column.def.kind.as_str(),
+                    "options": column.def.options.iter().map(|o| serde_json::json!({
+                        "value": o.value,
+                        "label": o.label.clone().unwrap_or_else(|| o.value.clone()),
+                    })).collect::<Vec<_>>(),
+                })
+            })
+            .collect()
+    }
+
+    /// The id a number field is stored under, for adding to it in place.
+    pub fn numeric_column(&self, name: &str) -> Result<&str, SchemaError> {
+        let column = self.column(name)?;
+        match column.def.kind {
+            super::definition::FieldType::Int | super::definition::FieldType::Float => Ok(&column.id),
+            _ => Err(self.invalid(name, "only a whole number or number field can be incremented")),
+        }
     }
 
     /// The id a field is stored under, for filters and ordering.
@@ -163,6 +214,16 @@ impl ModelSchema {
         }
         Value::Object(record)
     }
+}
+
+/// The schema of each model of a plugin, by model name.
+pub fn schemas_of(models: &[ModelDef]) -> HashMap<String, std::sync::Arc<ModelSchema>> {
+    models
+        .iter()
+        .filter_map(|model| {
+            ModelSchema::new(model, models).map(|schema| (model.name.clone(), std::sync::Arc::new(schema)))
+        })
+        .collect()
 }
 
 /// Whether `value` is allowed for `field`. `link_table` is the table a link must point into,

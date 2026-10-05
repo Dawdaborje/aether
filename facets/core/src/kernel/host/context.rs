@@ -14,6 +14,9 @@ pub struct ModelGrant {
     pub table: String,
     pub can_read: bool,
     pub can_write: bool,
+    /// How the model's fields are stored; none for a grant made without a model definition.
+    #[serde(skip)]
+    pub schema: Option<std::sync::Arc<crate::data_model::ModelSchema>>,
 }
 
 impl ModelGrant {
@@ -27,6 +30,7 @@ impl ModelGrant {
                 || perms.contains("create")
                 || perms.contains("update")
                 || perms.contains("delete"),
+            schema: None,
         }
     }
 

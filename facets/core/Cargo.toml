@@ -34,6 +34,7 @@ rand = "0.10"
 bytes.workspace = true
 hmac = "0.13"
 time = "0.3"
+rhai = { version = "1.26.1", features = ["serde", "sync"] }
 
 [dev-dependencies]
 wat = "1"

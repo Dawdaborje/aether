@@ -99,8 +99,13 @@ pub struct PluginDefinition {
     pub api: Option<PluginApi>,
     #[serde(default)]
     pub meta: Option<PluginMeta>,
+    /// The plugin's WebAssembly module (any language that compiles to WASM).
     #[serde(default)]
     pub wasm_file: Option<String>,
+    /// The plugin's Rhai script, instead of a WASM module: for small plugins that only read and
+    /// write records. A plugin has one or the other.
+    #[serde(default)]
+    pub script: Option<String>,
     #[serde(default)]
     pub plugin_base_path: String,
 }
@@ -131,12 +136,26 @@ impl Default for PluginDefinition {
             }),
             meta: None,
             wasm_file: None,
+            script: None,
             plugin_base_path: String::new(),
         }
     }
 }
 
 impl PluginDefinition {
+    /// The file that holds the plugin's code: its WASM module or its script.
+    pub fn code_file(&self) -> Option<&str> {
+        self.wasm_file
+            .as_deref()
+            .or(self.script.as_deref())
+            .filter(|file| !file.is_empty())
+    }
+
+    /// Whether the code is a Rhai script.
+    pub fn is_script(&self) -> bool {
+        self.wasm_file.as_deref().is_none_or(str::is_empty) && self.script.as_deref().is_some_and(|s| !s.is_empty())
+    }
+
     /// Copy `[plugin.meta]` into flat `kind` / `workspace` when those are unset.
     pub fn hoist_meta(&mut self) {
         let Some(meta) = self.meta.clone() else {
@@ -301,6 +320,12 @@ pub enum ManifestError {
          `db::*` commands on the models they are granted; remove it from `{0}`"
     )]
     RawSurql(&'static str),
+
+    #[error(
+        "`[[models]]` is no longer supported: define each model in `models/<name>.json` \
+         (`aether --sync-models` assigns the ids)"
+    )]
+    LegacyModels,
 }
 
 impl PluginManifest {
@@ -310,6 +335,9 @@ impl PluginManifest {
         let mut manifest: Self = toml::from_str(text)?;
         if manifest.legacy_pages.is_some() {
             return Err(ManifestError::LegacyPages);
+        }
+        if !manifest.models.is_empty() {
+            return Err(ManifestError::LegacyModels);
         }
         const REMOVED: &str = "db::surql";
         if manifest.plugin.capabilities.iter().any(|c| c == REMOVED) {

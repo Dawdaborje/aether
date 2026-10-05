@@ -2,12 +2,14 @@
 	import { goto } from '$app/navigation';
 	import type { PageNode } from '$lib/dsl/types';
 	import PageRenderer from './PageRenderer.svelte';
+	import ChatterPanel from '$lib/chatter/ChatterPanel.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { navHref } from '$lib/components/layout/nav';
 	import {
 		FormState,
 		getPageState,
 		interpolate,
+		keyOf,
 		setFormState,
 		text
 	} from '$lib/pages/pageContext.svelte';
@@ -28,6 +30,14 @@
 	const redirect = $derived(text(node.redirect));
 	// A form that creates empties after saving; one that edits a record keeps its values.
 	const clearAfter = $derived(node.clear === undefined ? !source : node.clear === true);
+
+	/// `chatter="off"` keeps the panel away from a form even when its model has chatter.
+	const chatterOff = $derived(text(node.chatter) === 'off');
+	const chatterModel = $derived(text(node.model) ?? page?.model ?? '');
+	/// The record being edited: the page's `{id}`, or the id the loaded record came with.
+	const recordKey = $derived(
+		source ? (page?.params.id ?? (form.values.id ? keyOf(form.values.id) : '')) : ''
+	);
 
 	let loading = $state(false);
 	let saving = $state(false);
@@ -87,3 +97,12 @@
 		<Button type="submit" disabled={saving || loading}>{saving ? 'Saving…' : submitLabel}</Button>
 	{/if}
 </form>
+
+{#if page && !chatterOff && chatterModel && recordKey}
+	<ChatterPanel
+		plugin={page.plugin}
+		model={chatterModel}
+		{recordKey}
+		link={typeof window === 'undefined' ? undefined : window.location.pathname.replace(/^\/web/, '')}
+	/>
+{/if}

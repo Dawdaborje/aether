@@ -56,6 +56,7 @@ async fn context(db: &Surreal<Client>, org: &str, actor: Actor, grants: &[(&str,
                     table: table.to_string(),
                     can_read: *read,
                     can_write: *write,
+                    schema: None,
                 },
             )
         })
