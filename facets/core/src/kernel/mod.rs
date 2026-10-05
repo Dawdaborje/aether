@@ -1,4 +1,4 @@
 pub mod fs;
 pub mod host;
 
-pub use host::{CallInfo, DbScope, HostError, ModelGrant, PluginHostContext, kernel_command};
+pub use host::{CallInfo, DbScope, HostError, HostServices, JobDefaults, ModelGrant, PluginCaller, SchedulerHandle, PluginHostContext, kernel_command};

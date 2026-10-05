@@ -27,6 +27,8 @@ pub enum Actor {
     Visitor(String),
     /// No identity yet: the request was refused before a visitor was issued.
     Anonymous,
+    /// The kernel itself, running a background job or a scheduled task (`system:scheduler`).
+    System(String),
 }
 
 impl Actor {
@@ -35,12 +37,13 @@ impl Actor {
             Self::User(_) => "user",
             Self::Visitor(_) => "visitor",
             Self::Anonymous => "anonymous",
+            Self::System(_) => "system",
         }
     }
 
     pub fn id(&self) -> Option<&str> {
         match self {
-            Self::User(id) | Self::Visitor(id) => Some(id),
+            Self::User(id) | Self::Visitor(id) | Self::System(id) => Some(id),
             Self::Anonymous => None,
         }
     }

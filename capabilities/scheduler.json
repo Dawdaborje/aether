@@ -12,6 +12,11 @@
       "code": "cancel",
       "name": "Cancel Task",
       "description": "Cancel a previously registered task."
+    },
+    {
+      "code": "enqueue",
+      "name": "Enqueue",
+      "description": "Run one of the plugin's own functions in the background, now or later, with retries; check on or cancel those jobs. Maps to kernel commands scheduler::enqueue, scheduler::job and scheduler::cancel_job."
     }
   ]
 }

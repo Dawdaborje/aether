@@ -5,7 +5,7 @@
 │                   SvelteKit Frontend                 │
 │   Dynamic renderer · Plugin UI · Theme tokens       │
 └────────────────────────┬────────────────────────────┘
-                         │ REST / WebSocket
+                         │ REST / SSE      
 ┌────────────────────────▼────────────────────────────┐
 │                    Aether Kernel (Rust)              │
 │                                                     │

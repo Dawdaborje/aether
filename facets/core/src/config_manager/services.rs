@@ -1,7 +1,7 @@
 use crate::cache::{CacheBackendKind, CacheConfig, RedisCacheConfig};
 use crate::config_manager::errors::{ConfigError, MissingSetting};
 use crate::config_manager::models::{
-    AetherConfig, AuditConfig, CoreConfig, DatabaseConfig, MediaBackendKind, MediaConfig, NotificationsConfig, OrgResolutionMode, PluginRuntimeConfig,
+    AetherConfig, AuditConfig, CoreConfig, DatabaseConfig, MediaBackendKind, MediaConfig, NotificationsConfig, SchedulerConfig, SecurityConfig, OrgResolutionMode, PluginRuntimeConfig,
     PublicConfig, ServerConfig, TenancyConfig,
 };
 use crate::plugin_manager::models::plugin_def::PluginDefinition;
@@ -477,6 +477,19 @@ pub fn load_config(
         expected: message,
     })?;
 
+    let security: SecurityConfig = match optional_table(&value, "security")? {
+        Some(table) => table.clone().try_into()?,
+        None => SecurityConfig::default(),
+    };
+    let scheduler: SchedulerConfig = match optional_table(&value, "scheduler")? {
+        Some(table) => table.clone().try_into()?,
+        None => SchedulerConfig::default(),
+    };
+    scheduler.validate().map_err(|message| ConfigError::InvalidType {
+        field: "scheduler".to_string(),
+        expected: message,
+    })?;
+
     let plugin_runtime: PluginRuntimeConfig = match optional_table(&value, "plugin_runtime")? {
         Some(table) => table.clone().try_into()?,
         None => PluginRuntimeConfig::default(),
@@ -525,6 +538,8 @@ pub fn load_config(
         public,
         notifications,
         plugin_runtime,
+        security,
+        scheduler,
         ..Default::default()
     })
 }

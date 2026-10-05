@@ -52,10 +52,28 @@ export async function loginLocal(username: string, password: string): Promise<Me
 	return body.user;
 }
 
+/** The server could not answer (database down, timeout, network): not the same as "logged out". */
+export class ServerUnavailableError extends Error {
+	constructor(message = 'The server is unavailable') {
+		super(message);
+		this.name = 'ServerUnavailableError';
+	}
+}
+
+/**
+ * The signed-in user, or `null` when there is no valid session (401, or 403 for
+ * a deactivated account). Throws {@link ServerUnavailableError} when the server
+ * cannot answer, so an outage is never mistaken for being logged out.
+ */
 export async function fetchMe(): Promise<MeResponse | null> {
-	const res = await apiFetch('/api/auth/me');
-	if (res.status === 401) return null;
-	if (!res.ok) return null;
+	let res: Response;
+	try {
+		res = await apiFetch('/api/auth/me');
+	} catch {
+		throw new ServerUnavailableError();
+	}
+	if (res.status === 401 || res.status === 403) return null;
+	if (!res.ok) throw new ServerUnavailableError(`The server answered ${res.status}`);
 	return res.json();
 }
 

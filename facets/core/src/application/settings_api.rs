@@ -171,6 +171,16 @@ async fn put_one(
             StatusCode::NOT_FOUND,
             Json(json!({ "error": format!("setting `{k}` not found") })),
         )),
+        Err(SettingsError::Invalid(message)) => {
+            Err((StatusCode::BAD_REQUEST, Json(json!({ "error": message }))))
+        }
+        Err(SettingsError::Secrets(err)) => {
+            log::error!("settings put: {err}");
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "secret settings cannot be saved: the encryption key is unavailable" })),
+            ))
+        }
         Err(err) => {
             log::error!("settings put failed: {err}");
             Err((

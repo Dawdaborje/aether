@@ -1,6 +1,6 @@
 ## Aether Bridges
 
-Bridges are first-party integrations compiled into the kernel as optional Cargo features. Enabled per-org, credentials stored encrypted in SurrealDB.
+Bridges are first-party integrations compiled into the kernel. A bridge's settings and credentials live in the database settings (global, with an organization override), secrets encrypted; nothing about a bridge is written in `aether.toml`. Only the messaging bridges are implemented so far (SMTP, Resend, Twilio, Termii, Africa's Talking): see [Communication](architecture/communication.md). The table below is the plan; the others are still empty crates.
 
 | Bridge | Category |
 |---|---|
@@ -25,12 +25,5 @@ Plugins call bridges through kernel commands — never directly:
 kernel_command("stripe::charge", payload)
 ```
 
-Enable bridges in `aether.toml`:
-
-```toml
-[bridges]
-stripe   = { enabled = true }
-paystack = { enabled = true }
-resend   = { enabled = true }
-mayan    = { enabled = true, url = "https://mayan.internal" }
-```
+A plugin does not call a messaging bridge by name either: it sends a message of some type with
+`communication::send` and the kernel routes it to the one the settings select.

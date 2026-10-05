@@ -36,7 +36,7 @@ mod error {
     }
 }
 
-fn get_local_ip() -> String {
+pub(crate) fn get_local_ip() -> String {
     UdpSocket::bind("0.0.0.0:0")
         .ok()
         .and_then(|s| s.connect("8.8.8.8:80").ok().map(|_| s))
@@ -59,6 +59,7 @@ pub async fn run_server(
     config: models::AetherConfig,
     http_port: Option<u16>,
     db_conn: &'static Surreal<SurrealClient>,
+    scheduling: bool,
 ) -> Result<(), Box<dyn Error + Send + Sync + '_>> {
     let namespace = config
         .database
@@ -94,6 +95,27 @@ pub async fn run_server(
     let notification_cleanup = aether_core::notifications::spawn_cleanup(&state);
     let chatter_cleanup = aether_core::chatter::spawn_cleanup(&state);
     let notification_hub = state.notifications.clone();
+
+    // Background jobs. The scheduler runs here unless it was turned off or a standalone one
+    // is running; either way this server finds a standalone one (to wake it) through the database.
+    let discovery = aether_core::scheduler::control::spawn_discovery(&state);
+    let (scheduler_stop, scheduler_stopping) = tokio::sync::watch::channel(false);
+    let scheduler_task = if scheduling && state.config.scheduler.embedded {
+        let settings = state.config.scheduler.clone();
+        let options = aether_core::scheduler::worker::WorkerOptions {
+            node_id: aether_core::scheduler::worker::new_node_id(aether_core::scheduler::nodes::NodeKind::Embedded),
+            kind: aether_core::scheduler::nodes::NodeKind::Embedded,
+            address: None,
+            queues: settings.queues,
+            concurrency: settings.concurrency,
+            poll: std::time::Duration::from_secs(settings.poll_secs),
+            lease_secs: settings.lease_secs,
+        };
+        Some(tokio::spawn(aether_core::scheduler::worker::run(state.clone(), options, scheduler_stopping)))
+    } else {
+        log::info!("Background jobs are not run by this server (use `aether --start-scheduler` to run them)");
+        None
+    };
 
     let app = Router::new()
         .merge(core_routes())
@@ -131,7 +153,7 @@ pub async fn run_server(
 
     // Ctrl+C or SIGTERM starts a graceful shutdown: stop accepting connections
     // and let in-flight requests finish, but only for `SHUTDOWN_GRACE`; open
-    // connections such as the notifications websocket would otherwise keep the
+    // connections such as the notifications event stream (SSE) would otherwise keep the
     // server alive forever.
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
     tokio::spawn(async move {
@@ -170,6 +192,12 @@ pub async fn run_server(
         }
     };
 
+    // Let running jobs finish; the scheduler waits for them (up to 30 s) before it returns.
+    let _ = scheduler_stop.send(true);
+    if let Some(task) = scheduler_task {
+        let _ = task.await;
+    }
+    discovery.abort();
     if let Some(task) = retention_task {
         task.abort();
     }
@@ -177,9 +205,15 @@ pub async fn run_server(
     chatter_cleanup.abort();
     // End the database session cleanly. The connection itself closes when the
     // process exits, which follows immediately.
-    match db_conn.invalidate().await {
-        Ok(()) => log::info!("Database session closed"),
-        Err(error) => log::warn!("Could not sign out of the database cleanly: {error}"),
+    // Bounded: with the database already gone the client keeps trying to
+    // reconnect, and this call would otherwise wait on it forever.
+    match tokio::time::timeout(DB_CLOSE_TIMEOUT, db_conn.invalidate()).await {
+        Ok(Ok(())) => log::info!("Database session closed"),
+        Ok(Err(error)) => log::warn!("Could not sign out of the database cleanly: {error}"),
+        Err(_) => log::warn!(
+            "Database did not answer within {}s (is it still running?); skipping sign-out",
+            DB_CLOSE_TIMEOUT.as_secs()
+        ),
     }
     log::info!("Aether stopped");
 
@@ -189,8 +223,11 @@ pub async fn run_server(
 /// How long in-flight requests get to finish after a shutdown request.
 const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// How long to wait for the database to acknowledge the closing sign-out.
+const DB_CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// Resolves on Ctrl+C, or on SIGTERM on Unix (what service managers send).
-async fn wait_for_shutdown_signal() {
+pub(crate) async fn wait_for_shutdown_signal() {
     let ctrl_c = async {
         if let Err(error) = tokio::signal::ctrl_c().await {
             log::error!("Could not listen for Ctrl+C: {error}");

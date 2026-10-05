@@ -16,13 +16,13 @@
 //! query parameters such as `code` or `token`, are shown as `<redacted>`.
 //! Request and response bodies are not logged.
 
-use std::{net::SocketAddr, time::Instant};
+use std::{net::SocketAddr, time::{Duration, Instant}};
 
 use axum::{
     extract::{ConnectInfo, Request, State},
     http::{HeaderMap, HeaderValue, header},
     middleware::Next,
-    response::Response,
+    response::{IntoResponse, Response},
 };
 
 use crate::access::{audit::new_request_id, ip::client_ip};
@@ -84,6 +84,14 @@ pub fn redact_query(query: &str) -> String {
         .join("&")
 }
 
+/// The `504` sent when a request exceeds `server.request_timeout_secs`.
+fn timed_out_response() -> Response {
+    let body = serde_json::json!({
+        "error": "The server took too long to respond. Its database may be unavailable; try again shortly."
+    });
+    (axum::http::StatusCode::GATEWAY_TIMEOUT, axum::Json(body)).into_response()
+}
+
 pub async fn log_requests(State(state): State<AppState>, mut request: Request, next: Next) -> Response {
     let started = Instant::now();
     let request_id = new_request_id();
@@ -124,7 +132,26 @@ pub async fn log_requests(State(state): State<AppState>, mut request: Request, n
         describe_headers(request.headers())
     );
 
-    let mut response = next.run(request).await;
+    let timeout_secs = state
+        .config
+        .server
+        .as_ref()
+        .map_or(30, |server| server.request_timeout_secs);
+    let mut response = if timeout_secs == 0 {
+        next.run(request).await
+    } else {
+        // Covers the time until the response head is ready; streamed bodies
+        // (event streams) continue past it untouched.
+        match tokio::time::timeout(Duration::from_secs(timeout_secs), next.run(request)).await {
+            Ok(response) => response,
+            Err(_) => {
+                log::error!(
+                    "{request_id} {method} {path} gave no answer within {timeout_secs}s (is the database reachable?)"
+                );
+                timed_out_response()
+            }
+        }
+    };
     if let Ok(value) = HeaderValue::from_str(&request_id) {
         response.headers_mut().insert(REQUEST_ID_HEADER, value);
     }

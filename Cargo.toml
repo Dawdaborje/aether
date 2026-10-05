@@ -13,6 +13,7 @@ members = [
     "bridges/communications/mailgun",
     "bridges/communications/postmark",
     "bridges/communications/resend",
+    "bridges/communications/smtp",
     "bridges/communications/termii",
     "bridges/communications/twilio",
     "bridges/communications/whatsapp",

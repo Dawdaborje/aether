@@ -12,6 +12,7 @@ use crate::config_manager::models::AetherConfig;
 use crate::media::{MediaError, build_media_backend};
 use crate::plugin_manager::runtime::PluginRuntime;
 use crate::notifications::NotificationHub;
+use crate::secrets::{SecretBox, SecretError};
 
 #[derive(Debug, Error)]
 pub enum AppStateError {
@@ -76,6 +77,10 @@ pub struct AppState {
     pub request_limiter: RateLimiter,
     pub namespace: String,
     pub core_database: String,
+    /// Encrypts and decrypts secret settings; the key is found the first time it is needed.
+    secrets: Arc<std::sync::OnceLock<Result<SecretBox, String>>>,
+    /// How this process reaches the job scheduler.
+    pub scheduler: crate::scheduler::SchedulerLink,
 }
 
 impl AppState {
@@ -110,7 +115,21 @@ impl AppState {
             request_limiter,
             namespace,
             core_database: core_database.into(),
+            secrets: Arc::default(),
+            scheduler: crate::scheduler::SchedulerLink::default(),
         })
+    }
+
+    /// The box that encrypts and decrypts secret settings. Fails (with the reason) when no key
+    /// can be found or created; everything else keeps working.
+    pub fn secrets(&self) -> Result<&SecretBox, SecretError> {
+        let loaded = self.secrets.get_or_init(|| {
+            SecretBox::load(self.config.security.secret_key.as_deref(), &self.config.app_dir).map_err(|e| e.to_string())
+        });
+        match loaded {
+            Ok(secrets) => Ok(secrets),
+            Err(reason) => Err(SecretError::KeyUnavailable(reason.clone())),
+        }
     }
 
     /// The media backend as one organization sees it: every key lives under

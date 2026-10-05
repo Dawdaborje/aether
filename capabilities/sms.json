@@ -6,7 +6,7 @@
     {
       "code": "send",
       "name": "Send SMS",
-      "description": "Send an SMS via the configured SMS bridge. Maps to kernel command sms::send."
+      "description": "Send an SMS via the configured SMS bridge. Needed to send a message of type sms with kernel command communication::send."
     }
   ]
 }

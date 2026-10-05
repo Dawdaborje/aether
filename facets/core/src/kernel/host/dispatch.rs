@@ -3,6 +3,7 @@ use serde_json::Value as JsonValue;
 use super::context::PluginHostContext;
 use super::db;
 use super::error::HostError;
+use super::{communication, http, plugin_call, scheduling, storage, store};
 
 /// Dispatch a kernel host command for a plugin.
 ///
@@ -38,18 +39,15 @@ pub async fn kernel_command(
         }
 
         // Other host surfaces — capability-gated stubs until wired to facets.
-        "cache::get" | "cache::set" | "cache::invalidate" | "cache::clear" => {
-            ctx.require_cap(command)?;
-            Err(HostError::NotImplemented(command.into()))
-        }
-        "storage::read" | "storage::write" | "storage::delete" | "storage::list" => {
-            ctx.require_cap(command)?;
-            Err(HostError::NotImplemented(command.into()))
-        }
-        "email::send" | "sms::send" => {
-            ctx.require_cap(command)?;
-            Err(HostError::NotImplemented(command.into()))
-        }
+        "cache::get" => store::cache_get(ctx, &payload),
+        "cache::set" => store::cache_set(ctx, &payload),
+        "cache::invalidate" => store::cache_invalidate(ctx, &payload),
+        "cache::clear" => store::cache_clear(ctx, &payload),
+        "storage::read" => storage::storage_read(ctx, &payload).await,
+        "storage::write" => storage::storage_write(ctx, &payload).await,
+        "storage::delete" => storage::storage_delete(ctx, &payload).await,
+        "storage::list" => storage::storage_list(ctx, &payload).await,
+        "communication::send" => communication::send(ctx, &payload).await,
         "events::emit" => {
             ctx.require_cap(command)?;
             emit_ui_event(ctx, &payload)
@@ -73,28 +71,18 @@ pub async fn kernel_command(
             ctx.require_cap(command)?;
             Err(HostError::NotImplemented(command.into()))
         }
-        "http::request" => {
-            ctx.require_cap(command)?;
-            Err(HostError::NotImplemented(command.into()))
-        }
-        "plugins::call" => {
-            ctx.require_cap(command)?;
-            Err(HostError::NotImplemented(command.into()))
-        }
+        "http::request" => http::http_request(ctx, &payload).await,
+        "plugins::call" => plugin_call::plugins_call(ctx, &payload).await,
         "bridge::call" => {
             ctx.require_cap("bridge::call")?;
             Err(HostError::NotImplemented(command.into()))
         }
-        "scheduler::register" | "scheduler::cancel" => {
-            ctx.require_cap(command)?;
-            Err(HostError::NotImplemented(command.into()))
-        }
-        "db::transaction" => {
-            ctx.require_cap("db::transaction")?;
-            Err(HostError::NotImplemented(
-                "db::transaction (batch structured ops)".into(),
-            ))
-        }
+        "scheduler::enqueue" => scheduling::enqueue(ctx, &payload).await,
+        "scheduler::job" => scheduling::job(ctx, &payload).await,
+        "scheduler::cancel_job" => scheduling::cancel_job(ctx, &payload).await,
+        "scheduler::register" => scheduling::register(ctx, &payload).await,
+        "scheduler::cancel" => scheduling::cancel(ctx, &payload).await,
+        "db::transaction" => db::db_transaction(ctx, &payload).await,
         other => Err(HostError::UnknownCommand(other.into())),
     }
 }
@@ -201,47 +189,11 @@ fn emit_ui_event(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonVal
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::kernel::host::test_support::{dummy_ctx, in_memory_media, with_services};
     use crate::kernel::host::context::{ModelGrant, PluginHostContext};
     use std::collections::{HashMap, HashSet};
     use surrealdb::Surreal;
     use surrealdb::engine::remote::ws::Client;
-
-    fn dummy_ctx(caps: &[&str]) -> PluginHostContext {
-        let granted = caps
-            .iter()
-            .map(|s| (*s).to_string())
-            .collect::<HashSet<_>>();
-        let mut models = HashMap::new();
-        models.insert(
-            "partner".into(),
-            ModelGrant {
-                name: "partner".into(),
-                table: "base_partner".into(),
-                can_read: true,
-                can_write: true,
-                schema: None,
-            },
-        );
-        // Surreal::init is fine for constructing context; we only test cap denial paths.
-        let db: Surreal<Client> = Surreal::init();
-        PluginHostContext::new(
-            "test",
-            granted,
-            models,
-            std::sync::Arc::new(db),
-            crate::kernel::DbScope::new("aether", "core"),
-            crate::notifications::NotificationHub::default(),
-            crate::kernel::CallInfo::new(
-                crate::access::audit::AuditContext {
-                    actor: crate::access::audit::Actor::Anonymous,
-                    request_id: "test-request".into(),
-                    ip: None,
-                    user_agent: None,
-                },
-                "test_function",
-            ),
-        )
-    }
 
     #[tokio::test]
     async fn denies_without_capability() {
@@ -287,9 +239,9 @@ mod tests {
             "db::get", "db::find", "db::query", "db::create", "db::update", "db::delete", "db::increment",
             "db::mutate", "db::transaction", "cache::get", "cache::set", "cache::invalidate",
             "cache::clear", "storage::read", "storage::write", "storage::delete",
-            "storage::list", "email::send", "sms::send", "events::emit", "events::subscribe",
+            "storage::list", "communication::send", "events::emit", "events::subscribe",
             "http::request", "plugins::call", "bridge::call", "scheduler::register",
-            "scheduler::cancel", "notify::send",
+            "scheduler::cancel", "scheduler::enqueue", "scheduler::job", "scheduler::cancel_job", "notify::send",
         ];
         let ctx = dummy_ctx(&[]);
         for command in commands {
@@ -343,5 +295,78 @@ mod tests {
         // Will fail at model check before DB — or capability passed then model denied.
         // Without live DB, use_scoped_db may fail first if we get past model — model is checked first.
         assert!(matches!(err, HostError::ModelDenied(_)) || matches!(err, HostError::Db(_)));
+    }
+
+    #[tokio::test]
+    async fn cache_round_trips_json_and_is_private_to_each_plugin() {
+        let caps = ["cache::get", "cache::set", "cache::invalidate", "cache::clear"];
+        let first = with_services(dummy_ctx(&caps), in_memory_media());
+        let mut second = first.clone();
+        second.plugin_name = "other".into();
+
+        let value = serde_json::json!({ "n": 1, "list": [1, 2] });
+        kernel_command(&first, "cache::set", serde_json::json!({ "key": "k", "value": value })).await.unwrap();
+        let got = kernel_command(&first, "cache::get", serde_json::json!({ "key": "k" })).await.unwrap();
+        assert_eq!(got["data"], value);
+        let other = kernel_command(&second, "cache::get", serde_json::json!({ "key": "k" })).await.unwrap();
+        assert!(other["data"].is_null(), "another plugin must not see the entry");
+
+        kernel_command(&second, "cache::clear", serde_json::json!({})).await.unwrap();
+        let still = kernel_command(&first, "cache::get", serde_json::json!({ "key": "k" })).await.unwrap();
+        assert_eq!(still["data"], value, "clearing is per plugin");
+        let gone = kernel_command(&first, "cache::invalidate", serde_json::json!({ "key": "k" })).await.unwrap();
+        assert_eq!(gone["data"]["removed"], 1);
+    }
+
+    #[tokio::test]
+    async fn cache_refuses_bad_requests() {
+        let ctx = with_services(dummy_ctx(&["cache::get", "cache::set"]), in_memory_media());
+        let zero = kernel_command(&ctx, "cache::set", serde_json::json!({ "key": "k", "value": 1, "ttl_secs": 0 })).await;
+        assert!(matches!(zero, Err(HostError::InvalidPayload(_))));
+        let empty = kernel_command(&ctx, "cache::get", serde_json::json!({ "key": "" })).await;
+        assert!(matches!(empty, Err(HostError::InvalidPayload(_))));
+        let big = "x".repeat(2000);
+        let too_big = kernel_command(&ctx, "cache::set", serde_json::json!({ "key": "k", "value": big })).await;
+        assert!(matches!(too_big, Err(HostError::Message(_))));
+    }
+
+    #[tokio::test]
+    async fn storage_keeps_each_plugin_in_its_own_folder() {
+        let caps = ["storage::read", "storage::write", "storage::delete", "storage::list"];
+        let media = in_memory_media();
+        let first = with_services(dummy_ctx(&caps), media.clone());
+        let mut second = first.clone();
+        second.plugin_name = "other".into();
+
+        kernel_command(&first, "storage::write", serde_json::json!({ "key": "a/b.txt", "text": "hello" })).await.unwrap();
+        let read = kernel_command(&first, "storage::read", serde_json::json!({ "key": "a/b.txt" })).await.unwrap();
+        assert_eq!(read["data"]["text"], "hello");
+        // Stored under the plugin's folder, invisible to another plugin.
+        assert!(media.exists(&aether_storage::MediaKey::parse("plugins/test/a/b.txt").unwrap()).await.unwrap());
+        let hidden = kernel_command(&second, "storage::read", serde_json::json!({ "key": "a/b.txt" })).await.unwrap();
+        assert!(hidden["data"].is_null(), "another plugin's file is simply not there");
+        let theirs = kernel_command(&second, "storage::list", serde_json::json!({})).await.unwrap();
+        assert_eq!(theirs["data"], serde_json::json!([]));
+        let mine = kernel_command(&first, "storage::list", serde_json::json!({})).await.unwrap();
+        assert_eq!(mine["data"], serde_json::json!([{ "key": "a/b.txt", "size": 5 }]));
+
+        for bad in ["../other/x", "a/../../x", "/x", ""] {
+            let refused = kernel_command(&first, "storage::write", serde_json::json!({ "key": bad, "text": "x" })).await;
+            assert!(matches!(refused, Err(HostError::InvalidPayload(_))), "{bad}: {refused:?}");
+        }
+
+        kernel_command(&first, "storage::write", serde_json::json!({ "key": "bin", "base64": "AAEC" })).await.unwrap();
+        let bin = kernel_command(&first, "storage::read", serde_json::json!({ "key": "bin", "encoding": "base64" })).await.unwrap();
+        assert_eq!(bin["data"]["base64"], "AAEC");
+        kernel_command(&first, "storage::delete", serde_json::json!({ "key": "bin" })).await.unwrap();
+        let gone = kernel_command(&first, "storage::read", serde_json::json!({ "key": "bin" })).await.unwrap();
+        assert!(gone["data"].is_null());
+    }
+
+    #[tokio::test]
+    async fn storage_and_cache_say_so_when_the_call_has_no_services() {
+        let ctx = dummy_ctx(&["storage::list", "cache::get"]);
+        assert!(matches!(kernel_command(&ctx, "storage::list", serde_json::json!({})).await, Err(HostError::Message(_))));
+        assert!(matches!(kernel_command(&ctx, "cache::get", serde_json::json!({ "key": "k" })).await, Err(HostError::Message(_))));
     }
 }

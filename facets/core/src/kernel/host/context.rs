@@ -81,6 +81,54 @@ impl CallInfo {
     }
 }
 
+/// Runs another plugin's function for `plugins::call`. The kernel supplies it per call, already
+/// holding the original caller's identity: the called plugin runs as that same actor, under its
+/// own capabilities and model grants, so a call can never gain access the caller did not have.
+#[async_trait::async_trait]
+pub trait PluginCaller: Send + Sync {
+    /// `trail` lists the `plugin.function` calls that led here, the current one last.
+    async fn call(
+        &self,
+        plugin: &str,
+        function: &str,
+        payload: serde_json::Value,
+        trail: Vec<String>,
+    ) -> Result<serde_json::Value, super::error::HostError>;
+}
+
+/// Defaults for jobs, from the settings of the organization the job is for.
+#[derive(Debug, Clone, Copy)]
+pub struct JobDefaults {
+    pub max_attempts: i64,
+    pub backoff_secs: i64,
+}
+
+/// What `scheduler::*` and `communication::send` need from the rest of the kernel.
+#[async_trait::async_trait]
+pub trait SchedulerHandle: Send + Sync {
+    /// Work was added to the organization's queue: make the scheduler look now.
+    fn wake(&self, org: &str);
+    /// A plugin's schedules changed.
+    fn reload(&self);
+    /// Attempts and retry delay for a job that does not say.
+    async fn defaults(&self, org: &str) -> JobDefaults;
+    /// Why a message of this type cannot be sent in this organization (no provider chosen, or
+    /// its settings incomplete), or `Ok` when it can.
+    async fn check_messaging(&self, org: &str, kind: &str) -> Result<(), String>;
+}
+
+/// Kernel services a plugin reaches through host commands. They are handed in already scoped
+/// to the organization of the call, so a command never has to pick the scope itself.
+#[derive(Clone)]
+pub struct HostServices {
+    /// The application cache. Keys are namespaced per organization and plugin by the commands.
+    pub cache: crate::cache::Cache,
+    /// The organization's media storage (every key already lives under `orgs/<organization>/`).
+    pub media: std::sync::Arc<dyn aether_storage::MediaBackend>,
+    /// The job scheduler; absent where background work is not available.
+    pub scheduler: Option<std::sync::Arc<dyn SchedulerHandle>>,
+}
+
 /// Execution context for one plugin invocation.
 #[derive(Clone)]
 pub struct PluginHostContext {
@@ -97,6 +145,16 @@ pub struct PluginHostContext {
     pub audit: AuditContext,
     /// The plugin function being run.
     pub function: String,
+    /// Cache and storage; commands that need them fail with a clear error when absent.
+    pub services: Option<HostServices>,
+    /// Hosts `http::request` may call (`http_hosts` in plugin.toml). Empty: none.
+    pub http_hosts: Vec<String>,
+    /// Plugins this one may call with `plugins::call` (`dependencies` in plugin.toml).
+    pub dependencies: Vec<String>,
+    /// The `plugin.function` calls that led to this one, this call last.
+    pub call_trail: Vec<String>,
+    /// Runs other plugins' functions; absent when the call cannot make plugin calls.
+    pub caller: Option<std::sync::Arc<dyn PluginCaller>>,
 }
 
 impl PluginHostContext {
@@ -119,7 +177,46 @@ impl PluginHostContext {
             notifications,
             audit: call.audit,
             function: call.function,
+            services: None,
+            http_hosts: Vec::new(),
+            dependencies: Vec::new(),
+            call_trail: Vec::new(),
+            caller: None,
         }
+    }
+
+    /// Give the call access to the kernel's cache and storage.
+    #[must_use]
+    pub fn with_services(mut self, services: HostServices) -> Self {
+        self.services = Some(services);
+        self
+    }
+
+    /// Allow `http::request` to the hosts the plugin declared.
+    #[must_use]
+    pub fn with_http_hosts(mut self, hosts: Vec<String>) -> Self {
+        self.http_hosts = hosts;
+        self
+    }
+
+    /// Allow `plugins::call`: to the plugin's declared dependencies, through `caller`.
+    #[must_use]
+    pub fn with_plugin_calls(
+        mut self,
+        dependencies: Vec<String>,
+        trail: Vec<String>,
+        caller: std::sync::Arc<dyn PluginCaller>,
+    ) -> Self {
+        self.dependencies = dependencies;
+        self.call_trail = trail;
+        self.caller = Some(caller);
+        self
+    }
+
+    pub fn services(&self) -> Result<&HostServices, super::error::HostError> {
+        self.services
+            .as_ref()
+            .ok_or_else(|| super::error::HostError::Message("this call has no cache or storage attached".into()))
     }
 
     pub fn require_cap(

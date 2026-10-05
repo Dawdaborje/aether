@@ -87,6 +87,10 @@ pub struct PluginDefinition {
     /// anyone, so keep this list short.
     #[serde(default)]
     pub public_access_models: Vec<AccessModelDef>,
+    /// Outside hosts `http::request` may call, such as `"api.stripe.com"` or `"*.example.com"`
+    /// (a wildcard covers subdomains, not the bare domain). Empty by default: no access.
+    #[serde(default)]
+    pub http_hosts: Vec<String>,
     /// Parent workspace name (e.g. `"base"`, `"erp"`). Prefer `[plugin.meta].workspace`.
     #[serde(default)]
     pub workspace: Option<String>,
@@ -128,6 +132,7 @@ impl Default for PluginDefinition {
             public_functions: Vec::new(),
             public_capabilities: Vec::new(),
             public_access_models: Vec::new(),
+            http_hosts: Vec::new(),
             workspace: None,
             kind: Some("addon".into()),
             is_builtin: false,
@@ -302,6 +307,10 @@ pub struct PluginManifest {
     /// Present when the plugin is an app (a tile on the Apps launcher).
     #[serde(default)]
     pub app: Option<PluginAppDef>,
+    /// Recurring tasks (`[[schedule]]`): each runs one of the plugin's functions as a
+    /// background job on a cron expression or interval in every organization that installs it.
+    #[serde(default)]
+    pub schedule: Vec<crate::scheduler::TaskDef>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -320,6 +329,9 @@ pub enum ManifestError {
          `db::*` commands on the models they are granted; remove it from `{0}`"
     )]
     RawSurql(&'static str),
+
+    #[error("`[[schedule]]`: {0}")]
+    Schedule(String),
 
     #[error(
         "`[[models]]` is no longer supported: define each model in `models/<name>.json` \
@@ -345,6 +357,13 @@ impl PluginManifest {
         }
         if manifest.plugin.public_capabilities.iter().any(|c| c == REMOVED) {
             return Err(ManifestError::RawSurql("public_capabilities"));
+        }
+        let mut seen = std::collections::HashSet::new();
+        for task in &manifest.schedule {
+            task.validate().map_err(|error| ManifestError::Schedule(error.to_string()))?;
+            if !seen.insert(task.name.clone()) {
+                return Err(ManifestError::Schedule(format!("two tasks are named `{}`", task.name)));
+            }
         }
         manifest.normalize();
         Ok(manifest)

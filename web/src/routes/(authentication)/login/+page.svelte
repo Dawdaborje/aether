@@ -31,7 +31,8 @@
 	}
 
 	onMount(async () => {
-		const me = await fetchMe();
+		// An outage is not a login state: show the form, sign-in reports its own error.
+		const me = await fetchMe().catch(() => null);
 		if (me) {
 			await afterLogin(me.user);
 			return;

@@ -32,6 +32,9 @@ pub enum CatalogError {
     #[error("database error: {0}")]
     Database(#[from] surrealdb::Error),
 
+    #[error("the schedules of `{0}` could not be set up: {1}")]
+    Schedule(String, String),
+
     #[error("filesystem error at {path}: {source}")]
     Io {
         path: PathBuf,
@@ -232,6 +235,8 @@ struct NewPlugin {
     app: Option<NewApp>,
     /// Functions anonymous visitors may call; checked before a module is compiled.
     public_functions: Vec<String>,
+    /// The manifest's `[[schedule]]` entries.
+    schedules: Vec<serde_json::Value>,
     is_builtin: bool,
     is_active: bool,
 }
@@ -497,6 +502,8 @@ pub async fn load_plugin(
     let theme_summary = theme
         .as_ref()
         .map(|theme| (theme.name.clone(), theme.layout.clone()));
+    let schedules: Vec<serde_json::Value> =
+        manifest.schedule.iter().filter_map(|task| serde_json::to_value(task).ok()).collect();
     let definition = manifest.plugin;
     let summary = |version: String,
                    artifact_path: Option<String>,
@@ -657,6 +664,7 @@ pub async fn load_plugin(
         source_path: Some(package_dir.to_string_lossy().into_owned()),
         app,
         public_functions: definition.public_functions.clone(),
+        schedules,
         is_builtin: definition.is_builtin,
         is_active: true,
     };
@@ -1076,6 +1084,7 @@ pub async fn install_plugins(
         .bind(("dependencies", dependencies))
         .await?
         .check()?;
+        sync_schedules(db, &record.name, record.schedules.as_deref()).await?;
         if let Some(theme) = theme {
             report.themes.push(InstalledTheme {
                 name: theme.name,
@@ -1198,10 +1207,28 @@ pub async fn upgrade_plugins(
         .bind(("version", target.version.clone()))
         .await?
         .check()?;
+        sync_schedules(db, &spec.name, target.schedules.as_deref()).await?;
         installed.insert(spec.name.clone(), target.version.clone());
         report.upgraded.push((spec.name.clone(), from, target.version));
     }
     Ok(report)
+}
+
+/// Make an organization's recurring tasks for `plugin` match the catalog version's `[[schedule]]`.
+/// Caller must be on the organization's database.
+async fn sync_schedules(
+    db: &Surreal<Client>,
+    plugin: &str,
+    schedules: Option<&[serde_json::Value]>,
+) -> Result<(), CatalogError> {
+    let defs: Vec<crate::scheduler::TaskDef> = schedules
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|value| serde_json::from_value(value.clone()).ok())
+        .collect();
+    crate::scheduler::tasks::sync_manifest(db, plugin, &defs)
+        .await
+        .map_err(|error| CatalogError::Schedule(plugin.to_string(), error.to_string()))
 }
 
 #[derive(Debug, Deserialize, SurrealValue)]

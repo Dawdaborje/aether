@@ -6,7 +6,7 @@
     {
       "code": "send",
       "name": "Send Email",
-      "description": "Send an email via the configured email bridge. Maps to kernel command email::send."
+      "description": "Send an email via the configured email bridge. Needed to send a message of type email with kernel command communication::send."
     }
   ]
 }

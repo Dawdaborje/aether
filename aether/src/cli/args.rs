@@ -39,8 +39,8 @@ pub struct Args {
     /// Bind address for the HTTP server (e.g. 0.0.0.0:7890)
     pub serve: Option<String>,
 
-    #[arg(short='o', long, default_missing_value = "0.0.0.0:7895", num_args = 0..=1)]
-    /// Bind address for the Scheduler (e.g. 0.0.0.0:7895)
+    #[arg(short='o', long, default_missing_value = "", num_args = 0..=1)]
+    /// Run the job scheduler on its own, with its control API on this address (default: `[scheduler] bind`, 127.0.0.1:7895). The HTTP server finds it by itself. Needs the same database and `app_dir` as the HTTP server.
     pub start_scheduler: Option<String>,
 
     #[arg(short = 'k', long, action = clap::ArgAction::SetTrue)]
@@ -84,8 +84,9 @@ pub struct Args {
     /// Delete audit rows older than `[audit] retention_days` from every organization, then exit
     pub purge_audit: bool,
 
-    #[arg(long, action = clap::ArgAction::SetFalse)]
-    pub no_scheduling: bool,
+    #[arg(long = "no-scheduling", action = clap::ArgAction::SetFalse)]
+    /// Do not run the job scheduler inside `--serve` (another process, `--start-scheduler`, runs the jobs)
+    pub scheduling: bool,
 
     #[arg(short = 'u', long, value_name = "NAME[@VERSION]", num_args = 1.., requires = "org")]
     /// Move an organization's installed plugins to the newest loaded version, or the one named (e.g. `--upgrade-plugin notes --org acme`)

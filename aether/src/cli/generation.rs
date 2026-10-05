@@ -14,6 +14,24 @@ addon_paths = []
 # Reverse proxies whose X-Forwarded-For header is believed. Leave empty unless
 # a proxy sits in front of Aether; otherwise audit rows record the proxy's address.
 # trusted_proxies = ["10.0.0.1"]
+# Seconds a request may take before the server answers 504 instead of leaving
+# the browser loading (e.g. when the database is down). 0 disables the limit.
+# request_timeout_secs = 30
+
+[security]
+# Encrypts secret settings (API keys, passwords) stored in the database. Leave it out and the
+# kernel uses the AETHER_SECRET_KEY environment variable, or creates <app_dir>/conf/secret.key.
+# Every Aether process that reads credentials needs the same key.
+# secret_key = "a long random value"
+
+[scheduler]
+# Background jobs and recurring tasks. Their behaviour (retries, retention) is in the settings.
+# embedded = true            # run the scheduler inside `aether --serve`
+# concurrency = 8            # jobs this process runs at once
+# poll_secs = 5              # how often it looks for due work without being told
+# lease_secs = 120           # how long a worker holds a job before another may take it
+# queues = []                # queues to serve; empty means all
+# bind = "127.0.0.1:7895"    # where `aether --start-scheduler` listens for control requests
 
 [configuration]
 is_development_mode = false

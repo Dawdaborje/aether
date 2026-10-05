@@ -298,3 +298,77 @@ async fn retention_purges_only_rows_older_than_the_window() -> TestResult {
     );
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "needs SurrealDB (AETHER_TEST_DB)"]
+async fn a_transaction_applies_every_write_or_none() -> TestResult {
+    let Some(db) = connect().await? else { return Ok(()) };
+    let org = fresh_org(&db, "txn").await?;
+    let ctx = context(
+        &db,
+        &org,
+        Actor::Visitor("visitors:v1".into()),
+        &[("message", "chat_message", true, true)],
+        &["db::query", "db::mutate", "db::transaction"],
+    )
+    .await?;
+
+    let first = kernel_command(&ctx, "db::create", json!({ "model": "message", "data": { "body": "one", "n": 1 } })).await?;
+    let first_id = first["data"]["id"].as_str().ok_or("no id")?.to_string();
+
+    // Two creates, an update and an increment, together.
+    let done = kernel_command(
+        &ctx,
+        "db::transaction",
+        json!({ "ops": [
+            { "op": "create", "model": "message", "data": { "body": "two" } },
+            { "op": "create", "model": "message", "data": { "body": "three" } },
+            { "op": "update", "model": "message", "id": first_id, "data": { "body": "edited" } },
+            { "op": "increment", "model": "message", "id": first_id, "field": "n", "by": 4 },
+        ] }),
+    )
+    .await?;
+    let results = done["data"].as_array().ok_or("no results")?;
+    assert_eq!(results.len(), 4);
+    assert_eq!(results[0]["body"], "two");
+    assert_eq!(results[1]["body"], "three");
+    assert_eq!(results[3]["n"], 5);
+    let all = kernel_command(&ctx, "db::find", json!({ "model": "message" })).await?;
+    assert_eq!(all["data"].as_array().map(Vec::len), Some(3));
+    let edited = kernel_command(&ctx, "db::get", json!({ "model": "message", "id": first_id })).await?;
+    assert_eq!(edited["data"]["body"], "edited");
+
+    // One audit row per write (the first create, then the four of the transaction).
+    let rows = audit_rows(&db, &org).await?;
+    let writes: Vec<_> = rows.iter().filter(|row| row["operation"] != "read").map(|row| row["operation"].as_str().unwrap_or("")).collect();
+    assert_eq!(writes, ["create", "create", "create", "update", "update"]);
+
+    // A write that fails in the database (adding to text) undoes the ones before it.
+    let failed = kernel_command(
+        &ctx,
+        "db::transaction",
+        json!({ "ops": [
+            { "op": "create", "model": "message", "data": { "body": "ghost" } },
+            { "op": "increment", "model": "message", "id": first_id, "field": "body", "by": 1 },
+        ] }),
+    )
+    .await;
+    assert!(failed.is_err(), "adding to text must fail");
+    let after = kernel_command(&ctx, "db::find", json!({ "model": "message", "filter": { "body": "ghost" } })).await?;
+    assert_eq!(after["data"].as_array().map(Vec::len), Some(0), "the first write must have been rolled back");
+
+    // Refused before anything runs: no capability, bad op, no write grant, too many.
+    let reader = context(&db, &org, Actor::Anonymous, &[("message", "chat_message", true, false)], &["db::query", "db::mutate", "db::transaction"]).await?;
+    let denied = kernel_command(&reader, "db::transaction", json!({ "ops": [{ "op": "create", "model": "message", "data": { "body": "x" } }] })).await;
+    assert!(matches!(denied, Err(HostError::ModelPermission(_, _))), "{denied:?}");
+    let bad = kernel_command(&ctx, "db::transaction", json!({ "ops": [{ "op": "explode" }] })).await;
+    assert!(matches!(bad, Err(HostError::InvalidPayload(_))), "{bad:?}");
+    let many: Vec<Value> = (0..51).map(|_| json!({ "op": "delete", "model": "message", "id": "x" })).collect();
+    assert!(kernel_command(&ctx, "db::transaction", json!({ "ops": many })).await.is_err());
+    let no_cap = context(&db, &org, Actor::Anonymous, &[("message", "chat_message", true, true)], &["db::mutate"]).await?;
+    assert!(matches!(
+        kernel_command(&no_cap, "db::transaction", json!({ "ops": [{ "op": "delete", "model": "message", "id": "x" }] })).await,
+        Err(HostError::Capability(_))
+    ));
+    Ok(())
+}

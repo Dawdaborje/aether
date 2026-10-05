@@ -134,6 +134,8 @@ const RESERVED_TABLES: &[&str] = &[
     "plugin_calls",
     "role_permissions",
     "roles",
+    "scheduled_tasks",
+    "jobs",
     "schema_migrations",
     "settings_group_items",
     "settings_groups",
@@ -214,7 +216,7 @@ fn chatter_extra(grant: &ModelGrant, operation: &str) -> Result<Extra, HostError
 
 struct Access<'a> {
     operation: &'static str,
-    model: &'a str,
+    model: String,
     table: &'a str,
 }
 
@@ -261,7 +263,7 @@ async fn run_audited(
         .bind(("__audit_actor_id", ctx.audit.actor.id().map(str::to_string)))
         .bind(("__audit_plugin", ctx.plugin_name.clone()))
         .bind(("__audit_function", ctx.function.clone()))
-        .bind(("__audit_model", access.model.to_string()))
+        .bind(("__audit_model", access.model))
         .bind(("__audit_table", access.table.to_string()))
         .bind(("__audit_operation", access.operation.to_string()))
         .bind(("__audit_ip", ctx.audit.ip.clone()))
@@ -285,6 +287,23 @@ fn record_binds(grant: &ModelGrant, id: &str) -> Vec<(String, JsonValue)> {
 
 const RECORD_ID: &str = "[type::record($__table, $__key)]";
 
+/// One write, ready to run: the statement, what it binds, and the audit facts about it. A single
+/// command runs one plan in its own transaction; `db::transaction` runs several in one.
+struct Plan<'a> {
+    access: Access<'a>,
+    grant: &'a ModelGrant,
+    body: String,
+    ids: String,
+    binds: Vec<(String, JsonValue)>,
+    extra: Extra,
+}
+
+async fn run_plan(ctx: &PluginHostContext, plan: Plan<'_>) -> Result<JsonValue, HostError> {
+    let grant = plan.grant;
+    let rows = run_audited(ctx, plan.access, &plan.body, &plan.ids, plan.binds, plan.extra).await?;
+    Ok(serde_json::json!({ "ok": true, "data": rows.into_iter().next().map(|row| decode(grant, row)) }))
+}
+
 /// A record as the plugin sees it: field names, not the ids it is stored under.
 fn decode(grant: &ModelGrant, row: JsonValue) -> JsonValue {
     match &grant.schema {
@@ -300,7 +319,7 @@ pub async fn db_get(ctx: &PluginHostContext, payload: &JsonValue) -> Result<Json
 
     let rows = run_audited(
         ctx,
-        Access { operation: "read", model: &req.model, table: &grant.table },
+        Access { operation: "read", model: req.model.clone(), table: &grant.table },
         "LET $rows = SELECT * FROM type::record($__table, $__key);",
         RECORD_ID,
         record_binds(grant, &req.id),
@@ -359,7 +378,7 @@ pub async fn db_find(ctx: &PluginHostContext, payload: &JsonValue) -> Result<Jso
 
     let rows = run_audited(
         ctx,
-        Access { operation: "read", model: &req.model, table: &grant.table },
+        Access { operation: "read", model: req.model.clone(), table: &grant.table },
         &body,
         "$rows.id",
         binds,
@@ -370,10 +389,11 @@ pub async fn db_find(ctx: &PluginHostContext, payload: &JsonValue) -> Result<Jso
     Ok(serde_json::json!({ "ok": true, "data": rows }))
 }
 
-pub async fn db_create(
-    ctx: &PluginHostContext,
-    payload: &JsonValue,
-) -> Result<JsonValue, HostError> {
+pub async fn db_create(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
+    run_plan(ctx, plan_create(ctx, payload)?).await
+}
+
+fn plan_create<'a>(ctx: &'a PluginHostContext, payload: &JsonValue) -> Result<Plan<'a>, HostError> {
     ctx.require_cap("db::mutate")?;
     let req: CreateRequest = parse_req(payload)?;
     let grant = require_model(ctx, &req.model, true)?;
@@ -393,22 +413,21 @@ pub async fn db_create(
         ("__table".to_string(), JsonValue::String(grant.table.clone())),
         ("__data".to_string(), JsonValue::Object(data)),
     ];
-    let rows = run_audited(
-        ctx,
-        Access { operation: "create", model: &req.model, table: &grant.table },
-        "LET $rows = (CREATE type::table($__table) CONTENT $__data RETURN AFTER);",
-        "$rows.id",
+    Ok(Plan {
+        access: Access { operation: "create", model: req.model, table: &grant.table },
+        grant,
+        body: "LET $rows = (CREATE type::table($__table) CONTENT $__data RETURN AFTER);".into(),
+        ids: "$rows.id".into(),
         binds,
-        chatter_extra(grant, "create")?,
-    )
-    .await?;
-    Ok(serde_json::json!({ "ok": true, "data": rows.into_iter().next().map(|row| decode(grant, row)) }))
+        extra: chatter_extra(grant, "create")?,
+    })
 }
 
-pub async fn db_update(
-    ctx: &PluginHostContext,
-    payload: &JsonValue,
-) -> Result<JsonValue, HostError> {
+pub async fn db_update(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
+    run_plan(ctx, plan_update(ctx, payload)?).await
+}
+
+fn plan_update<'a>(ctx: &'a PluginHostContext, payload: &JsonValue) -> Result<Plan<'a>, HostError> {
     ctx.require_cap("db::mutate")?;
     let req: UpdateRequest = parse_req(payload)?;
     let grant = require_model(ctx, &req.model, true)?;
@@ -442,25 +461,24 @@ pub async fn db_update(
             "LET $rows = (UPDATE type::record($__table, $__key) MERGE $__data RETURN AFTER);".to_string()
         }
     };
-    let rows = run_audited(
-        ctx,
-        Access { operation: "update", model: &req.model, table: &grant.table },
-        &body,
-        RECORD_ID,
+    Ok(Plan {
+        access: Access { operation: "update", model: req.model, table: &grant.table },
+        grant,
+        body,
+        ids: RECORD_ID.into(),
         binds,
-        chatter_extra(grant, "update")?,
-    )
-    .await?;
-    Ok(serde_json::json!({ "ok": true, "data": rows.into_iter().next().map(|row| decode(grant, row)) }))
+        extra: chatter_extra(grant, "update")?,
+    })
 }
 
 /// Add to a number field in place. The addition happens in the database, in one statement, so two
 /// callers incrementing at once both count: use it for counters and sequences, never read, add and
 /// write back.
-pub async fn db_increment(
-    ctx: &PluginHostContext,
-    payload: &JsonValue,
-) -> Result<JsonValue, HostError> {
+pub async fn db_increment(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
+    run_plan(ctx, plan_increment(ctx, payload)?).await
+}
+
+fn plan_increment<'a>(ctx: &'a PluginHostContext, payload: &JsonValue) -> Result<Plan<'a>, HostError> {
     ctx.require_cap("db::mutate")?;
     let req: IncrementRequest = parse_req(payload)?;
     if !req.by.is_finite() {
@@ -483,36 +501,155 @@ pub async fn db_increment(
     let body = format!(
         "LET $rows = (UPDATE type::record($__table, $__key) SET {column} = ({column} ?? 0) + $__by RETURN AFTER);"
     );
-    let rows = run_audited(
-        ctx,
-        Access { operation: "update", model: &req.model, table: &grant.table },
-        &body,
-        RECORD_ID,
+    Ok(Plan {
+        access: Access { operation: "update", model: req.model, table: &grant.table },
+        grant,
+        body,
+        ids: RECORD_ID.into(),
         binds,
-        chatter_extra(grant, "update")?,
-    )
-    .await?;
-    Ok(serde_json::json!({ "ok": true, "data": rows.into_iter().next().map(|row| decode(grant, row)) }))
+        extra: chatter_extra(grant, "update")?,
+    })
 }
 
-pub async fn db_delete(
-    ctx: &PluginHostContext,
-    payload: &JsonValue,
-) -> Result<JsonValue, HostError> {
+pub async fn db_delete(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
+    run_plan(ctx, plan_delete(ctx, payload)?).await
+}
+
+fn plan_delete<'a>(ctx: &'a PluginHostContext, payload: &JsonValue) -> Result<Plan<'a>, HostError> {
     ctx.require_cap("db::mutate")?;
     let req: DeleteRequest = parse_req(payload)?;
     let grant = require_model(ctx, &req.model, true)?;
+    Ok(Plan {
+        access: Access { operation: "delete", model: req.model, table: &grant.table },
+        grant,
+        body: "LET $rows = (DELETE type::record($__table, $__key) RETURN BEFORE);".into(),
+        ids: RECORD_ID.into(),
+        binds: record_binds(grant, &req.id),
+        extra: chatter_extra(grant, "delete")?,
+    })
+}
 
-    let rows = run_audited(
-        ctx,
-        Access { operation: "delete", model: &req.model, table: &grant.table },
-        "LET $rows = (DELETE type::record($__table, $__key) RETURN BEFORE);",
-        RECORD_ID,
-        record_binds(grant, &req.id),
-        chatter_extra(grant, "delete")?,
-    )
-    .await?;
-    Ok(serde_json::json!({ "ok": true, "data": rows.into_iter().next().map(|row| decode(grant, row)) }))
+/// Most writes one `db::transaction` may hold.
+pub const MAX_TRANSACTION_OPS: usize = 50;
+
+/// Variables each write declares for itself. In a transaction every write gets its own copy
+/// (`$rows_0`, `$rows_1`, …) so one cannot overwrite another's.
+const PER_WRITE_VARIABLES: &[&str] =
+    &["rows", "__table", "__key", "__data", "__by", "__before", "__changed", "__audit_model", "__audit_table", "__audit_operation"];
+
+fn is_per_write(name: &str) -> bool {
+    PER_WRITE_VARIABLES.contains(&name)
+        || (name.len() > 1 && name.starts_with('d') && name[1..].bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+/// `text` with every per-write variable (`$rows`, `$__table`, `$d0`, …) renamed by `suffix`.
+fn rename_variables(text: &str, suffix: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 16);
+    let mut rest = text;
+    while let Some(dollar) = rest.find('$') {
+        out.push_str(&rest[..=dollar]);
+        rest = &rest[dollar + 1..];
+        let end = rest.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(rest.len());
+        let (name, tail) = rest.split_at(end);
+        out.push_str(name);
+        if is_per_write(name) {
+            out.push_str(suffix);
+        }
+        rest = tail;
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Several writes, applied together or not at all. Payload:
+/// `{ "ops": [ { "op": "create" | "update" | "delete" | "increment", "model": …, … }, … ] }`
+/// where each entry has the fields the single command takes. Every write is checked against the
+/// plugin's capabilities and model grants exactly as when sent alone, and each leaves its own
+/// audit row (and chatter entries), all inside the one transaction. The answer's `data` lists
+/// each write's record, in order.
+pub async fn db_transaction(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
+    ctx.require_cap("db::transaction")?;
+    let ops = payload
+        .get("ops")
+        .and_then(JsonValue::as_array)
+        .ok_or_else(|| HostError::InvalidPayload("`ops` must be a list of writes".into()))?;
+    if ops.is_empty() || ops.len() > MAX_TRANSACTION_OPS {
+        return Err(HostError::InvalidPayload(format!(
+            "a transaction holds 1 to {MAX_TRANSACTION_OPS} writes, not {}",
+            ops.len()
+        )));
+    }
+
+    let mut plans = Vec::with_capacity(ops.len());
+    for (index, op) in ops.iter().enumerate() {
+        let name = op.get("op").and_then(JsonValue::as_str).unwrap_or_default();
+        let plan = match name {
+            "create" => plan_create(ctx, op),
+            "update" => plan_update(ctx, op),
+            "delete" => plan_delete(ctx, op),
+            "increment" => plan_increment(ctx, op),
+            other => Err(HostError::InvalidPayload(format!(
+                "write {index}: `op` must be create, update, delete or increment, not `{other}`"
+            ))),
+        }
+        .map_err(|error| match error {
+            HostError::InvalidPayload(message) => HostError::InvalidPayload(format!("write {index}: {message}")),
+            other => other,
+        })?;
+        plans.push(plan);
+    }
+
+    let mut statements = String::from("BEGIN TRANSACTION;\n");
+    let mut binds: Vec<(String, JsonValue)> = Vec::new();
+    let mut statement_count = 1; // BEGIN
+    let mut returned = Vec::with_capacity(plans.len());
+    for (index, plan) in plans.iter().enumerate() {
+        let suffix = format!("_{index}");
+        let before = rename_variables(&plan.extra.before.join("\n"), &suffix);
+        let after = rename_variables(&plan.extra.after.join("\n"), &suffix);
+        let body = rename_variables(&plan.body, &suffix);
+        let ids = rename_variables(&plan.ids, &suffix);
+        statements.push_str(&format!(
+            "{before}\n{body}\n\
+             CREATE data_access SET request_id = $__audit_request, actor_type = $__audit_actor_type, \
+             actor_id = $__audit_actor_id, plugin = $__audit_plugin, function_name = $__audit_function, \
+             model = $__audit_model{suffix}, table_name = $__audit_table{suffix}, \
+             operation = $__audit_operation{suffix}, record_ids = {ids}, \
+             record_count = array::len($rows{suffix}), ip = $__audit_ip;\n{after}\n"
+        ));
+        statement_count += plan.extra.before.len() + 2 + plan.extra.after.len();
+        returned.push(format!("$rows{suffix}"));
+        for (name, value) in &plan.binds {
+            let name = if is_per_write(name) { format!("{name}{suffix}") } else { name.clone() };
+            binds.push((name, value.clone()));
+        }
+        binds.push((format!("__audit_model{suffix}"), JsonValue::String(plan.access.model.clone())));
+        binds.push((format!("__audit_table{suffix}"), JsonValue::String(plan.access.table.to_string())));
+        binds.push((format!("__audit_operation{suffix}"), JsonValue::String(plan.access.operation.to_string())));
+    }
+    statements.push_str(&format!("RETURN [{}];\nCOMMIT TRANSACTION;", returned.join(", ")));
+
+    let mut query = ctx
+        .db
+        .query(statements)
+        .bind(("__audit_request", ctx.audit.request_id.clone()))
+        .bind(("__audit_actor_type", ctx.audit.actor.kind().to_string()))
+        .bind(("__audit_actor_id", ctx.audit.actor.id().map(str::to_string)))
+        .bind(("__audit_plugin", ctx.plugin_name.clone()))
+        .bind(("__audit_function", ctx.function.clone()))
+        .bind(("__audit_ip", ctx.audit.ip.clone()))
+        .bind(("__cm_author", ctx.audit.actor.id().unwrap_or("system").to_string()));
+    for (name, value) in binds {
+        query = query.bind((name, value));
+    }
+    let mut response = query.await?.check()?;
+    let results: Vec<Vec<JsonValue>> = response.take(statement_count)?;
+    let data: Vec<JsonValue> = results
+        .into_iter()
+        .zip(&plans)
+        .map(|(rows, plan)| rows.into_iter().next().map_or(JsonValue::Null, |row| decode(plan.grant, row)))
+        .collect();
+    Ok(serde_json::json!({ "ok": true, "data": data }))
 }
 
 fn strip_table_prefix<'a>(id: &'a str, table: &str) -> &'a str {
@@ -522,6 +659,19 @@ fn strip_table_prefix<'a>(id: &'a str, table: &str) -> &'a str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_write_in_a_transaction_gets_its_own_variables() {
+        let text = "LET $rows = (UPDATE type::record($__table, $__key) SET a = $d0, b = $d12 RETURN AFTER); \
+                    $rows[0].id; $__cm_author; $__audit_plugin; |$k| $__before[$k]; $d; $data";
+        let renamed = rename_variables(text, "_3");
+        assert!(renamed.contains("LET $rows_3 = (UPDATE type::record($__table_3, $__key_3) SET a = $d0_3, b = $d12_3"));
+        assert!(renamed.contains("$rows_3[0].id"));
+        assert!(renamed.contains("$__before_3[$k]"), "lambda variables are not renamed");
+        for shared in ["$__cm_author;", "$__audit_plugin;", "$d;", "$data"] {
+            assert!(renamed.contains(shared), "{shared} must stay as it is: {renamed}");
+        }
+    }
 
     #[test]
     fn field_and_table_names_must_be_plain_identifiers() {

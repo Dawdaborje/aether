@@ -229,8 +229,8 @@ fn register_log(engine: &mut Engine) {
     engine.register_static_module("log", log_module.into());
 }
 
-/// `db::get`, `db::find`, `db::create`, `db::update`, `db::delete`, `notify::send`,
-/// `events::emit` and `context::get`, each the kernel command of the same name.
+/// The kernel commands scripts may call, each bound under the module named like the command
+/// (`db::`, `cache::`, `storage::`, `http::`, `notify::`, `events::`, `context::`).
 fn register_commands(engine: &mut Engine, host: &Arc<Host>) {
     let mut db = Module::new();
     let h = host.clone();
@@ -272,7 +272,138 @@ fn register_commands(engine: &mut Engine, host: &Arc<Host>) {
     db.set_native_fn("delete", move |model: &str, id: &str| {
         h.data("db::delete", serde_json::json!({ "model": model, "id": id }))
     });
+    let h = host.clone();
+    db.set_native_fn("transaction", move |ops: rhai::Array| {
+        let ops = to_json(&Dynamic::from_array(ops))?;
+        h.data("db::transaction", serde_json::json!({ "ops": ops }))
+    });
     engine.register_static_module("db", db.into());
+
+    let mut cache = Module::new();
+    let h = host.clone();
+    cache.set_native_fn("get", move |key: &str| h.data("cache::get", serde_json::json!({ "key": key })));
+    let h = host.clone();
+    cache.set_native_fn("set", move |key: &str, value: Dynamic| {
+        let value = to_json(&value)?;
+        h.data("cache::set", serde_json::json!({ "key": key, "value": value }))
+    });
+    let h = host.clone();
+    cache.set_native_fn("set", move |key: &str, value: Dynamic, ttl_secs: i64| {
+        let value = to_json(&value)?;
+        h.data("cache::set", serde_json::json!({ "key": key, "value": value, "ttl_secs": ttl_secs }))
+    });
+    let h = host.clone();
+    cache.set_native_fn("invalidate", move |key: &str| {
+        h.data("cache::invalidate", serde_json::json!({ "key": key }))
+    });
+    let h = host.clone();
+    cache.set_native_fn("invalidate_prefix", move |prefix: &str| {
+        h.data("cache::invalidate", serde_json::json!({ "prefix": prefix }))
+    });
+    let h = host.clone();
+    cache.set_native_fn("clear", move || h.data("cache::clear", Value::Null));
+    engine.register_static_module("cache", cache.into());
+
+    let mut storage = Module::new();
+    let h = host.clone();
+    storage.set_native_fn("write", move |key: &str, text: &str| {
+        h.data("storage::write", serde_json::json!({ "key": key, "text": text }))
+    });
+    let h = host.clone();
+    storage.set_native_fn("write_base64", move |key: &str, data: &str| {
+        h.data("storage::write", serde_json::json!({ "key": key, "base64": data }))
+    });
+    let h = host.clone();
+    storage.set_native_fn("read", move |key: &str| {
+        let answer = h.data("storage::read", serde_json::json!({ "key": key }))?;
+        Ok(answer.try_cast::<Map>().and_then(|map| map.get("text").cloned()).unwrap_or(Dynamic::UNIT))
+    });
+    let h = host.clone();
+    storage.set_native_fn("read_base64", move |key: &str| {
+        let answer = h.data("storage::read", serde_json::json!({ "key": key, "encoding": "base64" }))?;
+        Ok(answer.try_cast::<Map>().and_then(|map| map.get("base64").cloned()).unwrap_or(Dynamic::UNIT))
+    });
+    let h = host.clone();
+    storage.set_native_fn("delete", move |key: &str| h.data("storage::delete", serde_json::json!({ "key": key })));
+    let h = host.clone();
+    storage.set_native_fn("list", move || h.data("storage::list", Value::Null));
+    let h = host.clone();
+    storage.set_native_fn("list", move |prefix: &str| h.data("storage::list", serde_json::json!({ "prefix": prefix })));
+    engine.register_static_module("storage", storage.into());
+
+    let mut plugins = Module::new();
+    let h = host.clone();
+    plugins.set_native_fn("invoke", move |plugin: &str, function: &str, input: Dynamic| {
+        let input = to_json(&input)?;
+        h.data("plugins::call", serde_json::json!({ "plugin": plugin, "function": function, "input": input }))
+    });
+    let h = host.clone();
+    plugins.set_native_fn("invoke", move |plugin: &str, function: &str| {
+        h.data("plugins::call", serde_json::json!({ "plugin": plugin, "function": function }))
+    });
+    engine.register_static_module("plugins", plugins.into());
+
+    let mut communication = Module::new();
+    let h = host.clone();
+    communication.set_native_fn("send", move |message: Map| {
+        let payload = to_json(&Dynamic::from_map(message))?;
+        h.data("communication::send", payload)
+    });
+    engine.register_static_module("communication", communication.into());
+
+    let mut scheduler = Module::new();
+    let h = host.clone();
+    scheduler.set_native_fn("enqueue", move |function: &str| {
+        h.data("scheduler::enqueue", serde_json::json!({ "function": function }))
+    });
+    let h = host.clone();
+    scheduler.set_native_fn("enqueue", move |function: &str, payload: Map| {
+        let payload = to_json(&Dynamic::from_map(payload))?;
+        h.data("scheduler::enqueue", serde_json::json!({ "function": function, "payload": payload }))
+    });
+    let h = host.clone();
+    scheduler.set_native_fn("enqueue", move |function: &str, payload: Map, options: Map| {
+        let mut request = to_json(&Dynamic::from_map(options))?;
+        if let Value::Object(object) = &mut request {
+            object.insert("function".into(), Value::String(function.to_string()));
+            object.insert("payload".into(), to_json(&Dynamic::from_map(payload))?);
+        }
+        h.data("scheduler::enqueue", request)
+    });
+    let h = host.clone();
+    scheduler.set_native_fn("job", move |id: &str| h.data("scheduler::job", serde_json::json!({ "id": id })));
+    let h = host.clone();
+    scheduler.set_native_fn("cancel_job", move |id: &str| h.data("scheduler::cancel_job", serde_json::json!({ "id": id })));
+    let h = host.clone();
+    scheduler.set_native_fn("register", move |task: Map| {
+        let payload = to_json(&Dynamic::from_map(task))?;
+        h.data("scheduler::register", payload)
+    });
+    let h = host.clone();
+    scheduler.set_native_fn("cancel", move |name: &str| h.data("scheduler::cancel", serde_json::json!({ "name": name })));
+    engine.register_static_module("scheduler", scheduler.into());
+
+    let mut http = Module::new();
+    let h = host.clone();
+    http.set_native_fn("request", move |request: Map| {
+        let payload = to_json(&Dynamic::from_map(request))?;
+        h.data("http::request", payload)
+    });
+    let h = host.clone();
+    http.set_native_fn("get", move |url: &str| {
+        h.data("http::request", serde_json::json!({ "method": "GET", "url": url }))
+    });
+    let h = host.clone();
+    http.set_native_fn("post", move |url: &str, body: Dynamic| {
+        let body = to_json(&body)?;
+        // Text goes as it is; maps and arrays are sent as JSON.
+        let payload = match body {
+            Value::String(text) => serde_json::json!({ "method": "POST", "url": url, "body": text }),
+            other => serde_json::json!({ "method": "POST", "url": url, "json": other }),
+        };
+        h.data("http::request", payload)
+    });
+    engine.register_static_module("http", http.into());
 
     let mut notify = Module::new();
     let h = host.clone();
@@ -352,5 +483,136 @@ mod tests {
         assert!(user.to_string().starts_with(USER_ERROR_PREFIX));
         let internal = describe(*runtime_error("db exploded".into()));
         assert!(matches!(internal, ScriptError::Failed(_)));
+    }
+
+    #[tokio::test]
+    async fn plugins_invoke_reaches_the_kernel_command() -> Result<(), Box<dyn std::error::Error>> {
+        // `call` is a reserved word in Rhai, so the script-side name is `invoke`. This test host
+        // has no plugin caller, so the kernel's own refusal (not a compile error) must come back.
+        let result = run_script(
+            r#"fn run() {
+                let outcome = "";
+                try { plugins::invoke("dep", "double", #{ n: 1 }); outcome = "called"; } catch (e) { outcome = "" + e; }
+                outcome
+            }"#,
+            &["plugins::call"],
+        )
+        .await?;
+        assert!(result.as_str().is_some_and(|text| text.contains("dependencies")), "{result}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn messaging_and_background_commands_are_bound_and_checked() -> Result<(), Box<dyn std::error::Error>> {
+        // These reach the kernel: without the capability each is refused and the script can catch it.
+        let result = run_script(
+            r#"fn run() {
+                let refused = [];
+                try { communication::send(#{ type: "sms", to: "+2348012345678", text: "hi" }); } catch (e) { refused.push("send"); }
+                try { scheduler::enqueue("export"); } catch (e) { refused.push("enqueue"); }
+                try { scheduler::enqueue("export", #{ n: 1 }); } catch (e) { refused.push("enqueue_payload"); }
+                try { scheduler::enqueue("export", #{ n: 1 }, #{ delay_secs: 60 }); } catch (e) { refused.push("enqueue_options"); }
+                try { scheduler::job("x"); } catch (e) { refused.push("job"); }
+                try { scheduler::cancel_job("x"); } catch (e) { refused.push("cancel_job"); }
+                try { scheduler::register(#{ name: "t", function: "f", every: "5m" }); } catch (e) { refused.push("register"); }
+                try { scheduler::cancel("t"); } catch (e) { refused.push("cancel"); }
+                refused
+            }"#,
+            &[],
+        )
+        .await?;
+        assert_eq!(
+            result,
+            serde_json::json!(["send", "enqueue", "enqueue_payload", "enqueue_options", "job", "cancel_job", "register", "cancel"])
+        );
+        Ok(())
+    }
+
+    /// Run `source`'s function `run` with a test host that holds `caps`, on a blocking thread
+    /// the way the runtime does.
+    async fn run_script(source: &str, caps: &[&str]) -> Result<Value, ScriptError> {
+        use crate::kernel::host::test_support::{dummy_ctx, in_memory_media, with_services};
+        let script = ScriptProgram::compile(source)?;
+        let host = with_services(dummy_ctx(caps), in_memory_media());
+        let runtime = tokio::runtime::Handle::current();
+        tokio::task::spawn_blocking(move || script.call("run", Value::Null, host, runtime))
+            .await
+            .map_err(|error| ScriptError::Failed(error.to_string()))?
+    }
+
+    #[tokio::test]
+    async fn scripts_can_use_the_cache() -> Result<(), Box<dyn std::error::Error>> {
+        let result = run_script(
+            r#"fn run() {
+                cache::set("k", #{ n: 1, tags: ["a"] });
+                cache::set("short", 5, 60);
+                let seen = cache::get("k");
+                let gone = cache::get("missing");
+                cache::invalidate("short");
+                #{ n: seen.n, tag: seen.tags[0], gone: gone, cleared: cache::clear().removed }
+            }"#,
+            &["cache::get", "cache::set", "cache::invalidate", "cache::clear"],
+        )
+        .await?;
+        assert_eq!(result, serde_json::json!({ "n": 1, "tag": "a", "gone": null, "cleared": 1 }));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn scripts_can_use_storage() -> Result<(), Box<dyn std::error::Error>> {
+        let result = run_script(
+            r#"fn run() {
+                storage::write("notes/a.txt", "hello");
+                storage::write_base64("bin", "AAEC");
+                let listed = storage::list("notes");
+                #{ text: storage::read("notes/a.txt"), bin: storage::read_base64("bin"),
+                   listed: listed.len(), first: listed[0].key, all: storage::list().len() }
+            }"#,
+            &["storage::read", "storage::write", "storage::list"],
+        )
+        .await?;
+        assert_eq!(
+            result,
+            serde_json::json!({ "text": "hello", "bin": "AAEC", "listed": 1, "first": "notes/a.txt", "all": 2 })
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_refused_command_can_be_caught_by_the_script() -> Result<(), Box<dyn std::error::Error>> {
+        // No capability: the kernel refuses, the script sees an error it can handle.
+        let result = run_script(
+            r#"fn run() {
+                let outcome = "allowed";
+                try { cache::get("k"); } catch (e) { outcome = "refused"; }
+                outcome
+            }"#,
+            &[],
+        )
+        .await?;
+        assert_eq!(result, "refused");
+
+        // A host the plugin did not list is refused even with the capability.
+        let result = run_script(
+            r#"fn run() {
+                let outcome = "called";
+                try { http::get("https://example.com/"); } catch (e) { outcome = e; }
+                outcome
+            }"#,
+            &["http::request"],
+        )
+        .await?;
+        assert!(result.as_str().is_some_and(|text| text.contains("http_hosts")), "{result}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unimplemented_commands_are_not_bound_in_scripts() {
+        // Not bound is a compile-time-visible gap, not a silent no-op: calling one fails.
+        for call in ["bridge::call(#{})", "events::subscribe(#{})"] {
+            let source = format!("fn run() {{ {call} }}");
+            let result = run_script(&source, &["bridge::call", "events::subscribe"]).await;
+            assert!(result.is_err(), "{call}");
+        }
     }
 }

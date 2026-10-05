@@ -57,7 +57,8 @@ fn viewer_of(identity: &Identity) -> Viewer {
     match &identity.actor {
         Actor::User(id) => Viewer { actor: Some(id.clone()), member: true },
         Actor::Visitor(id) => Viewer { actor: Some(id.clone()), member: false },
-        Actor::Anonymous => Viewer { actor: None, member: false },
+        // The kernel's own jobs never hold a stream open; treat one like a stranger if it did.
+        Actor::Anonymous | Actor::System(_) => Viewer { actor: None, member: false },
     }
 }
 

@@ -1,0 +1,9 @@
+[package]
+name = "smtp"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+aether_communication = { path = "../../../facets/communication" }
+async-trait.workspace = true
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1", "tokio1-rustls-tls", "hostname"] }

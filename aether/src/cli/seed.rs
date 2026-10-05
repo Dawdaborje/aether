@@ -69,6 +69,9 @@ struct SettingsItemSeed {
     s_value: Value,
     description: Option<String>,
     long_description: Option<String>,
+    /// An API key or password: stored encrypted and never shown again.
+    #[serde(default)]
+    secret: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -155,6 +158,7 @@ UPSERT type::record("gl_settings_items", $id) CONTENT {
     label: $label,
     s_key: $s_key,
     s_value: $s_value,
+    is_secret: $is_secret,
     description: $description,
     long_description: $long_description,
     date_created: time::now(),
@@ -172,6 +176,7 @@ UPSERT type::record("gl_settings_group_items", $relation_id) CONTENT {
             .bind(("label", item.label.clone()))
             .bind(("s_key", item.s_key.clone()))
             .bind(("s_value", item.s_value.clone()))
+            .bind(("is_secret", item.secret))
             .bind(("description", item.description.clone()))
             .bind(("long_description", item.long_description.clone()))
             .bind(("relation_id", format!("{}_{}", group.id, item.id)))

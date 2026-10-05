@@ -3,6 +3,7 @@ use serde_json::Value as JsonValue;
 use surrealdb::{Surreal, engine::remote::ws::Client, types::RecordId, types::SurrealValue};
 use thiserror::Error;
 
+use crate::secrets::SecretBox;
 use crate::state::AppState;
 use crate::tenancy::OrgRef;
 
@@ -12,6 +13,10 @@ pub enum SettingsError {
     Db(#[from] surrealdb::Error),
     #[error("setting `{0}` not found")]
     NotFound(String),
+    #[error("{0}")]
+    Invalid(String),
+    #[error(transparent)]
+    Secrets(#[from] crate::secrets::SecretError),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,6 +27,12 @@ pub struct SettingValue {
     pub source: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub org: Option<String>,
+    /// A secret setting (API key, password): `value` is blank here whatever is stored; see
+    /// `has_value` for whether one is set.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub secret: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub has_value: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,6 +46,11 @@ pub struct CatalogItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub long_description: Option<String>,
     pub value_type: String,
+    /// A secret setting: `value` is blank and `has_value` says whether one is saved.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub secret: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub has_value: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,6 +71,7 @@ pub struct CatalogGroup {
 struct SettingRow {
     s_key: String,
     s_value: JsonValue,
+    is_secret: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, SurrealValue)]
@@ -74,6 +91,7 @@ struct ItemMetaRow {
     s_value: JsonValue,
     description: Option<String>,
     long_description: Option<String>,
+    is_secret: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, SurrealValue)]
@@ -114,21 +132,24 @@ fn infer_value_type(value: &JsonValue) -> String {
     }
 }
 
-/// Read a setting key: global first, then org override if `org` is set and has a row.
-pub async fn get_setting(
-    state: &AppState,
-    key: &str,
-    org: Option<&OrgRef>,
-) -> Result<Option<SettingValue>, SettingsError> {
+/// A setting as stored: a secret's value is still encrypted.
+struct Stored {
+    value: SettingValue,
+    secret: bool,
+}
+
+/// Read a setting key: the organization's own value if it has one, else the global one.
+async fn lookup(state: &AppState, key: &str, org: Option<&OrgRef>) -> Result<Option<Stored>, SettingsError> {
     let core = state.core().await?;
 
     let mut response = core
-        .query("SELECT s_key, s_value FROM gl_settings_items WHERE s_key = $key LIMIT 1;")
+        .query("SELECT s_key, s_value, is_secret FROM gl_settings_items WHERE s_key = $key LIMIT 1;")
         .bind(("key", key.to_string()))
         .await?
         .check()?;
     let global_rows: Vec<SettingRow> = response.take(0)?;
     let global = global_rows.into_iter().next();
+    let secret = global.as_ref().and_then(|row| row.is_secret).unwrap_or(false);
 
     if let Some(org) = org {
         match state.org(&org.db_name).await {
@@ -138,29 +159,143 @@ pub async fn get_setting(
             ),
             Ok(org_db) => {
                 let mut org_response = org_db
-                    .query("SELECT s_key, s_value FROM settings_items WHERE s_key = $key LIMIT 1;")
+                    .query("SELECT s_key, s_value, is_secret FROM settings_items WHERE s_key = $key LIMIT 1;")
                     .bind(("key", key.to_string()))
                     .await?
                     .check()?;
                 let org_rows: Vec<SettingRow> = org_response.take(0)?;
                 if let Some(row) = org_rows.into_iter().next() {
-                    return Ok(Some(SettingValue {
-                        key: row.s_key,
-                        value: row.s_value,
-                        source: "org".into(),
-                        org: Some(org.slug.clone()),
+                    return Ok(Some(Stored {
+                        secret: secret || row.is_secret.unwrap_or(false),
+                        value: SettingValue {
+                            key: row.s_key,
+                            value: row.s_value,
+                            source: "org".into(),
+                            org: Some(org.slug.clone()),
+                            secret: false,
+                            has_value: false,
+                        },
                     }));
                 }
             }
         }
     }
 
-    Ok(global.map(|row| SettingValue {
-        key: row.s_key,
-        value: row.s_value,
-        source: "global".into(),
-        org: None,
+    Ok(global.map(|row| Stored {
+        secret,
+        value: SettingValue {
+            key: row.s_key,
+            value: row.s_value,
+            source: "global".into(),
+            org: None,
+            secret: false,
+            has_value: false,
+        },
     }))
+}
+
+fn is_blank(value: &JsonValue) -> bool {
+    matches!(value, JsonValue::Null) || value.as_str().is_some_and(str::is_empty)
+}
+
+/// A secret's value as it may be shown: blank, with a flag saying whether one is saved.
+fn masked(mut stored: Stored) -> SettingValue {
+    if stored.secret {
+        stored.value.has_value = !is_blank(&stored.value.value);
+        stored.value.value = JsonValue::String(String::new());
+        stored.value.secret = true;
+    }
+    stored.value
+}
+
+/// Read a setting key for display or the API: the organization's value if it has one, else the
+/// global one. A secret setting's value is never returned (see [`get_setting_plain`]).
+pub async fn get_setting(
+    state: &AppState,
+    key: &str,
+    org: Option<&OrgRef>,
+) -> Result<Option<SettingValue>, SettingsError> {
+    Ok(lookup(state, key, org).await?.map(masked))
+}
+
+/// The value the kernel itself uses, with secrets decrypted. Only for server-side code (bridges,
+/// the scheduler): never return it from an API. A blank or missing value is `None`.
+pub async fn get_setting_plain(
+    state: &AppState,
+    key: &str,
+    org: Option<&OrgRef>,
+) -> Result<Option<JsonValue>, SettingsError> {
+    let Some(stored) = lookup(state, key, org).await? else { return Ok(None) };
+    let value = stored.value.value;
+    if is_blank(&value) {
+        return Ok(None);
+    }
+    if stored.secret {
+        let Some(text) = value.as_str() else { return Ok(None) };
+        // A value saved before the setting became secret is still plain text.
+        if !SecretBox::is_encrypted(text) {
+            return Ok(Some(value));
+        }
+        let plain = state.secrets().and_then(|secrets| secrets.decrypt(text))?;
+        return Ok(Some(JsonValue::String(plain)));
+    }
+    Ok(Some(value))
+}
+
+/// Where to look for a setting.
+#[derive(Debug, Clone, Copy)]
+pub enum Scope<'a> {
+    /// Only the global value.
+    Global,
+    /// Only this organization's own value (no fallback to the global one).
+    Org(&'a OrgRef),
+}
+
+/// A setting's value from exactly one place, decrypted if it is a secret, or `None` when it is
+/// not set there (or blank). For server-side code that must know *where* a value came from.
+pub async fn get_setting_plain_in(
+    state: &AppState,
+    key: &str,
+    scope: Scope<'_>,
+) -> Result<Option<JsonValue>, SettingsError> {
+    let (row, global_secret) = match scope {
+        Scope::Global => {
+            let core = state.core().await?;
+            let mut response = core
+                .query("SELECT s_key, s_value, is_secret FROM gl_settings_items WHERE s_key = $key LIMIT 1;")
+                .bind(("key", key.to_string()))
+                .await?
+                .check()?;
+            (response.take::<Vec<SettingRow>>(0)?.into_iter().next(), false)
+        }
+        Scope::Org(org) => {
+            let core = state.core().await?;
+            let mut meta = core
+                .query("SELECT VALUE is_secret FROM gl_settings_items WHERE s_key = $key LIMIT 1;")
+                .bind(("key", key.to_string()))
+                .await?
+                .check()?;
+            let global_secret = meta.take::<Option<Option<bool>>>(0)?.flatten().unwrap_or(false);
+            let org_db = state.org(&org.db_name).await?;
+            let mut response = org_db
+                .query("SELECT s_key, s_value, is_secret FROM settings_items WHERE s_key = $key LIMIT 1;")
+                .bind(("key", key.to_string()))
+                .await?
+                .check()?;
+            (response.take::<Vec<SettingRow>>(0)?.into_iter().next(), global_secret)
+        }
+    };
+    let Some(row) = row else { return Ok(None) };
+    if is_blank(&row.s_value) {
+        return Ok(None);
+    }
+    let secret = global_secret || row.is_secret.unwrap_or(false);
+    match (secret, row.s_value.as_str()) {
+        (true, Some(text)) if SecretBox::is_encrypted(text) => {
+            Ok(Some(JsonValue::String(state.secrets()?.decrypt(text)?)))
+        }
+        _ => Ok(Some(row.s_value)),
+    }
 }
 
 pub async fn get_effective_settings(
@@ -199,7 +334,7 @@ pub async fn list_catalog(
     let mut items_resp = core
         .query(
             r#"
-            SELECT id, label, s_key, s_value, description, long_description
+            SELECT id, label, s_key, s_value, description, long_description, is_secret
             FROM gl_settings_items;
             "#,
         )
@@ -238,14 +373,23 @@ pub async fn list_catalog(
                 (item.s_value.clone(), "global".to_string())
             };
 
+            let secret = item.is_secret.unwrap_or(false);
+            let has_value = secret && !is_blank(&value);
+            let (value, value_type) = if secret {
+                (JsonValue::String(String::new()), "secret".to_string())
+            } else {
+                (value.clone(), infer_value_type(&value))
+            };
             catalog_items.push(CatalogItem {
                 key: item.s_key.clone(),
                 label: item.label.clone(),
-                value: value.clone(),
+                value,
                 source,
                 description: item.description.clone(),
                 long_description: item.long_description.clone(),
-                value_type: infer_value_type(&value),
+                value_type,
+                secret,
+                has_value,
             });
         }
 
@@ -266,39 +410,64 @@ pub async fn list_catalog(
 }
 
 /// Persist a setting value. With org context → org `settings_items`; else global.
+///
+/// A secret setting is encrypted before it is stored and the answer never repeats it. Saving a
+/// blank secret for an organization removes the organization's value, so the global one applies
+/// again.
 pub async fn set_setting(
     state: &AppState,
     key: &str,
     value: JsonValue,
     org: Option<&OrgRef>,
 ) -> Result<SettingValue, SettingsError> {
-    if let Some(org) = org {
-        let core = state.core().await?;
-        let mut meta = core
-            .query(
-                r#"
-                SELECT label, description, long_description FROM gl_settings_items
-                WHERE s_key = $key LIMIT 1;
-                "#,
-            )
-            .bind(("key", key.to_string()))
-            .await?
-            .check()?;
-        #[derive(Debug, Deserialize, SurrealValue)]
-        struct Meta {
-            label: String,
-            description: Option<String>,
-            long_description: Option<String>,
-        }
-        let meta_rows: Vec<Meta> = meta.take(0)?;
-        let meta = meta_rows
-            .into_iter()
-            .next()
-            .ok_or_else(|| SettingsError::NotFound(key.into()))?;
+    #[derive(Debug, Deserialize, SurrealValue)]
+    struct Meta {
+        label: String,
+        description: Option<String>,
+        long_description: Option<String>,
+        is_secret: Option<bool>,
+    }
+    let core = state.core().await?;
+    let mut meta = core
+        .query("SELECT label, description, long_description, is_secret FROM gl_settings_items WHERE s_key = $key LIMIT 1;")
+        .bind(("key", key.to_string()))
+        .await?
+        .check()?;
+    let meta = meta
+        .take::<Vec<Meta>>(0)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| SettingsError::NotFound(key.into()))?;
+    let secret = meta.is_secret.unwrap_or(false);
 
+    let stored = if secret {
+        let text = value
+            .as_str()
+            .ok_or_else(|| SettingsError::Invalid(format!("`{key}` is a secret and must be text")))?;
+        if text.is_empty() {
+            JsonValue::String(String::new())
+        } else {
+            JsonValue::String(state.secrets()?.encrypt(text))
+        }
+    } else {
+        value
+    };
+
+    if let Some(org) = org {
         let org_db = state.org(&org.db_name).await?;
+        if secret && is_blank(&stored) {
+            org_db
+                .query("DELETE settings_items WHERE s_key = $key;")
+                .bind(("key", key.to_string()))
+                .await?
+                .check()?;
+            return lookup(state, key, Some(org))
+                .await?
+                .map(masked)
+                .ok_or_else(|| SettingsError::NotFound(key.into()));
+        }
         let mut existing = org_db
-            .query("SELECT s_key, s_value FROM settings_items WHERE s_key = $key LIMIT 1;")
+            .query("SELECT s_key, s_value, is_secret FROM settings_items WHERE s_key = $key LIMIT 1;")
             .bind(("key", key.to_string()))
             .await?
             .check()?;
@@ -311,43 +480,46 @@ pub async fn set_setting(
                         label = $label,
                         s_key = $key,
                         s_value = $value,
+                        is_secret = $secret,
                         description = $description,
                         long_description = $long_description;
                     "#,
                 )
                 .bind(("key", key.to_string()))
                 .bind(("label", meta.label))
-                .bind(("value", value.clone()))
+                .bind(("value", stored.clone()))
+                .bind(("secret", secret))
                 .bind(("description", meta.description))
                 .bind(("long_description", meta.long_description))
                 .await?
                 .check()?;
         } else {
             org_db
-                .query("UPDATE settings_items SET s_value = $value WHERE s_key = $key;")
+                .query("UPDATE settings_items SET s_value = $value, is_secret = $secret WHERE s_key = $key;")
                 .bind(("key", key.to_string()))
-                .bind(("value", value.clone()))
+                .bind(("value", stored.clone()))
+                .bind(("secret", secret))
                 .await?
                 .check()?;
         }
 
-        return Ok(SettingValue {
-            key: key.into(),
-            value,
-            source: "org".into(),
-            org: Some(org.slug.clone()),
-        });
+        return Ok(masked(Stored {
+            secret,
+            value: SettingValue {
+                key: key.into(),
+                value: stored,
+                source: "org".into(),
+                org: Some(org.slug.clone()),
+                secret: false,
+                has_value: false,
+            },
+        }));
     }
 
-    let core = state.core().await?;
     let mut updated = core
-        .query(
-            r#"
-            UPDATE gl_settings_items SET s_value = $value WHERE s_key = $key RETURN AFTER;
-            "#,
-        )
+        .query("UPDATE gl_settings_items SET s_value = $value WHERE s_key = $key RETURN AFTER;")
         .bind(("key", key.to_string()))
-        .bind(("value", value.clone()))
+        .bind(("value", stored.clone()))
         .await?
         .check()?;
     let rows: Vec<SettingRow> = updated.take(0)?;
@@ -355,12 +527,17 @@ pub async fn set_setting(
         return Err(SettingsError::NotFound(key.into()));
     }
 
-    Ok(SettingValue {
-        key: key.into(),
-        value,
-        source: "global".into(),
-        org: None,
-    })
+    Ok(masked(Stored {
+        secret,
+        value: SettingValue {
+            key: key.into(),
+            value: stored,
+            source: "global".into(),
+            org: None,
+            secret: false,
+            has_value: false,
+        },
+    }))
 }
 
 /// Convenience against a raw Surreal handle (e.g. CLI seeds).
@@ -397,6 +574,8 @@ pub async fn get_setting_on_db(
                 value: row.s_value,
                 source: "org".into(),
                 org: Some(org.slug.clone()),
+                secret: false,
+                has_value: false,
             }));
         }
         db.use_db(core_db).await?;
@@ -407,5 +586,7 @@ pub async fn get_setting_on_db(
         value: row.s_value,
         source: "global".into(),
         org: None,
+        secret: false,
+        has_value: false,
     }))
 }

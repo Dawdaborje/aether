@@ -931,6 +931,7 @@ mod tests {
             authors: None,
             categories: None,
             dependencies: None,
+            schedules: None,
             workspace: None,
             kind: None,
             artifact_path: Some(format!("plugins/{name}/{version}/plugin.wasm")),

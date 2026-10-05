@@ -55,6 +55,8 @@ pub struct PluginDbDefinition {
     pub authors: Option<Vec<PluginDbAuthor>>,
     pub categories: Option<Vec<PluginDbCategory>>,
     pub dependencies: Option<Vec<String>>,
+    /// The plugin's `[[schedule]]` entries, copied into an organization when it installs it.
+    pub schedules: Option<Vec<serde_json::Value>>,
     pub workspace: Option<String>,
     pub kind: Option<String>,
     pub artifact_path: Option<String>,
@@ -97,6 +99,7 @@ impl From<PluginDbDefinition> for PluginDefinition {
             public_functions: Vec::new(),
             public_capabilities: Vec::new(),
             public_access_models: Vec::new(),
+            http_hosts: Vec::new(),
             workspace: plugin.workspace,
             kind: plugin.kind,
             is_builtin: plugin.is_builtin,

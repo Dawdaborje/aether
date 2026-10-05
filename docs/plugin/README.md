@@ -48,6 +48,14 @@ Business Source License 1.1 `LICENSE` (non-production use only; production use n
 Pages are XML files under `pages/`; see [Visitors, public pages and the audit
 trail](../architecture/access.md) and [Pages and data](pages.md) for showing a plugin's data.
 
+What a plugin may ask the kernel to do (database, cache, files, web APIs, other plugins) is
+described in [Kernel commands](commands.md); small script plugins in [Rhai plugins](rhai.md).
+Two `plugin.toml` keys control reach beyond the plugin's own data: `http_hosts` (outside hosts
+`http::request` may call) and `dependencies` (plugins it may call with `plugins::call`).
+`[[schedule]]` entries declare recurring background tasks; see
+[the scheduler](../architecture/scheduler.md). Sending email and SMS is one command,
+[`communication::send`](../architecture/communication.md).
+
 A plugin becomes a tile on the Apps launcher by declaring `[app]`; see
 [Organizations, switching, and the Apps launcher](../architecture/organizations.md).
 A page can name its layout with `layout="bare"` on `<page>`, and a plugin can be

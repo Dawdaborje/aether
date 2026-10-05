@@ -13,6 +13,12 @@ aether_event_bus = { path = "../event_bus" }
 aether_storage = { path = "../storage" }
 local_storage = { path = "../../bridges/storage_and_cdn/local_storage" }
 s3_storage = { path = "../../bridges/storage_and_cdn/s3_storage" }
+aether_communication = { path = "../communication" }
+smtp = { path = "../../bridges/communications/smtp" }
+resend = { path = "../../bridges/communications/resend" }
+twilio = { path = "../../bridges/communications/twilio" }
+termii = { path = "../../bridges/communications/termii" }
+africas_talking = { path = "../../bridges/communications/africas_talking" }
 # deps
 extism.workspace = true
 axum.workspace = true
@@ -35,6 +41,15 @@ bytes.workspace = true
 hmac = "0.13"
 time = "0.3"
 rhai = { version = "1.26.1", features = ["serde", "sync"] }
+base64 = "0.22"
+async-trait.workspace = true
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+url = "2"
+croner = "2"
+chrono = "0.4"
+chrono-tz = "0.10"
+aes-gcm = "0.10"
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1", "tokio1-rustls-tls", "hostname"] }
 
 [dev-dependencies]
 wat = "1"

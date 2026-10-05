@@ -105,7 +105,8 @@ async fn invoke(
         Err(error) => return identity_failure(&jar, error),
     };
 
-    let result = run_call(&state, &mut identity, &plugin_name, &function, payload).await;
+    let trail = vec![format!("{plugin_name}.{function}")];
+    let result = run_call(&state, &mut identity, &plugin_name, &function, payload, trail.clone()).await;
     let status = match &result {
         Ok(_) => StatusCode::OK,
         Err(error) => error.status,
@@ -175,8 +176,10 @@ async fn run_call(
     plugin_name: &str,
     function: &str,
     payload: Value,
+    trail: Vec<String>,
 ) -> Result<Value, CallError> {
-    let anonymous = !matches!(identity.actor, Actor::User(_));
+    // The kernel's own jobs run with the plugin's full manifest, like a member; they are not visitors.
+    let anonymous = !matches!(identity.actor, Actor::User(_) | Actor::System(_));
 
     // Installed in this organization?
     let org = state
@@ -308,7 +311,25 @@ async fn run_call(
         DbScope::new(state.namespace.clone(), identity.org_db.clone()),
         state.notifications.clone(),
         CallInfo::new(identity.audit.clone(), function),
+    )
+    .with_http_hosts(manifest.plugin.http_hosts.clone())
+    .with_plugin_calls(
+        manifest.plugin.dependencies.clone(),
+        trail,
+        std::sync::Arc::new(NestedCalls { state: state.clone(), identity: identity.clone() }),
     );
+    let host = match state.org_media(&identity.org_db) {
+        Ok(media) => host.with_services(crate::kernel::HostServices {
+            cache: state.cache.clone(),
+            media,
+            scheduler: Some(std::sync::Arc::new(crate::scheduler::AppScheduler { state: state.clone() })),
+        }),
+        Err(error) => {
+            // The plugin still runs; only its storage commands fail, and say why.
+            log::warn!("storage is unavailable for `{plugin_name}.{function}`: {error}");
+            host
+        }
+    };
 
     state
         .plugin_runtime
@@ -327,4 +348,108 @@ async fn run_call(
                 _ => CallError::new(StatusCode::BAD_GATEWAY, "plugin invocation failed"),
             }
         })
+}
+
+/// `plugins::call`: runs another plugin's function as the same actor as the request, through
+/// the same checks as a call over HTTP (installed, enabled, public functions for visitors, the
+/// target's own capabilities and model grants), and records it in the plugin call audit.
+struct NestedCalls {
+    state: AppState,
+    identity: Identity,
+}
+
+#[async_trait::async_trait]
+impl crate::kernel::PluginCaller for NestedCalls {
+    async fn call(
+        &self,
+        plugin: &str,
+        function: &str,
+        payload: Value,
+        trail: Vec<String>,
+    ) -> Result<Value, crate::kernel::HostError> {
+        let mut identity = self.identity.clone();
+        let result = run_call(&self.state, &mut identity, plugin, function, payload, trail).await;
+        let status = match &result {
+            Ok(_) => StatusCode::OK,
+            Err(error) => error.status,
+        };
+        log::info!(
+            "{} nested plugin call {plugin}.{function} in organization `{}`: {}",
+            identity.audit.request_id,
+            identity.org_db,
+            status
+        );
+        match self.state.org(&identity.org_db).await {
+            Ok(org) => {
+                if let Err(error) =
+                    record_plugin_call(&org, &identity.audit, plugin, function, status.as_u16()).await
+                {
+                    // The call already ran; the caller is told rather than left with an unrecorded one.
+                    log::error!("nested plugin call audit failed: {error}");
+                    return Err(crate::kernel::HostError::Message("audit unavailable".into()));
+                }
+            }
+            Err(error) => {
+                log::error!("nested plugin call audit failed: {error}");
+                return Err(crate::kernel::HostError::Message("audit unavailable".into()));
+            }
+        }
+        result.map_err(|error| crate::kernel::HostError::Message(error.message))
+    }
+}
+
+/// A background job's call to a plugin function failed.
+#[derive(Debug, Clone)]
+pub struct SystemCallError {
+    pub status: u16,
+    pub message: String,
+    /// Trying again cannot help (the plugin or function does not exist).
+    pub permanent: bool,
+}
+
+/// Run `plugin.function` for the scheduler: in `org_db`, as the kernel's `system:scheduler`
+/// actor, through the same checks as a call over HTTP (installed, enabled, the plugin's own
+/// capabilities and model grants). Recorded in the plugin call audit under `request_id`.
+pub async fn run_system_call(
+    state: &AppState,
+    org_db: &str,
+    plugin: &str,
+    function: &str,
+    payload: Value,
+    request_id: &str,
+) -> Result<Value, SystemCallError> {
+    let actor = Actor::System("system:scheduler".into());
+    let mut identity = Identity {
+        org_db: org_db.to_string(),
+        session: None,
+        actor: actor.clone(),
+        foreign_user: false,
+        client_ip: None,
+        audit: crate::access::audit::AuditContext {
+            actor,
+            request_id: request_id.to_string(),
+            ip: None,
+            user_agent: Some("scheduler".into()),
+        },
+        new_visitor_token: None,
+    };
+    let trail = vec![format!("{plugin}.{function}")];
+    let result = run_call(state, &mut identity, plugin, function, payload, trail).await;
+    let status = match &result {
+        Ok(_) => StatusCode::OK,
+        Err(error) => error.status,
+    };
+    match state.org(org_db).await {
+        Ok(org) => {
+            if let Err(error) = record_plugin_call(&org, &identity.audit, plugin, function, status.as_u16()).await {
+                log::error!("scheduled plugin call audit failed: {error}");
+            }
+        }
+        Err(error) => log::error!("scheduled plugin call audit failed: {error}"),
+    }
+    result.map_err(|error| SystemCallError {
+        status: error.status.as_u16(),
+        permanent: error.status == StatusCode::NOT_FOUND || error.status == StatusCode::FORBIDDEN,
+        message: error.message,
+    })
 }

@@ -44,6 +44,16 @@ pub struct ServerConfig {
     /// cannot be forged with a header.
     #[serde(default)]
     pub trusted_proxies: Vec<std::net::IpAddr>,
+    /// Seconds a request may take before the server gives up and answers
+    /// `504`, so a stalled database cannot leave the browser loading forever.
+    /// Event streams (SSE) are unaffected: only the time to the
+    /// response head counts. `0` turns the limit off.
+    #[serde(default = "default_request_timeout_secs")]
+    pub request_timeout_secs: u64,
+}
+
+fn default_request_timeout_secs() -> u64 {
+    30
 }
 
 fn default_host() -> String {
@@ -60,6 +70,7 @@ impl Default for ServerConfig {
             host: default_host(),
             port: default_port(),
             trusted_proxies: Vec::new(),
+            request_timeout_secs: default_request_timeout_secs(),
         }
     }
 }
@@ -532,6 +543,95 @@ pub struct AetherConfig {
     pub public: PublicConfig,
     #[serde(default)]
     pub notifications: NotificationsConfig,
+    #[serde(default)]
+    pub security: SecurityConfig,
+    #[serde(default)]
+    pub scheduler: SchedulerConfig,
+}
+
+/// `[security]` in `aether.toml`.
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
+pub struct SecurityConfig {
+    /// Key that encrypts secret settings (API keys, passwords) in the database. Leave it out
+    /// to use the `AETHER_SECRET_KEY` environment variable or an automatically created
+    /// `<app_dir>/conf/secret.key`. Every Aether process that reads credentials needs the same key.
+    #[serde(default)]
+    pub secret_key: Option<String>,
+}
+
+/// `[scheduler]` in `aether.toml`: how this process runs background jobs. What the jobs do and
+/// how they retry is decided by settings in the database.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct SchedulerConfig {
+    /// Run the scheduler inside `aether --serve`. A standalone `aether --start-scheduler`
+    /// takes over while it is alive.
+    #[serde(default = "default_true")]
+    pub embedded: bool,
+    /// Jobs this process runs at the same time.
+    #[serde(default = "default_scheduler_concurrency")]
+    pub concurrency: usize,
+    /// Seconds between looks for due jobs and tasks. A job enqueued while the HTTP server and
+    /// the scheduler can reach each other starts at once; this is the fallback.
+    #[serde(default = "default_scheduler_poll_secs")]
+    pub poll_secs: u64,
+    /// Seconds a worker holds a job before another may take it, if it never reports back.
+    #[serde(default = "default_scheduler_lease_secs")]
+    pub lease_secs: i64,
+    /// Queues this process serves; empty means all of them.
+    #[serde(default)]
+    pub queues: Vec<String>,
+    /// Where a standalone scheduler's control API listens.
+    #[serde(default = "default_scheduler_bind")]
+    pub bind: String,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_scheduler_concurrency() -> usize {
+    8
+}
+
+fn default_scheduler_poll_secs() -> u64 {
+    5
+}
+
+fn default_scheduler_lease_secs() -> i64 {
+    120
+}
+
+fn default_scheduler_bind() -> String {
+    "127.0.0.1:7895".into()
+}
+
+impl Default for SchedulerConfig {
+    fn default() -> Self {
+        Self {
+            embedded: true,
+            concurrency: default_scheduler_concurrency(),
+            poll_secs: default_scheduler_poll_secs(),
+            lease_secs: default_scheduler_lease_secs(),
+            queues: Vec::new(),
+            bind: default_scheduler_bind(),
+        }
+    }
+}
+
+impl SchedulerConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.concurrency == 0 || self.concurrency > 256 {
+            return Err("scheduler.concurrency must be 1 to 256".into());
+        }
+        if self.poll_secs == 0 {
+            return Err("scheduler.poll_secs must be at least 1".into());
+        }
+        if self.lease_secs < 10 {
+            return Err("scheduler.lease_secs must be at least 10".into());
+        }
+        self.bind.parse::<std::net::SocketAddr>().map_err(|_| "scheduler.bind must be an address such as 127.0.0.1:7895")?;
+        Ok(())
+    }
 }
 
 fn default_media_config() -> MediaConfig {
@@ -556,6 +656,8 @@ impl Default for AetherConfig {
             audit: AuditConfig::default(),
             public: PublicConfig::default(),
             notifications: NotificationsConfig::default(),
+            security: SecurityConfig::default(),
+            scheduler: SchedulerConfig::default(),
         }
     }
 }

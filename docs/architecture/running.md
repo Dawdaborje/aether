@@ -6,8 +6,8 @@
 reports clearly if you forgot).
 
 Ctrl+C or SIGTERM shuts it down gracefully: it stops accepting connections,
-lets in-flight requests finish (for up to 10 seconds, since open websocket
-connections would otherwise hold it open), stops background tasks, signs the
+lets in-flight requests finish (for up to 10 seconds, since open event streams (SSE)
+would otherwise hold it open), stops background tasks, signs the
 database session out and exits with status 0. All requests share one websocket
 to SurrealDB, which closes when the process exits.
 

@@ -3,4 +3,11 @@ name = "aether_communication"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# A tiny HTTP server for bridge tests: answers one request and reports what it received.
+testing = ["dep:tokio"]
+
 [dependencies]
+async-trait.workspace = true
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["net", "io-util", "sync", "rt"], optional = true }

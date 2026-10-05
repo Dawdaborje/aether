@@ -275,8 +275,17 @@ async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     if let Some(_host) = &args.serve {
         let ctx = get_db_context(&args).await;
-        if let Err(err) = run_server(ctx.config, args.http_port, ctx.db).await {
+        if let Err(err) = run_server(ctx.config, args.http_port, ctx.db, args.scheduling).await {
             log::error!("Server failed: {err}");
+            std::process::exit(1);
+        }
+    }
+
+    if let Some(bind) = &args.start_scheduler {
+        let ctx = get_db_context(&args).await;
+        let bind = Some(bind.as_str()).filter(|bind| !bind.is_empty());
+        if let Err(err) = crate::server::scheduler::run_scheduler(ctx.config, ctx.db, bind).await {
+            log::error!("Scheduler failed: {err}");
             std::process::exit(1);
         }
     }

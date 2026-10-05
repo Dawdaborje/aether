@@ -1,0 +1,274 @@
+{
+  "groups": [
+    {
+      "id": "comm_email",
+      "label": "Email",
+      "color": "blue",
+      "icon": "mail",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "communications_email_provider",
+          "label": "Email provider",
+          "s_key": "communications.email.provider",
+          "s_value": "",
+          "description": "Which bridge sends email: smtp or resend. Leave blank to turn email off.",
+          "long_description": "Plugins ask the kernel to send an email and the kernel hands it to this provider. Fill in the provider's own group (SMTP, Resend) below. An organization can pick its own provider and credentials; otherwise it uses the global ones."
+        },
+        {
+          "id": "communications_email_from_address",
+          "label": "From address",
+          "s_key": "communications.email.from_address",
+          "s_value": "",
+          "description": "The address emails are sent from, such as no-reply@example.com.",
+          "long_description": "Plugins cannot choose the sender. The provider must be allowed to send from this address."
+        },
+        {
+          "id": "communications_email_from_name",
+          "label": "From name",
+          "s_key": "communications.email.from_name",
+          "s_value": "",
+          "description": "The name shown beside the address."
+        }
+      ]
+    },
+    {
+      "id": "comm_sms",
+      "label": "SMS",
+      "color": "green",
+      "icon": "message-square",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "communications_sms_provider",
+          "label": "SMS provider",
+          "s_key": "communications.sms.provider",
+          "s_value": "",
+          "description": "Which bridge sends text messages: twilio, termii or africas_talking. Leave blank to turn SMS off.",
+          "long_description": "Fill in the provider's own group below. An organization can pick its own provider and credentials; otherwise it uses the global ones."
+        },
+        {
+          "id": "communications_sms_sender",
+          "label": "Sender name or number",
+          "s_key": "communications.sms.sender",
+          "s_value": "",
+          "description": "Overrides the provider's own sender, when it allows one per message."
+        }
+      ]
+    },
+    {
+      "id": "bridge_smtp",
+      "label": "SMTP",
+      "color": "gray",
+      "icon": "plug",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "bridge_smtp_host",
+          "label": "SMTP server",
+          "s_key": "bridge.smtp.host",
+          "s_value": "",
+          "description": "The mail server, such as smtp.example.com."
+        },
+        {
+          "id": "bridge_smtp_username",
+          "label": "SMTP username",
+          "s_key": "bridge.smtp.username",
+          "s_value": "",
+          "description": "Leave blank for a server that needs no login."
+        },
+        {
+          "id": "bridge_smtp_password",
+          "label": "SMTP password",
+          "s_key": "bridge.smtp.password",
+          "s_value": "",
+          "description": "Stored encrypted; it is never shown again.",
+          "secret": true
+        },
+        {
+          "id": "bridge_smtp_security",
+          "label": "SMTP security",
+          "s_key": "bridge.smtp.security",
+          "s_value": "starttls",
+          "description": "starttls (port 587), tls (port 465) or none (port 25, unencrypted)."
+        },
+        {
+          "id": "bridge_smtp_port",
+          "label": "SMTP port",
+          "s_key": "bridge.smtp.port",
+          "s_value": "",
+          "description": "Leave blank to use the usual port for the security setting."
+        }
+      ]
+    },
+    {
+      "id": "bridge_resend",
+      "label": "Resend",
+      "color": "gray",
+      "icon": "plug",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "bridge_resend_api_key",
+          "label": "Resend API key",
+          "s_key": "bridge.resend.api_key",
+          "s_value": "",
+          "description": "From resend.com; stored encrypted.",
+          "secret": true
+        }
+      ]
+    },
+    {
+      "id": "bridge_twilio",
+      "label": "Twilio",
+      "color": "red",
+      "icon": "plug",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "bridge_twilio_account_sid",
+          "label": "Twilio account SID",
+          "s_key": "bridge.twilio.account_sid",
+          "s_value": "",
+          "description": "Starts with AC."
+        },
+        {
+          "id": "bridge_twilio_auth_token",
+          "label": "Twilio auth token",
+          "s_key": "bridge.twilio.auth_token",
+          "s_value": "",
+          "description": "Stored encrypted; it is never shown again.",
+          "secret": true
+        },
+        {
+          "id": "bridge_twilio_from",
+          "label": "Twilio from number",
+          "s_key": "bridge.twilio.from",
+          "s_value": "",
+          "description": "A Twilio number in international form, such as +15551234567."
+        }
+      ]
+    },
+    {
+      "id": "bridge_termii",
+      "label": "Termii",
+      "color": "orange",
+      "icon": "plug",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "bridge_termii_api_key",
+          "label": "Termii API key",
+          "s_key": "bridge.termii.api_key",
+          "s_value": "",
+          "description": "Stored encrypted; it is never shown again.",
+          "secret": true
+        },
+        {
+          "id": "bridge_termii_sender_id",
+          "label": "Termii sender ID",
+          "s_key": "bridge.termii.sender_id",
+          "s_value": "",
+          "description": "The sender name registered with Termii."
+        },
+        {
+          "id": "bridge_termii_channel",
+          "label": "Termii channel",
+          "s_key": "bridge.termii.channel",
+          "s_value": "generic",
+          "description": "generic, dnd or whatsapp."
+        },
+        {
+          "id": "bridge_termii_base_url",
+          "label": "Termii API address",
+          "s_key": "bridge.termii.base_url",
+          "s_value": "https://api.ng.termii.com",
+          "description": "Termii shows the address for your account in its dashboard."
+        }
+      ]
+    },
+    {
+      "id": "bridge_africas_talking",
+      "label": "Africa's Talking",
+      "color": "orange",
+      "icon": "plug",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "bridge_africas_talking_username",
+          "label": "Africa's Talking username",
+          "s_key": "bridge.africas_talking.username",
+          "s_value": "",
+          "description": "Your Africa's Talking username (sandbox for testing)."
+        },
+        {
+          "id": "bridge_africas_talking_api_key",
+          "label": "Africa's Talking API key",
+          "s_key": "bridge.africas_talking.api_key",
+          "s_value": "",
+          "description": "Stored encrypted; it is never shown again.",
+          "secret": true
+        },
+        {
+          "id": "bridge_africas_talking_sender",
+          "label": "Africa's Talking sender ID",
+          "s_key": "bridge.africas_talking.sender",
+          "s_value": "",
+          "description": "Optional sender name registered with Africa's Talking."
+        },
+        {
+          "id": "bridge_africas_talking_base_url",
+          "label": "Africa's Talking API address",
+          "s_key": "bridge.africas_talking.base_url",
+          "s_value": "https://api.africastalking.com",
+          "description": "Use https://api.sandbox.africastalking.com to test."
+        }
+      ]
+    },
+    {
+      "id": "scheduler",
+      "label": "Scheduler",
+      "color": "purple",
+      "icon": "clock",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "scheduler_enabled",
+          "label": "Run background jobs",
+          "s_key": "scheduler.enabled",
+          "s_value": true,
+          "description": "Turn off to pause scheduled tasks and queued jobs for an organization.",
+          "long_description": "Jobs and tasks stay queued while this is off and run when it is turned back on."
+        },
+        {
+          "id": "scheduler_max_attempts",
+          "label": "Attempts per job",
+          "s_key": "scheduler.max_attempts",
+          "s_value": 3,
+          "description": "How many times a failing job is tried before it is marked failed."
+        },
+        {
+          "id": "scheduler_retry_backoff_secs",
+          "label": "First retry delay (seconds)",
+          "s_key": "scheduler.retry_backoff_secs",
+          "s_value": 30,
+          "description": "The wait before the second attempt; it doubles after each failure, up to six hours."
+        },
+        {
+          "id": "scheduler_job_retention_days",
+          "label": "Keep finished jobs (days)",
+          "s_key": "scheduler.job_retention_days",
+          "s_value": 7,
+          "description": "Successful jobs older than this are deleted."
+        },
+        {
+          "id": "scheduler_failed_job_retention_days",
+          "label": "Keep failed jobs (days)",
+          "s_key": "scheduler.failed_job_retention_days",
+          "s_value": 30,
+          "description": "Failed and cancelled jobs are kept longer so they can be looked at."
+        }
+      ]
+    }
+  ]
+}

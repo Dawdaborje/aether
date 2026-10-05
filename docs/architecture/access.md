@@ -114,6 +114,7 @@ plugin cannot shape a query beyond what the structured commands allow.
 ```toml
 [server]
 trusted_proxies = ["10.0.0.1"]   # only these may set X-Forwarded-For
+request_timeout_secs = 30        # answer 504 after this long (default 30; 0 = no limit)
 
 [audit]
 ip = "full"                      # "full" | "truncated" | "hashed"
