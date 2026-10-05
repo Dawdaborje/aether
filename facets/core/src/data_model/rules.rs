@@ -161,7 +161,7 @@ pub enum Decision {
 
 /// A role name made absolute: `approver` in plugin `hr_leave` is `hr_leave.approver`.
 pub fn qualify(plugin: &str, role: &str) -> String {
-    if role.contains('.') || role == "org_admin" { role.to_string() } else { format!("{plugin}.{role}") }
+    if role.contains('.') || role == "org_admin" || role.starts_with("via:") { role.to_string() } else { format!("{plugin}.{role}") }
 }
 
 fn holds(plugin: &str, held: &[String], wanted: &[String]) -> bool {
@@ -587,5 +587,7 @@ mod tests {
         assert_eq!(qualify("hr_leave", "approver"), "hr_leave.approver");
         assert_eq!(qualify("hr_leave", "hr.hr_manager"), "hr.hr_manager");
         assert_eq!(qualify("hr_leave", "org_admin"), "org_admin");
+        assert_eq!(qualify("hr", "via:*"), "via:*");
+        assert_eq!(qualify("hr", "via:hr_onboarding"), "via:hr_onboarding");
     }
 }

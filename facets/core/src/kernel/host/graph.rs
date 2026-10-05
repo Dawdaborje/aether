@@ -18,7 +18,7 @@
 use serde::Deserialize;
 use serde_json::{Map, Value as JsonValue};
 
-use super::context::PluginHostContext;
+use super::context::{ModelGrant, PluginHostContext};
 use super::guard;
 use crate::data_model::Operation;
 use super::db::{Access, Extra, RECORD_ID, decode, parse_req, record_binds, require_model, run_audited, strip_table_prefix, validate_ident};
@@ -228,11 +228,11 @@ pub async fn db_related(ctx: &PluginHostContext, payload: &JsonValue) -> Result<
     let (result, given_table) = if req.reverse {
         (owner, relation.target_table.as_str())
     } else {
-        let target = ctx
-            .models
-            .values()
-            .find(|grant| grant.table == relation.target_table)
-            .ok_or_else(|| HostError::ModelDenied(format!("the target of `{}.{}`", req.model, req.field)))?;
+        // A plugin cannot always read the other side (a model of another plugin), but the links are
+        // its own: it gets the ids, which is what it needs to ask that plugin about them.
+        let Some(target) = ctx.models.values().find(|grant| grant.table == relation.target_table) else {
+            return linked_ids(ctx, owner, &relation.edge, &req).await;
+        };
         let target = require_model(ctx, &target.name, false)?;
         (target, owner.table.as_str())
     };
@@ -269,6 +269,29 @@ pub async fn db_related(ctx: &PluginHostContext, payload: &JsonValue) -> Result<
     .await?;
     let rows: Vec<JsonValue> = rows.into_iter().map(|row| guard::strip(&hidden, decode(result, row))).collect();
     Ok(serde_json::json!({ "ok": true, "data": rows }))
+}
+
+/// The ids a record is linked to, as `{ "id": "table:key" }` rows.
+async fn linked_ids(ctx: &PluginHostContext, owner: &ModelGrant, edge: &str, req: &RelatedRequest) -> Result<JsonValue, HostError> {
+    let key = req
+        .id
+        .strip_prefix(&format!("{}:", owner.table))
+        .filter(|key| !key.is_empty())
+        .ok_or_else(|| HostError::InvalidPayload(format!("`{}` is not a record of `{}`", req.id, owner.table)))?;
+    let limit = req.limit.map_or(MAX_ROWS, |limit| limit.min(MAX_ROWS));
+    let body = format!("LET $rows = (SELECT id FROM (type::record($__given, $__key)->{edge}->?) LIMIT {limit});");
+    let binds = vec![
+        ("__given".to_string(), JsonValue::String(owner.table.clone())),
+        ("__key".to_string(), JsonValue::String(key.to_string())),
+        ("__table".to_string(), JsonValue::String(owner.table.clone())),
+    ];
+    let rows = run_audited(ctx, Access { operation: "read", model: owner.name.clone(), table: &owner.table }, &body, "$rows.id", binds, Extra::default()).await?;
+    let ids: Vec<JsonValue> = rows
+        .into_iter()
+        .filter_map(|row| row.get("id").cloned())
+        .map(|id| serde_json::json!({ "id": id }))
+        .collect();
+    Ok(serde_json::json!({ "ok": true, "data": ids }))
 }
 
 #[derive(Debug, Deserialize)]

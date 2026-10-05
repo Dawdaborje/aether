@@ -39,6 +39,11 @@ separate functions per rule and has to keep them in sync.
   by them is refused, since that would show what they hold); setting them is refused. Unlisted fields are open.
 * **Roles** are `<plugin>.<role>`; a bare name means a role of the plugin that owns the file. Roles are
   declared by plugins (`[[roles]]`) and given by an administrator (`aether --grant-role`).
+* **`via:<plugin>` and `via:*`** are held by a call that came through another plugin's function (the
+  kernel adds them to the roles a rule sees; a client calling the function directly never has them).
+  A plugin lists `via:*` on a grant to trust the plugins that call it, which do their own checks of the
+  person: `hr`'s hire holds are placed and released by recruitment and onboarding, whose users need
+  not be HR staff.
 * **Not restricted:** `org_admin` (the organization's administrators), the kernel's own jobs, and the
   `rule_var_*` functions below.
 

@@ -175,12 +175,22 @@ pub trait Columns {
 
 impl Columns for ModelSchema {
     fn column(&self, field: &str) -> Result<String, QueryError> {
+        // A record's own id is compared as the text plugins see (`table:key`).
+        if field == "id" {
+            return Ok("string::concat(record::tb(id), ':', <string> record::id(id))".to_string());
+        }
         let column = self.column_id(field)?.to_string();
         validate_ident(&column)?;
         Ok(column)
     }
 
     fn value(&self, field: &str, value: &Value) -> Result<Value, QueryError> {
+        if field == "id" {
+            return match value {
+                Value::String(_) => Ok(value.clone()),
+                _ => Err(invalid("`id` is compared with text like `table:key`")),
+            };
+        }
         Ok(self.filter_value(field, value)?)
     }
 
@@ -357,7 +367,13 @@ fn compile_cmp(
                 Op::Lt => "<",
                 _ => "<=",
             };
-            Ok(format!("{column} {symbol} {placeholder}"))
+            // SurrealDB orders a missing value before everything: "earlier than today" must not be
+            // true for a record that has no date.
+            Ok(if matches!(op, Op::Lt | Op::Lte) {
+                format!("({column} != NONE AND {column} {symbol} {placeholder})")
+            } else {
+                format!("{column} {symbol} {placeholder}")
+            })
         }
     }
 }

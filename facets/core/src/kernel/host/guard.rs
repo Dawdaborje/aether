@@ -33,6 +33,27 @@ pub async fn roles(ctx: &PluginHostContext) -> Result<&Vec<String>, HostError> {
         .await
 }
 
+/// The caller's roles, plus a `via:<plugin>` for each other plugin whose function led to this call
+/// (and `via:*` when there is one): a rule may trust what another plugin's functions do for a caller.
+pub async fn held_roles(ctx: &PluginHostContext) -> Result<Vec<String>, HostError> {
+    let mut held = roles(ctx).await?.clone();
+    let mut through_others = false;
+    for step in &ctx.call_trail {
+        let plugin = step.split('.').next().unwrap_or_default();
+        if plugin != ctx.plugin_name && !plugin.is_empty() {
+            through_others = true;
+            let marker = format!("via:{plugin}");
+            if !held.contains(&marker) {
+                held.push(marker);
+            }
+        }
+    }
+    if through_others {
+        held.push("via:*".to_string());
+    }
+    Ok(held)
+}
+
 /// Whether rules are set aside for this caller.
 async fn exempt(ctx: &PluginHostContext) -> Result<bool, HostError> {
     if ctx.bypass_rules {
@@ -82,7 +103,7 @@ pub async fn decide(ctx: &PluginHostContext, grant: &ModelGrant, op: Operation) 
     if !rules.limits(op) || exempt(ctx).await? {
         return Ok(Decision::Open);
     }
-    let held = roles(ctx).await?;
+    let held = &held_roles(ctx).await?;
     let mut values = HashMap::new();
     for name in rules.variables_needed(&ctx.plugin_name, op, held) {
         let value = variable(ctx, &name).await?;
@@ -120,7 +141,7 @@ pub async fn field_limits(ctx: &PluginHostContext, grant: &ModelGrant) -> Result
     if exempt(ctx).await? {
         return Ok(Default::default());
     }
-    let held = roles(ctx).await?;
+    let held = &held_roles(ctx).await?;
     Ok((
         rules.hidden_fields(&ctx.plugin_name, held).into_iter().map(str::to_string).collect(),
         rules.locked_fields(&ctx.plugin_name, held).into_iter().map(str::to_string).collect(),
