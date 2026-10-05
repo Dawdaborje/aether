@@ -82,6 +82,23 @@ impl SendError {
     }
 }
 
+/// One thing a bridge can do when a plugin calls it with `bridge::call`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Action {
+    pub name: &'static str,
+    pub help: &'static str,
+}
+
+/// A bridge a plugin calls by action name (`bridge::call`): payments, maps, documents and the like,
+/// as opposed to the messaging bridges the kernel drives itself. Like every bridge it knows one
+/// provider and nothing about plugins or the database: the kernel gives it the settings it
+/// described in its [`Spec`] (secrets decrypted) and the plugin's parameters, and passes the answer
+/// back. A [`SendError`] says whether trying again can help.
+#[async_trait]
+pub trait ActionBridge: Send + Sync {
+    async fn call(&self, action: &str, params: &serde_json::Value) -> Result<serde_json::Value, SendError>;
+}
+
 /// A bridge cannot be built from the settings it was given.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{0}")]

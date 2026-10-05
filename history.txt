@@ -1,2 +1,2 @@
 #V2
-SELECT s_key, s_value, is_secret FROM gl_settings_items WHERE s_key = 'bridge.termii.api_key';
+SELECT name, object::keys(i18n) AS locales FROM plugins;

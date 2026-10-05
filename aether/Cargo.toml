@@ -22,6 +22,7 @@ aether_authentication = { path = "../facets/authentication" }
 include_dir = "0.7.4"
 directories = "6.0.0"
 toml_edit = "0.25.15"
+notify = "8"
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -116,6 +116,12 @@ impl AppDir {
         Ok(self.root.join(ORGS).join(organization))
     }
 
+    /// `orgs/<organization>/plugins/<plugin>`: the folder on disk a plugin may watch and read and
+    /// write with `fs::*` in one organization. It exists only once something needs it.
+    pub fn plugin_files_dir(&self, organization: &str, plugin: &str) -> Result<PathBuf, AppDirError> {
+        Ok(self.org_dir(organization)?.join("plugins").join(component(plugin)?))
+    }
+
     /// Create `orgs/<organization>/` and its `conf/` folder (idempotent).
     pub async fn ensure_org(&self, organization: &str) -> Result<PathBuf, AppDirError> {
         let directory = self.org_dir(organization)?;

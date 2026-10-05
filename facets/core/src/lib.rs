@@ -1,6 +1,7 @@
 pub mod access;
 pub mod app_dir;
 pub mod apps_api;
+pub mod bridges;
 pub mod bridges_api;
 pub mod catalog_api;
 pub mod application;
@@ -19,6 +20,8 @@ pub mod org_admin_api;
 pub mod org_storage;
 pub mod pages_api;
 pub mod request_log;
+pub mod plugin_events;
+pub mod plugin_files;
 pub mod plugin_manager;
 pub mod routes;
 pub mod scheduler;

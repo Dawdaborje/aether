@@ -57,6 +57,14 @@ pub struct PluginDbDefinition {
     pub dependencies: Option<Vec<String>>,
     /// The plugin's `[[schedule]]` entries, copied into an organization when it installs it.
     pub schedules: Option<Vec<serde_json::Value>>,
+    /// The plugin's `[[command]]` entries, run with `aether --command`.
+    pub commands: Option<Vec<serde_json::Value>>,
+    /// The plugin's text: `{ "default": "en", "locales": { "en": { key: text } } }`.
+    pub i18n: Option<serde_json::Value>,
+    /// The plugin's `[[watch]]` entries, copied into an organization when it installs the plugin.
+    pub watches: Option<Vec<serde_json::Value>>,
+    /// The events the plugin listens to, copied into an organization when it installs the plugin.
+    pub event_listeners: Option<Vec<serde_json::Value>>,
     pub workspace: Option<String>,
     pub kind: Option<String>,
     pub artifact_path: Option<String>,
@@ -100,6 +108,8 @@ impl From<PluginDbDefinition> for PluginDefinition {
             public_capabilities: Vec::new(),
             public_access_models: Vec::new(),
             http_hosts: Vec::new(),
+            bridges: Vec::new(),
+            i18n: None,
             workspace: plugin.workspace,
             kind: plugin.kind,
             is_builtin: plugin.is_builtin,

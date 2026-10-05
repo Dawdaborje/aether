@@ -1,12 +1,12 @@
 {
   "code": "bridge",
   "name": "Bridges",
-  "description": "Invoke first-party integrations (Stripe, Paystack, Mayan, …) through kernel commands. Credentials stay in the kernel.",
+  "description": "Call first-party integrations (payments, maps, \u2026) through the kernel. A plugin lists the bridges it uses under `bridges` in plugin.toml; the credentials stay in the kernel's settings.",
   "capabilities": [
     {
       "code": "call",
       "name": "Call Bridge",
-      "description": "Invoke a named bridge command, e.g. stripe::charge, via the kernel. Maps to kernel command bridge::call."
+      "description": "Call an action of a bridge the plugin listed, such as paystack verify_transaction. Maps to kernel command bridge::call."
     }
   ]
 }

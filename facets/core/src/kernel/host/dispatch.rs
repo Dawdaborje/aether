@@ -3,7 +3,7 @@ use serde_json::Value as JsonValue;
 use super::context::PluginHostContext;
 use super::db;
 use super::error::HostError;
-use super::{communication, http, plugin_call, scheduling, storage, store};
+use super::{bridge_call, communication, files, http, plugin_call, scheduling, storage, store};
 
 /// Dispatch a kernel host command for a plugin.
 ///
@@ -43,6 +43,12 @@ pub async fn kernel_command(
         "cache::set" => store::cache_set(ctx, &payload),
         "cache::invalidate" => store::cache_invalidate(ctx, &payload),
         "cache::clear" => store::cache_clear(ctx, &payload),
+        "fs::read" => files::read(ctx, &payload).await,
+        "fs::write" => files::write(ctx, &payload).await,
+        "fs::list" => files::list(ctx, &payload).await,
+        "fs::stat" => files::stat(ctx, &payload).await,
+        "fs::rename" => files::rename(ctx, &payload).await,
+        "fs::delete" => files::delete(ctx, &payload).await,
         "storage::read" => storage::storage_read(ctx, &payload).await,
         "storage::write" => storage::storage_write(ctx, &payload).await,
         "storage::delete" => storage::storage_delete(ctx, &payload).await,
@@ -50,7 +56,16 @@ pub async fn kernel_command(
         "communication::send" => communication::send(ctx, &payload).await,
         "events::emit" => {
             ctx.require_cap(command)?;
-            emit_ui_event(ctx, &payload)
+            let answer = emit_ui_event(ctx, &payload)?;
+            // The browsers have been told; now the plugins that listen. A failure here does not
+            // undo the emit.
+            if let Some(event) = payload.get("event").and_then(|event| event.as_str()) {
+                let data = payload.get("payload").cloned().unwrap_or(JsonValue::Null);
+                if let Err(error) = crate::plugin_events::dispatch(ctx, event, &data).await {
+                    log::warn!("{}: event `{event}` could not be passed to plugins: {error}", ctx.database);
+                }
+            }
+            Ok(answer)
         }
         // Who is calling and where. Needs no capability: it only tells the plugin about
         // the request it is already serving.
@@ -69,14 +84,20 @@ pub async fn kernel_command(
         }
         "events::subscribe" => {
             ctx.require_cap(command)?;
-            Err(HostError::NotImplemented(command.into()))
+            let event = payload.get("event").and_then(|v| v.as_str()).unwrap_or("");
+            let function = payload.get("function").and_then(|v| v.as_str()).unwrap_or("");
+            crate::plugin_events::subscribe(ctx, event, function).await.map_err(event_error)?;
+            Ok(serde_json::json!({ "ok": true, "data": null }))
+        }
+        "events::unsubscribe" => {
+            ctx.require_cap("events::subscribe")?;
+            let event = payload.get("event").and_then(|v| v.as_str()).unwrap_or("");
+            let removed = crate::plugin_events::unsubscribe(ctx, event).await.map_err(event_error)?;
+            Ok(serde_json::json!({ "ok": true, "data": { "removed": removed } }))
         }
         "http::request" => http::http_request(ctx, &payload).await,
         "plugins::call" => plugin_call::plugins_call(ctx, &payload).await,
-        "bridge::call" => {
-            ctx.require_cap("bridge::call")?;
-            Err(HostError::NotImplemented(command.into()))
-        }
+        "bridge::call" => bridge_call::bridge_call(ctx, &payload).await,
         "scheduler::enqueue" => scheduling::enqueue(ctx, &payload).await,
         "scheduler::job" => scheduling::job(ctx, &payload).await,
         "scheduler::cancel_job" => scheduling::cancel_job(ctx, &payload).await,
@@ -84,6 +105,13 @@ pub async fn kernel_command(
         "scheduler::cancel" => scheduling::cancel(ctx, &payload).await,
         "db::transaction" => db::db_transaction(ctx, &payload).await,
         other => Err(HostError::UnknownCommand(other.into())),
+    }
+}
+
+fn event_error(error: crate::plugin_events::EventError) -> HostError {
+    match error {
+        crate::plugin_events::EventError::Db(error) => HostError::Db(error),
+        crate::plugin_events::EventError::Refused(message) => HostError::InvalidPayload(message),
     }
 }
 
@@ -239,7 +267,7 @@ mod tests {
             "db::get", "db::find", "db::query", "db::create", "db::update", "db::delete", "db::increment",
             "db::mutate", "db::transaction", "cache::get", "cache::set", "cache::invalidate",
             "cache::clear", "storage::read", "storage::write", "storage::delete",
-            "storage::list", "communication::send", "events::emit", "events::subscribe",
+            "storage::list", "fs::read", "fs::write", "fs::list", "fs::stat", "fs::rename", "fs::delete", "communication::send", "events::emit", "events::subscribe", "events::unsubscribe",
             "http::request", "plugins::call", "bridge::call", "scheduler::register",
             "scheduler::cancel", "scheduler::enqueue", "scheduler::job", "scheduler::cancel_job", "notify::send",
         ];

@@ -60,6 +60,7 @@ pub async fn run_server(
     http_port: Option<u16>,
     db_conn: &'static Surreal<SurrealClient>,
     scheduling: bool,
+    dev_watch: bool,
 ) -> Result<(), Box<dyn Error + Send + Sync + '_>> {
     let namespace = config
         .database
@@ -99,6 +100,7 @@ pub async fn run_server(
     // Background jobs. The scheduler runs here unless it was turned off or a standalone one
     // is running; either way this server finds a standalone one (to wake it) through the database.
     let discovery = aether_core::scheduler::control::spawn_discovery(&state);
+    let dev_reload = dev_watch.then(|| super::dev_watch::spawn(state.clone(), state.namespace.clone()));
     let (scheduler_stop, scheduler_stopping) = tokio::sync::watch::channel(false);
     let scheduler_task = if scheduling && state.config.scheduler.embedded {
         let settings = state.config.scheduler.clone();
@@ -198,6 +200,9 @@ pub async fn run_server(
         let _ = task.await;
     }
     discovery.abort();
+    if let Some(task) = dev_reload {
+        task.abort();
+    }
     if let Some(task) = retention_task {
         task.abort();
     }

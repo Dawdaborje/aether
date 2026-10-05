@@ -547,6 +547,27 @@ pub struct AetherConfig {
     pub security: SecurityConfig,
     #[serde(default)]
     pub scheduler: SchedulerConfig,
+    #[serde(default)]
+    pub i18n: I18nConfig,
+}
+
+/// `[i18n]` in `aether.toml`.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct I18nConfig {
+    /// The language used when neither the person, the organization nor the browser names one
+    /// the plugin has text for.
+    #[serde(default = "default_locale")]
+    pub default_locale: String,
+}
+
+fn default_locale() -> String {
+    "en".to_string()
+}
+
+impl Default for I18nConfig {
+    fn default() -> Self {
+        Self { default_locale: default_locale() }
+    }
 }
 
 /// `[security]` in `aether.toml`.
@@ -658,6 +679,7 @@ impl Default for AetherConfig {
             notifications: NotificationsConfig::default(),
             security: SecurityConfig::default(),
             scheduler: SchedulerConfig::default(),
+            i18n: I18nConfig::default(),
         }
     }
 }

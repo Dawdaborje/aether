@@ -20,7 +20,7 @@ use super::{
         activate_theme, install_plugins, load_plugins, print_install_summary, print_load_summary,
         print_upgrade_summary, upgrade_plugins,
     },
-    scaffold::{Language, create_plugin},
+    scaffold::{self, Language, create_plugin},
     seed::seed_system,
 };
 
@@ -58,12 +58,31 @@ fn init_logger(args: &Args) {
     builder.init();
 }
 
+/// What was created, and what to do next.
+fn report_plugin(created: &scaffold::CreatedPlugin) {
+    println!("Created {} plugin '{}' at {}.", created.language.label(), created.name, created.directory.display());
+    if let Some(workspace) = &created.workspace {
+        println!("Registered it in workspace '{workspace}' under [workspace.plugins].");
+    }
+    if !created.language.is_wasm() {
+        println!("Nothing to compile: edit main.rhai, then run `aether --load-plugin .` in {} (and `aether --install-plugin {} --org <org>`).", created.directory.display(), created.name);
+    }
+}
+
 async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let current_path = env::current_dir()?;
 
     if let Some(plugin_paths) = &args.sync_models {
         for path in plugin_paths {
-            for synced in aether_core::data_model::sync_package(path)? {
+            // Links to other plugins' models get those models' ids from the catalog.
+            let wanted = aether_core::data_model::foreign_targets(path)?;
+            let foreign = if wanted.is_empty() {
+                std::collections::HashMap::new()
+            } else {
+                let ctx = get_db_context(&args).await;
+                aether_core::plugin_manager::catalog::foreign_model_ids(ctx.db, &ctx.namespace, &ctx.database, &wanted).await?
+            };
+            for synced in aether_core::data_model::sync_package_with(path, &foreign)? {
                 if synced.assigned > 0 {
                     println!("Model '{}': {} id(s) written to {}.", synced.model, synced.assigned, synced.path.display());
                 } else {
@@ -114,6 +133,22 @@ async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         println!("Theme '{theme}' is now the active theme for organization '{org}'.");
     }
 
+    if args.list_commands || args.command.is_some() {
+        let Some(org) = &args.org else {
+            return Err("--org must be provided to list or run plugin commands".into());
+        };
+        let ctx = get_db_context(&args).await;
+        let outcome = if let Some(command) = &args.command {
+            crate::cli::commands::run(ctx, org, command, &args.command_args, args.command_json.as_deref()).await
+        } else {
+            crate::cli::commands::list(ctx, org).await
+        };
+        if let Err(message) = outcome {
+            eprintln!("{message}");
+            std::process::exit(1);
+        }
+    }
+
     if let Some(config_file_name) = &args.generate_config_file {
         let full_path = Path::new(&current_path).join(config_file_name);
         generate_default_config_template(full_path).await?;
@@ -125,6 +160,27 @@ async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             "workspace" => {
                 generate_plugin_workspace(current_dir).await?;
             }
+            // `aether --gen` alone: ask what to create and how.
+            "" => {
+                let around = scaffold::surroundings(&current_path).await;
+                let stdin = std::io::stdin();
+                let plan = scaffold::run_wizard(stdin.lock(), std::io::stdout(), &current_path, &around)?;
+                match plan {
+                    scaffold::Plan::Plugin { path, language, details } => {
+                        report_plugin(&scaffold::create_plugin_with(&path, language, &details).await?);
+                    }
+                    scaffold::Plan::Workspace { path, details } => {
+                        let created = scaffold::create_workspace(&path, &details).await?;
+                        println!("Created workspace '{}' at {}.", created.name, created.directory.display());
+                        println!("Add plugins to it with `aether --gen` from inside {}.", created.directory.display());
+                    }
+                    scaffold::Plan::Config { path } => {
+                        let target = current_path.join(&path);
+                        generate_default_config_template(target.clone()).await?;
+                        println!("Wrote {}.", target.display());
+                    }
+                }
+            }
             "plugin" => {
                 let plugin_path = args
                     .plugin_path
@@ -133,15 +189,7 @@ async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     .unwrap_or_else(|| Path::new("my_plugin"));
                 let language: Language = args.plugin_language.parse()?;
                 let created = create_plugin(plugin_path, language).await?;
-                println!(
-                    "Created {} plugin '{}' at {}.",
-                    created.language.label(),
-                    created.name,
-                    created.directory.display()
-                );
-                if let Some(workspace) = created.workspace {
-                    println!("Registered it in workspace '{workspace}' under [workspace.plugins].");
-                }
+                report_plugin(&created);
             }
             "aether_config" => {
                 generate_default_config_template(current_path.join("aether.toml")).await?;
@@ -275,7 +323,7 @@ async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     if let Some(_host) = &args.serve {
         let ctx = get_db_context(&args).await;
-        if let Err(err) = run_server(ctx.config, args.http_port, ctx.db, args.scheduling).await {
+        if let Err(err) = run_server(ctx.config, args.http_port, ctx.db, args.scheduling, args.watch).await {
             log::error!("Server failed: {err}");
             std::process::exit(1);
         }

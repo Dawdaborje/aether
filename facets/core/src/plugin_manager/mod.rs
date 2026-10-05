@@ -1,6 +1,8 @@
 pub mod access;
 pub mod api;
 pub mod catalog;
+pub mod commands;
+pub mod i18n;
 pub mod model_edit;
 pub mod models;
 pub mod pages;

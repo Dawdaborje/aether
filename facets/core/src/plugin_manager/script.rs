@@ -343,6 +343,49 @@ fn register_commands(engine: &mut Engine, host: &Arc<Host>) {
     });
     engine.register_static_module("plugins", plugins.into());
 
+    let mut bridge = Module::new();
+    let h = host.clone();
+    bridge.set_native_fn("invoke", move |name: &str, action: &str, params: Map| {
+        let params = to_json(&Dynamic::from_map(params))?;
+        h.data("bridge::call", serde_json::json!({ "bridge": name, "action": action, "params": params }))
+    });
+    let h = host.clone();
+    bridge.set_native_fn("invoke", move |name: &str, action: &str| {
+        h.data("bridge::call", serde_json::json!({ "bridge": name, "action": action }))
+    });
+    engine.register_static_module("bridge", bridge.into());
+
+    let mut fs = Module::new();
+    let h = host.clone();
+    fs.set_native_fn("read", move |path: &str| {
+        let answer = h.data("fs::read", serde_json::json!({ "path": path }))?;
+        Ok(answer.try_cast::<Map>().and_then(|map| map.get("text").cloned()).unwrap_or(Dynamic::UNIT))
+    });
+    let h = host.clone();
+    fs.set_native_fn("read_base64", move |path: &str| {
+        let answer = h.data("fs::read", serde_json::json!({ "path": path, "encoding": "base64" }))?;
+        Ok(answer.try_cast::<Map>().and_then(|map| map.get("base64").cloned()).unwrap_or(Dynamic::UNIT))
+    });
+    let h = host.clone();
+    fs.set_native_fn("write", move |path: &str, text: &str| h.data("fs::write", serde_json::json!({ "path": path, "text": text })));
+    let h = host.clone();
+    fs.set_native_fn("write_base64", move |path: &str, data: &str| h.data("fs::write", serde_json::json!({ "path": path, "base64": data })));
+    let h = host.clone();
+    fs.set_native_fn("list", move || h.data("fs::list", Value::Null));
+    let h = host.clone();
+    fs.set_native_fn("list", move |path: &str| h.data("fs::list", serde_json::json!({ "path": path })));
+    let h = host.clone();
+    fs.set_native_fn("stat", move |path: &str| h.data("fs::stat", serde_json::json!({ "path": path })));
+    let h = host.clone();
+    fs.set_native_fn("rename", move |from: &str, to: &str| h.data("fs::rename", serde_json::json!({ "from": from, "to": to })));
+    let h = host.clone();
+    fs.set_native_fn("rename", move |from: &str, to: &str, overwrite: bool| {
+        h.data("fs::rename", serde_json::json!({ "from": from, "to": to, "overwrite": overwrite }))
+    });
+    let h = host.clone();
+    fs.set_native_fn("delete", move |path: &str| h.data("fs::delete", serde_json::json!({ "path": path })));
+    engine.register_static_module("fs", fs.into());
+
     let mut communication = Module::new();
     let h = host.clone();
     communication.set_native_fn("send", move |message: Map| {
@@ -414,6 +457,13 @@ fn register_commands(engine: &mut Engine, host: &Arc<Host>) {
     engine.register_static_module("notify", notify.into());
 
     let mut events = Module::new();
+    let h = host.clone();
+    let h = host.clone();
+    events.set_native_fn("subscribe", move |event: &str, function: &str| {
+        h.data("events::subscribe", serde_json::json!({ "event": event, "function": function }))
+    });
+    let h = host.clone();
+    events.set_native_fn("unsubscribe", move |event: &str| h.data("events::unsubscribe", serde_json::json!({ "event": event })));
     let h = host.clone();
     events.set_native_fn("emit", move |event: Map| {
         let payload = to_json(&Dynamic::from_map(event))?;
@@ -499,6 +549,30 @@ mod tests {
         )
         .await?;
         assert!(result.as_str().is_some_and(|text| text.contains("dependencies")), "{result}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn file_commands_are_bound_and_checked() -> Result<(), Box<dyn std::error::Error>> {
+        let result = run_script(
+            r#"fn run() {
+                let refused = [];
+                try { fs::read("a"); } catch (e) { refused.push("read"); }
+                try { fs::read_base64("a"); } catch (e) { refused.push("read_base64"); }
+                try { fs::write("a", "x"); } catch (e) { refused.push("write"); }
+                try { fs::write_base64("a", "AA=="); } catch (e) { refused.push("write_base64"); }
+                try { fs::list(); } catch (e) { refused.push("list"); }
+                try { fs::list("d"); } catch (e) { refused.push("list_dir"); }
+                try { fs::stat("a"); } catch (e) { refused.push("stat"); }
+                try { fs::rename("a", "b"); } catch (e) { refused.push("rename"); }
+                try { fs::rename("a", "b", true); } catch (e) { refused.push("rename_overwrite"); }
+                try { fs::delete("a"); } catch (e) { refused.push("delete"); }
+                refused
+            }"#,
+            &[],
+        )
+        .await?;
+        assert_eq!(result.as_array().map(Vec::len), Some(10), "{result}");
         Ok(())
     }
 
@@ -609,9 +683,9 @@ mod tests {
     #[tokio::test]
     async fn unimplemented_commands_are_not_bound_in_scripts() {
         // Not bound is a compile-time-visible gap, not a silent no-op: calling one fails.
-        for call in ["bridge::call(#{})", "events::subscribe(#{})"] {
+        for call in ["bridge::invoke(\"x\", \"y\", #{})"] {
             let source = format!("fn run() {{ {call} }}");
-            let result = run_script(&source, &["bridge::call", "events::subscribe"]).await;
+            let result = run_script(&source, &["bridge::call"]).await;
             assert!(result.is_err(), "{call}");
         }
     }

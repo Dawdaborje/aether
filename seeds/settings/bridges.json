@@ -1,0 +1,51 @@
+{
+  "groups": [
+    {
+      "id": "bridge_paystack",
+      "label": "Paystack",
+      "color": "cyan",
+      "icon": "credit-card",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "bridge_paystack_secret_key",
+          "label": "Paystack secret key",
+          "s_key": "bridge.paystack.secret_key",
+          "s_value": "",
+          "description": "From the Paystack dashboard (starts with sk_). Stored encrypted; it is never shown again.",
+          "secret": true
+        },
+        {
+          "id": "bridge_paystack_base_url",
+          "label": "Paystack API address",
+          "s_key": "bridge.paystack.base_url",
+          "s_value": "https://api.paystack.co",
+          "description": "Leave as it is unless you test against another server."
+        }
+      ]
+    },
+    {
+      "id": "bridge_open_street_map",
+      "label": "OpenStreetMap",
+      "color": "green",
+      "icon": "map-pin",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "bridge_open_street_map_base_url",
+          "label": "OpenStreetMap Nominatim address",
+          "s_key": "bridge.open_street_map.base_url",
+          "s_value": "https://nominatim.openstreetmap.org",
+          "description": "The public server allows about one request a second; run your own Nominatim for real use."
+        },
+        {
+          "id": "bridge_open_street_map_contact",
+          "label": "OpenStreetMap contact",
+          "s_key": "bridge.open_street_map.contact",
+          "s_value": "",
+          "description": "An email address or website that identifies you to the map server, as its usage policy asks."
+        }
+      ]
+    }
+  ]
+}

@@ -1,14 +1,15 @@
 //! Native plugin scaffolding: no Extism CLI required.
 //!
 //! `aether --gen plugin --plugin-path company` creates `./company` with a
-//! manifest, a sample source file for the chosen language, a build `Makefile`,
-//! `README.md`, `.gitignore` and a BSL 1.1 `LICENSE`. When the directory sits
+//! manifest, a sample source file for the chosen language, a build `Makefile` (not for Rhai),
+//! `README.md`, `.gitignore` and, outside a workspace, a BSL 1.1 `LICENSE`. When the directory sits
 //! inside a plugin workspace (an ancestor holds a `workspace.toml`), the plugin
 //! is also registered under `[workspace.plugins]`, the way `cargo new`
 //! registers a workspace member.
 
 mod language;
 mod license;
+mod wizard;
 mod workspace;
 
 use std::path::{Component, Path, PathBuf};
@@ -17,6 +18,7 @@ use thiserror::Error;
 use tokio::fs;
 
 pub use language::Language;
+pub use wizard::{Plan, Surroundings, WizardError, run as run_wizard};
 use workspace::Workspace;
 
 #[derive(Debug, Error)]
@@ -31,7 +33,7 @@ pub enum ScaffoldError {
     #[error("invalid plugin name `{0}`: use lowercase letters, digits and `_`, starting with a letter")]
     InvalidName(String),
 
-    #[error("unsupported plugin language `{0}`; choose go, rust, typescript, javascript or python")]
+    #[error("unsupported plugin language `{0}`; choose go, rust, typescript, javascript, python or rhai")]
     UnsupportedLanguage(String),
 
     #[error("{0} already exists and is not an empty directory")]
@@ -57,6 +59,14 @@ pub enum ScaffoldError {
     AlreadyRegistered { name: String, workspace: String },
 }
 
+/// What the wizard should know about `directory`: the workspace it is in, if any.
+pub async fn surroundings(directory: &Path) -> Surroundings {
+    match Workspace::find(directory).await {
+        Ok(Some(workspace)) => Surroundings { workspace: Some((workspace.name().to_string(), workspace.author().cloned())) },
+        _ => Surroundings::default(),
+    }
+}
+
 fn io_error(path: &Path) -> impl FnOnce(std::io::Error) -> ScaffoldError + '_ {
     move |source| ScaffoldError::Io {
         path: path.to_path_buf(),
@@ -75,16 +85,35 @@ pub struct CreatedPlugin {
 
 const DEFAULT_AUTHOR: (&str, &str) = ("Your Name", "your.email@example.com");
 
+/// What a person may choose about a new plugin besides its language and place. Anything left out
+/// takes its usual default.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PluginDetails {
+    pub label: Option<String>,
+    pub description: Option<String>,
+    /// Name and email; the workspace's first author, or a placeholder, when none is given.
+    pub author: Option<(String, String)>,
+}
+
+/// What a person may choose about a new workspace.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorkspaceDetails {
+    pub name: Option<String>,
+    pub label: Option<String>,
+    pub description: Option<String>,
+    pub author: Option<(String, String)>,
+}
+
 const PLUGIN_TOML: &str = r#"[plugin]
 name = "__NAME__"
 label = "__LABEL__"
 version = "0.1.0"
-description = "A short description of __LABEL__."
+description = __DESCRIPTION__
 authors = [{ name = __AUTHOR_NAME__, email = __AUTHOR_EMAIL__ }]
 dependencies = []
 capabilities = ["db::query", "db::mutate"]
 is_builtin = false
-wasm_file = "out/plugin.wasm"
+__CODE_LINE__
 
 # Anonymous visitors can use nothing unless it is declared here (all off by
 # default). Pages opt in with `public="true"` on their `<page>` element.
@@ -107,6 +136,15 @@ channels = []
 /// Create the plugin at `path` (relative paths resolve against the current
 /// directory); the last path segment is the plugin name.
 pub async fn create_plugin(path: &Path, language: Language) -> Result<CreatedPlugin, ScaffoldError> {
+    create_plugin_with(path, language, &PluginDetails::default()).await
+}
+
+/// [`create_plugin`] with the label, description and author chosen by the caller.
+pub async fn create_plugin_with(
+    path: &Path,
+    language: Language,
+    details: &PluginDetails,
+) -> Result<CreatedPlugin, ScaffoldError> {
     let current_dir = std::env::current_dir().map_err(io_error(Path::new(".")))?;
     let directory = normalize(&current_dir.join(path));
     let name = directory
@@ -126,11 +164,17 @@ pub async fn create_plugin(path: &Path, language: Language) -> Result<CreatedPlu
         workspace.register(&name, &relative)?;
     }
 
-    let (author_name, author_email) = workspace
-        .as_ref()
-        .and_then(|workspace| workspace.author().cloned())
+    let (author_name, author_email) = details
+        .author
+        .clone()
+        .or_else(|| workspace.as_ref().and_then(|workspace| workspace.author().cloned()))
         .unwrap_or_else(|| (DEFAULT_AUTHOR.0.to_string(), DEFAULT_AUTHOR.1.to_string()));
-    let label = humanize(&name);
+    let label = details.label.clone().filter(|label| !label.trim().is_empty()).unwrap_or_else(|| humanize(&name));
+    let description = details
+        .description
+        .clone()
+        .filter(|text| !text.trim().is_empty())
+        .unwrap_or_else(|| format!("A short description of {label}."));
 
     let mut files = language.files(&name);
     files.push(language::TemplateFile {
@@ -141,12 +185,17 @@ pub async fn create_plugin(path: &Path, language: Language) -> Result<CreatedPlu
             &author_name,
             &author_email,
             workspace.as_ref().map(Workspace::name),
+            language,
+            &description,
         ),
     });
-    files.push(language::TemplateFile {
-        path: "LICENSE",
-        content: license::bsl_license(license::current_year()?, &author_name),
-    });
+    // Inside a workspace the workspace's own license covers the plugin.
+    if workspace.is_none() {
+        files.push(language::TemplateFile {
+            path: "LICENSE",
+            content: license::bsl_license(license::current_year()?, &author_name),
+        });
+    }
     files.push(language::TemplateFile {
         path: "README.md",
         content: language.readme(&name, &label),
@@ -178,12 +227,80 @@ pub async fn create_plugin(path: &Path, language: Language) -> Result<CreatedPlu
     })
 }
 
+#[derive(Debug)]
+pub struct CreatedWorkspace {
+    pub name: String,
+    pub directory: PathBuf,
+}
+
+const WORKSPACE_TOML: &str = r#"[workspace]
+name = __NAME__
+label = __LABEL__
+version = "0.1.0"
+description = __DESCRIPTION__
+authors = [{ name = __AUTHOR_NAME__, email = __AUTHOR_EMAIL__ }]
+categories = []
+dependencies = []
+
+# Member plugins. `aether --gen` (choose plugin) adds an entry here when the plugin is created inside
+# this folder; one can also be added by hand:
+#   my_plugin = { path = "./my_plugin" }
+[workspace.plugins]
+"#;
+
+/// Create a plugin workspace at `path`: a folder with a `workspace.toml`, a README and a license. The
+/// workspace is named after the folder unless `details.name` says otherwise.
+pub async fn create_workspace(path: &Path, details: &WorkspaceDetails) -> Result<CreatedWorkspace, ScaffoldError> {
+    let current_dir = std::env::current_dir().map_err(io_error(Path::new(".")))?;
+    let directory = normalize(&current_dir.join(path));
+    let folder = directory
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| ScaffoldError::InvalidName(path.to_string_lossy().into_owned()))?
+        .to_string();
+    let name = details.name.clone().filter(|name| !name.is_empty()).unwrap_or(folder);
+    validate_name(&name)?;
+    ensure_empty_destination(&directory).await?;
+
+    let (author_name, author_email) =
+        details.author.clone().unwrap_or_else(|| (DEFAULT_AUTHOR.0.to_string(), DEFAULT_AUTHOR.1.to_string()));
+    let label = details.label.clone().filter(|label| !label.trim().is_empty()).unwrap_or_else(|| humanize(&name));
+    let description = details
+        .description
+        .clone()
+        .filter(|text| !text.trim().is_empty())
+        .unwrap_or_else(|| format!("The plugins of {label}."));
+    let quoted = |value: &str| toml_edit::Value::from(value).to_string().trim().to_string();
+    let manifest = WORKSPACE_TOML
+        .replace("__NAME__", &quoted(&name))
+        .replace("__LABEL__", &quoted(&label))
+        .replace("__DESCRIPTION__", &quoted(&description))
+        .replace("__AUTHOR_NAME__", &quoted(&author_name))
+        .replace("__AUTHOR_EMAIL__", &quoted(&author_email));
+    let readme = format!(
+        "# {label}\n\n{description}\n\nCreate a plugin here with `aether --gen` (choose plugin, and a path inside this folder): it is\nregistered under `[workspace.plugins]` in `workspace.toml`. Plugins that link to another plugin's model must be\nloaded after it.\n"
+    );
+    let files = [
+        ("workspace.toml", manifest),
+        ("README.md", readme),
+        ("LICENSE", license::bsl_license(license::current_year()?, &author_name)),
+    ];
+    fs::create_dir_all(&directory).await.map_err(io_error(&directory))?;
+    for (file, content) in files {
+        let target = directory.join(file);
+        fs::write(&target, content).await.map_err(io_error(&target))?;
+    }
+    Ok(CreatedWorkspace { name, directory })
+}
+
 fn render_manifest(
     name: &str,
     label: &str,
     author_name: &str,
     author_email: &str,
     workspace: Option<&str>,
+    language: Language,
+    description: &str,
 ) -> String {
     let quoted = |value: &str| toml_edit::Value::from(value).to_string().trim().to_string();
     let workspace_line = workspace
@@ -192,12 +309,14 @@ fn render_manifest(
     PLUGIN_TOML
         .replace("__NAME__", name)
         .replace("__LABEL__", label)
+        .replace("__DESCRIPTION__", &quoted(description))
         .replace("__AUTHOR_NAME__", &quoted(author_name))
         .replace("__AUTHOR_EMAIL__", &quoted(author_email))
         .replace("__WORKSPACE_LINE__", &workspace_line)
+        .replace("__CODE_LINE__", language.code_line())
 }
 
-fn validate_name(name: &str) -> Result<(), ScaffoldError> {
+pub(super) fn validate_name(name: &str) -> Result<(), ScaffoldError> {
     let mut characters = name.chars();
     let valid = name.len() <= 64
         && characters.next().is_some_and(|first| first.is_ascii_lowercase())
@@ -246,7 +365,7 @@ fn normalize(path: &Path) -> PathBuf {
 }
 
 /// `my_plugin` -> `My Plugin`.
-fn humanize(name: &str) -> String {
+pub(super) fn humanize(name: &str) -> String {
     name.split(['_', ' ', '-'])
         .filter(|word| !word.is_empty())
         .map(|word| {
@@ -286,7 +405,7 @@ mod tests {
 
     #[test]
     fn manifest_parses_as_plugin_toml() -> Result<(), toml_edit::TomlError> {
-        let text = render_manifest("company", "Company", "Ada \"A\" L", "a@x.io", Some("base"));
+        let text = render_manifest("company", "Company", "Ada \"A\" L", "a@x.io", Some("base"), Language::Go, "Handles companies.");
         let document: toml_edit::DocumentMut = text.parse()?;
         assert_eq!(document["plugin"]["name"].as_str(), Some("company"));
         assert_eq!(
@@ -296,9 +415,42 @@ mod tests {
         assert_eq!(document["plugin"]["meta"]["workspace"].as_str(), Some("base"));
         assert!(document["plugin"].get("public_functions").is_none(), "public access is opt-in");
 
-        let standalone = render_manifest("company", "Company", "Ada", "a@x.io", None);
+        let standalone = render_manifest("company", "Company", "Ada", "a@x.io", None, Language::Go, "A plugin.");
         assert!(!standalone.contains("workspace ="));
         standalone.parse::<toml_edit::DocumentMut>()?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_rhai_plugin_names_its_script_instead_of_a_module() -> Result<(), toml_edit::TomlError> {
+        let text = render_manifest("currency", "Currency", "Ada", "a@x.io", Some("base"), Language::Rhai, "Currencies.");
+        let document: toml_edit::DocumentMut = text.parse()?;
+        assert_eq!(document["plugin"]["script"].as_str(), Some("main.rhai"));
+        assert!(document["plugin"].get("wasm_file").is_none());
+        Ok(())
+    }
+
+    /// The scaffolder runs for real: the directory it writes is a plugin the kernel accepts.
+    #[tokio::test]
+    async fn a_generated_rhai_plugin_is_complete_and_registered_in_its_workspace() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(
+            dir.path().join("workspace.toml"),
+            "[workspace]\nname = \"base\"\nauthors = [{ name = \"Ada\", email = \"a@x.io\" }]\n\n[workspace.plugins]\n",
+        )?;
+        let target = dir.path().join("currency");
+        let created = create_plugin(&target, Language::Rhai).await?;
+        assert_eq!((created.name.as_str(), created.workspace.as_deref()), ("currency", Some("base")));
+        for file in ["plugin.toml", "main.rhai", "README.md", ".gitignore"] {
+            assert!(target.join(file).is_file(), "{file} is missing");
+        }
+        assert!(!target.join("out").exists() && !target.join("src").exists());
+        assert!(!target.join("Makefile").exists() && !target.join("LICENSE").exists());
+        let workspace = std::fs::read_to_string(dir.path().join("workspace.toml"))?;
+        assert!(workspace.contains("currency = { path = \"./currency\" }"), "{workspace}");
+        let manifest = aether_core::plugin_manager::models::plugin_def::PluginManifest::parse(&std::fs::read_to_string(target.join("plugin.toml"))?)?;
+        assert!(manifest.plugin.is_script());
+        assert_eq!(manifest.plugin.code_file(), Some("main.rhai"));
         Ok(())
     }
 }

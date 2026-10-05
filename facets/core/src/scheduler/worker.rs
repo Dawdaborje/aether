@@ -23,6 +23,8 @@ use crate::{
     tenancy::OrgRef,
 };
 
+use crate::plugin_files::watch::WatchManager;
+
 use super::{
     nodes::{self, NodeKind},
     queue::{self, Job, Outcome},
@@ -99,6 +101,10 @@ pub async fn run(state: AppState, options: WorkerOptions, mut shutdown: watch::R
         if options.queues.is_empty() { "all".to_string() } else { options.queues.join(", ") }
     );
 
+    // File watches follow the scheduler: they run on the node that runs jobs, and stop when it
+    // stands down or is paused, so the folders are not listened to twice.
+    let mut watches = WatchManager::new(state.clone());
+    let mut all_orgs: Vec<String> = Vec::new();
     let mut last_sweep: Option<Instant> = None;
     let mut last_purge = Instant::now();
     let mut standing_down = false;
@@ -123,13 +129,21 @@ pub async fn run(state: AppState, options: WorkerOptions, mut shutdown: watch::R
                 }
             }
             match org_names(&core).await {
-                Ok(all) => orgs.extend(all),
+                Ok(all) => {
+                    orgs.extend(all.iter().cloned());
+                    all_orgs = all;
+                }
                 Err(error) => log::warn!("scheduler could not list organizations: {error}"),
             }
         }
         orgs.sort();
         orgs.dedup();
 
+        if standing_down || link.is_paused() {
+            watches.stop_all();
+        } else if sweep {
+            watches.sync(&all_orgs).await;
+        }
         if !standing_down && !link.is_paused() {
             let purge = sweep && last_purge.elapsed() >= PURGE_EVERY;
             if purge {
@@ -147,6 +161,7 @@ pub async fn run(state: AppState, options: WorkerOptions, mut shutdown: watch::R
         }
     }
 
+    watches.stop_all();
     log::info!("Scheduler {} stopping; waiting for running jobs", options.node_id);
     let drained = tokio::time::timeout(
         Duration::from_secs(DRAIN_SECS),

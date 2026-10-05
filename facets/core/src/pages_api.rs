@@ -161,12 +161,16 @@ async fn serve_page_inner(
 
     let jar = with_visitor_cookie(&state, &identity, jar);
     match outcome {
-        Ok(found) => (
+        Ok(mut found) => {
+            let language = localize(&state, &identity, &headers, &mut found.page).await;
+            (
             jar,
             Json(json!({
                 "route": found.page.route,
                 "path": route,
                 "params": found.params,
+                "locale": language.locale,
+                "dir": language.dir,
                 "title": found.page.title,
                 "source": found.page.plugin_name,
                 "plugin": found.page.plugin_name,
@@ -176,9 +180,85 @@ async fn serve_page_inner(
                 "page": found.page.component_tree,
             })),
         )
-            .into_response(),
+            .into_response()
+        }
         Err(refusal) => failure(jar, refusal.status, refusal.message),
     }
+}
+
+/// The language a page was served in.
+struct Language {
+    locale: String,
+    /// `ltr` or `rtl`.
+    dir: &'static str,
+}
+
+/// Put the page's `%key%` text into the reader's language. The reader's languages are, best
+/// first: for a logged-in member their own, then the organization's, then the server's; a
+/// visitor who is not logged in is offered what their browser asks for before the
+/// organization's. A page whose plugins have no text for any of them keeps its own words.
+async fn localize(state: &AppState, identity: &Identity, headers: &HeaderMap, page: &mut PageRow) -> Language {
+    let chain = locale_chain(state, identity, headers);
+    let locale = chain.first().cloned().unwrap_or_else(|| "en".to_string());
+    let dir = if aether_localization::is_rtl(&locale) { "rtl" } else { "ltr" };
+
+    match translator(state, identity).await {
+        Ok(translator) => {
+            let plugin = page.plugin_name.clone();
+            let mut title = Value::String(std::mem::take(&mut page.title));
+            aether_localization::resolve_tree(&mut title, &plugin, &translator, &chain);
+            page.title = title.as_str().unwrap_or_default().to_string();
+            aether_localization::resolve_tree(&mut page.component_tree, &plugin, &translator, &chain);
+        }
+        Err(error) => log::warn!("page text not localized: {error}"),
+    }
+    Language { locale, dir }
+}
+
+/// The languages to try for this reader, best first.
+pub(crate) fn locale_chain(state: &AppState, identity: &Identity, headers: &HeaderMap) -> Vec<String> {
+    let accepted = headers
+        .get(axum::http::header::ACCEPT_LANGUAGE)
+        .and_then(|value| value.to_str().ok())
+        .map(aether_localization::parse_accept_language)
+        .unwrap_or_default();
+    let server = state.config.i18n.default_locale.as_str();
+    let mut sources: Vec<Option<&str>> = Vec::new();
+    if !matches!(identity.actor, Actor::User(_)) {
+        sources.extend(accepted.iter().map(|locale| Some(locale.as_str())));
+    }
+    sources.push(Some(server));
+    aether_localization::fallback_chain(&sources)
+}
+
+/// Put the `%key%` text of a model's labels (model, field and option labels) into the
+/// reader's language. `plugin` is the plugin that owns the model.
+pub(crate) async fn localize_model_text(
+    state: &AppState,
+    identity: &Identity,
+    headers: &HeaderMap,
+    plugin: &str,
+    texts: &mut Value,
+) {
+    let chain = locale_chain(state, identity, headers);
+    match translator(state, identity).await {
+        Ok(translator) => aether_localization::resolve_tree(texts, plugin, &translator, &chain),
+        Err(error) => log::warn!("model text not localized: {error}"),
+    }
+}
+
+/// The text of the plugins installed in the caller's organization, in install order.
+pub(crate) async fn translator(state: &AppState, identity: &Identity) -> Result<aether_localization::Translator, surrealdb::Error> {
+    let org = state.org(&identity.org_db).await?;
+    let mut response = org
+        .query("SELECT plugin_name, version FROM installed_plugins WHERE is_enabled = true ORDER BY installed_at;")
+        .await?
+        .check()?;
+    let installed: Vec<InstalledRow> = response.take(0)?;
+    let installed: Vec<(String, String)> =
+        installed.into_iter().map(|row| (row.plugin_name, row.version)).collect();
+    let core = state.core().await?;
+    crate::plugin_manager::i18n::translator_for(&core, &installed).await
 }
 
 struct Refusal {

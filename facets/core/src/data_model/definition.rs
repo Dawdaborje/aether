@@ -1,6 +1,6 @@
 //! The model file format (`models/<name>.json`) and the rules a model must follow.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use rand::RngExt;
@@ -37,6 +37,11 @@ fn is_id(prefix: &str, text: &str) -> bool {
             (6..=32).contains(&tail.len())
                 && tail.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
         })
+}
+
+/// `plugin.model`: a model of another plugin, as a link names it.
+pub fn foreign_target(target: &str) -> Option<(&str, &str)> {
+    target.split_once('.').filter(|(plugin, model)| is_name(plugin) && is_name(model))
 }
 
 /// A name plugin code and pages use: lowercase letters, digits and `_`, starting with a letter.
@@ -129,9 +134,16 @@ pub struct FieldDef {
     pub index: Option<IndexKind>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub options: Vec<SelectOption>,
-    /// For `link`: the name of the model it points at, in the same plugin.
+    /// For `link`: the model it points at. A bare name (`note`) is a model of the same plugin;
+    /// `plugin.model` (`currency.currency`) is a model of another plugin, which this plugin must
+    /// list as a dependency.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
+    /// For a link to another plugin's model: that model's id (`mdl_…`). `aether --sync-models`
+    /// fills it in from the catalog, like every other id, so loading a plugin never has to look
+    /// anything up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub help: Option<String>,
     /// Hidden from plugins and pages; the stored data is kept.
@@ -396,10 +408,23 @@ fn field_problems(model: &str, field: &FieldDef, problems: &mut Vec<String>) {
     }
     match (field.kind, &field.target) {
         (FieldType::Link, None) => problems.push(format!("{model}.{name}: a link field needs a `target` model")),
+        (FieldType::Link, Some(target)) if foreign_target(target).is_some() => match &field.target_id {
+            None => problems.push(format!(
+                "{model}.{name}: a link to `{target}` needs its `target_id`; run `aether --sync-models` (the other plugin must be loaded first)"
+            )),
+            Some(id) if !is_id(MODEL_PREFIX, id) => {
+                problems.push(format!("{model}.{name}: `target_id` `{id}` is not like `mdl_k3v9xq2m7a`"));
+            }
+            Some(_) => {}
+        },
         (FieldType::Link, Some(target)) if !is_name(target) => {
-            problems.push(format!("{model}.{name}: `target` must be a model name"));
+            problems.push(format!("{model}.{name}: `target` must be a model name, or `plugin.model` for another plugin's"));
         }
-        (FieldType::Link, Some(_)) => {}
+        (FieldType::Link, Some(_)) => {
+            if field.target_id.is_some() {
+                problems.push(format!("{model}.{name}: only a link to another plugin's model has a `target_id`"));
+            }
+        }
         (_, Some(_)) => problems.push(format!("{model}.{name}: only link fields have a `target`")),
         _ => {}
     }
@@ -463,6 +488,7 @@ pub fn validate_set(models: &[ModelDef]) -> Result<(), ModelFileError> {
     for model in models {
         for field in model.live_fields() {
             if let Some(target) = &field.target
+                && foreign_target(target).is_none()
                 && !names.contains(target.as_str())
             {
                 problems.push(format!("{}.{}: links to `{target}`, which is not a model of this plugin", model.name, field.name));
@@ -513,6 +539,34 @@ pub struct Synced {
 /// ids; this is how it gets them, so that renaming a field later cannot be mistaken for
 /// deleting it and adding another.
 pub fn sync_package(package_dir: &Path) -> Result<Vec<Synced>, ModelFileError> {
+    sync_package_with(package_dir, &HashMap::new())
+}
+
+/// The other plugins' models (`plugin.model`) the package's links point at.
+pub fn foreign_targets(package_dir: &Path) -> Result<BTreeSet<String>, ModelFileError> {
+    let directory = package_dir.join(MODEL_DIR);
+    let mut found = BTreeSet::new();
+    let Ok(entries) = std::fs::read_dir(&directory) else { return Ok(found) };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).map_err(|source| ModelFileError::Io { path: path.clone(), source })?;
+        let model: ModelDef = serde_json::from_str(&text).map_err(|source| ModelFileError::Parse { path: path.clone(), source })?;
+        for field in &model.fields {
+            if let Some(target) = field.target.as_deref().filter(|target| foreign_target(target).is_some()) {
+                found.insert(target.to_string());
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// [`sync_package`], also filling in the `target_id` of links to other plugins' models from `foreign`
+/// (`plugin.model` to model id, from the catalog). A link whose model is not in `foreign` is left as
+/// it is and reported by validation.
+pub fn sync_package_with(package_dir: &Path, foreign: &HashMap<String, String>) -> Result<Vec<Synced>, ModelFileError> {
     let directory = package_dir.join(MODEL_DIR);
     let mut paths: Vec<PathBuf> = std::fs::read_dir(&directory)
         .map_err(|source| ModelFileError::Io { path: directory.clone(), source })?
@@ -529,7 +583,15 @@ pub fn sync_package(package_dir: &Path) -> Result<Vec<Synced>, ModelFileError> {
             .map_err(|source| ModelFileError::Io { path: path.clone(), source })?;
         let mut model: ModelDef = serde_json::from_str(&text)
             .map_err(|source| ModelFileError::Parse { path: path.clone(), source })?;
-        let assigned = sync_ids(&mut model);
+        let mut assigned = sync_ids(&mut model);
+        for field in &mut model.fields {
+            if field.target_id.is_none()
+                && let Some(id) = field.target.as_ref().and_then(|target| foreign.get(target))
+            {
+                field.target_id = Some(id.clone());
+                assigned += 1;
+            }
+        }
         if assigned > 0 {
             let mut written = serde_json::to_string_pretty(&model)
                 .map_err(|source| ModelFileError::Parse { path: path.clone(), source })?;
@@ -743,5 +805,81 @@ mod tests {
             "name": "x", "fields": [], "colour": "red"
         }));
         assert!(result.is_err(), "typos must not be silently ignored");
+    }
+
+    // ---- links to another plugin's model
+
+    fn invoice_with_foreign_link(target_id: Option<&str>) -> ModelDef {
+        let mut model: ModelDef = serde_json::from_value(serde_json::json!({
+            "name": "invoice",
+            "fields": [{ "name": "currency", "type": "link", "target": "currency.currency" }]
+        }))
+        .unwrap_or_else(|error| panic!("{error}"));
+        sync_ids(&mut model);
+        model.fields[0].target_id = target_id.map(str::to_string);
+        model
+    }
+
+    #[test]
+    fn a_link_to_another_plugins_model_needs_its_id() {
+        let problems = invoice_with_foreign_link(None).problems();
+        assert!(problems.iter().any(|p| p.contains("needs its `target_id`") && p.contains("--sync-models")), "{problems:?}");
+        let problems = invoice_with_foreign_link(Some("not an id")).problems();
+        assert!(problems.iter().any(|p| p.contains("is not like")), "{problems:?}");
+        assert!(invoice_with_foreign_link(Some("mdl_k3v9xq2m7a")).problems().is_empty());
+        // A set does not look for `currency.currency` among its own models.
+        let model = invoice_with_foreign_link(Some("mdl_k3v9xq2m7a"));
+        assert!(validate_set(&[model]).is_ok());
+    }
+
+    #[test]
+    fn only_a_foreign_link_has_a_target_id_and_a_bad_target_is_refused() {
+        let mut own: ModelDef = serde_json::from_value(serde_json::json!({
+            "name": "note", "fields": [{ "name": "parent", "type": "link", "target": "note", "target_id": "mdl_k3v9xq2m7a" }]
+        }))
+        .unwrap_or_else(|error| panic!("{error}"));
+        sync_ids(&mut own);
+        assert!(own.problems().iter().any(|p| p.contains("only a link to another plugin's model has a `target_id`")));
+        for target in ["Currency.currency", "a.b.c", "currency.", ".currency", "cur-rency.x"] {
+            let mut model = invoice_with_foreign_link(Some("mdl_k3v9xq2m7a"));
+            model.fields[0].target = Some(target.to_string());
+            assert!(!model.problems().is_empty(), "{target}");
+        }
+    }
+
+    #[test]
+    fn syncing_fills_a_foreign_links_id_from_what_the_catalog_knows() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::create_dir_all(dir.path().join(MODEL_DIR))?;
+        let file = dir.path().join(MODEL_DIR).join("invoice.json");
+        std::fs::write(
+            &file,
+            serde_json::json!({ "name": "invoice", "fields": [
+                { "name": "currency", "type": "link", "target": "currency.currency" },
+                { "name": "owner", "type": "link", "target": "party.party" }
+            ] })
+            .to_string(),
+        )?;
+        let wanted = foreign_targets(dir.path())?;
+        assert_eq!(wanted.into_iter().collect::<Vec<_>>(), ["currency.currency", "party.party"]);
+
+        // Only one is known: the other is reported, not guessed.
+        let known: HashMap<String, String> = [("currency.currency".to_string(), "mdl_k3v9xq2m7a".to_string())].into();
+        let refused = sync_package_with(dir.path(), &known).err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(refused.contains("party.party") && refused.contains("--sync-models"), "{refused}");
+        let written: ModelDef = serde_json::from_str(&std::fs::read_to_string(&file)?)?;
+        assert_eq!(written.fields[0].target_id.as_deref(), Some("mdl_k3v9xq2m7a"));
+
+        let all: HashMap<String, String> = [
+            ("currency.currency".to_string(), "mdl_k3v9xq2m7a".to_string()),
+            ("party.party".to_string(), "mdl_p4rty0000a".to_string()),
+        ]
+        .into();
+        sync_package_with(dir.path(), &all)?;
+        let written: ModelDef = serde_json::from_str(&std::fs::read_to_string(&file)?)?;
+        // The id that was already there is never changed.
+        assert_eq!(written.fields[0].target_id.as_deref(), Some("mdl_k3v9xq2m7a"));
+        assert_eq!(written.fields[1].target_id.as_deref(), Some("mdl_p4rty0000a"));
+        Ok(())
     }
 }

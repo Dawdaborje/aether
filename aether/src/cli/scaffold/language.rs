@@ -2,7 +2,8 @@
 //!
 //! Aether runs plugins as WebAssembly modules through Extism, but generating a
 //! plugin does not need the Extism CLI: each language only needs its own
-//! toolchain (see the generated README).
+//! toolchain (see the generated README). Rhai is the exception: a Rhai plugin
+//! is its script, with nothing to compile.
 
 use std::str::FromStr;
 
@@ -15,6 +16,7 @@ pub enum Language {
     TypeScript,
     JavaScript,
     Python,
+    Rhai,
 }
 
 impl FromStr for Language {
@@ -27,6 +29,7 @@ impl FromStr for Language {
             "typescript" | "ts" => Ok(Self::TypeScript),
             "javascript" | "js" => Ok(Self::JavaScript),
             "python" | "py" => Ok(Self::Python),
+            "rhai" => Ok(Self::Rhai),
             _ => Err(ScaffoldError::UnsupportedLanguage(raw.to_string())),
         }
     }
@@ -46,7 +49,18 @@ impl Language {
             Self::TypeScript => "TypeScript",
             Self::JavaScript => "JavaScript",
             Self::Python => "Python",
+            Self::Rhai => "Rhai",
         }
+    }
+
+    /// Whether the plugin is compiled to a WebAssembly module (every language but Rhai).
+    pub fn is_wasm(self) -> bool {
+        self != Self::Rhai
+    }
+
+    /// The line of `plugin.toml` that names the plugin's code.
+    pub fn code_line(self) -> &'static str {
+        if self.is_wasm() { "wasm_file = \"out/plugin.wasm\"" } else { "script = \"main.rhai\"" }
     }
 
     /// Toolchain requirements and the command that produces `plugin.wasm`.
@@ -57,6 +71,7 @@ impl Language {
             Self::TypeScript => "Requires `esbuild` and the [extism-js](https://github.com/extism/js-pdk) compiler on your `PATH`.",
             Self::JavaScript => "Requires the [extism-js](https://github.com/extism/js-pdk) compiler on your `PATH`.",
             Self::Python => "Requires the [extism-py](https://github.com/extism/python-pdk) compiler on your `PATH`.",
+            Self::Rhai => "Nothing to install: the script is read by Aether itself.",
         }
     }
 
@@ -105,10 +120,18 @@ impl Language {
                 file("Makefile", PY_MAKEFILE),
                 gitignore("__pycache__/\n"),
             ],
+            Self::Rhai => vec![
+                file("main.rhai", RHAI_MAIN),
+                // Nothing is built, so only editor leftovers are ignored.
+                TemplateFile { path: ".gitignore", content: "*~\n*.swp\n.DS_Store\n".to_string() },
+            ],
         }
     }
 
     pub fn readme(self, name: &str, label: &str) -> String {
+        if self == Self::Rhai {
+            return RHAI_README.replace("__NAME__", name).replace("__LABEL__", label);
+        }
         README
             .replace("__NAME__", name)
             .replace("__LABEL__", label)
@@ -276,6 +299,65 @@ clean:
 .PHONY: build clean
 ";
 
+
+const RHAI_MAIN: &str = r#"// __LABEL__, an Aether plugin written in Rhai. There is nothing to compile: this file is the plugin.
+//
+// Every public `fn` can be called (POST /api/plugins/__NAME__/<function>, from a page, or with
+// `aether --command` once it is declared in plugin.toml). It takes the call's JSON input as its one
+// parameter and returns JSON. `private fn` is for helpers. Rhai passes maps and arrays by value, so a
+// helper that changes one must return it. The kernel commands (db::, cache::, fs::, communication::,
+// scheduler::, ...) are listed in docs/plugin/commands.md, and the capabilities each one needs go in
+// `capabilities` in plugin.toml.
+
+fn hello(input) {
+    #{ message: "Hello from __NAME__", actor: context::get().actor }
+}
+
+// A function that reports a mistake to the caller:
+//
+// fn greet(input) {
+//     if input.name == () || input.name == "" { fail("a name is required"); }
+//     "Hello " + input.name
+// }
+"#;
+
+const RHAI_README: &str = r#"# __LABEL__
+
+An [Aether](https://github.com/Dawdaborje) plugin written in Rhai: the plugin is the script `main.rhai`,
+with nothing to compile.
+
+## Files
+
+| File | |
+|---|---|
+| `plugin.toml` | name, version, `capabilities`, `access_models`, `dependencies`, pages' app tile, commands, schedules |
+| `main.rhai` | the functions; every public `fn` is callable |
+| `models/<name>.json` | the plugin's data models (optional); `aether --sync-models .` gives them their ids |
+| `pages/*.xml` | the pages (optional) |
+
+## Work on it
+
+```sh
+aether --sync-models .                  # give the models ids
+aether --load-plugin .                  # register the plugin in the catalog
+aether --install-plugin __NAME__ --org <org>   # install it for an organization
+aether --upgrade-plugin __NAME__ --org <org>   # move an organization to the version you just loaded
+```
+
+Loading reads the script and refuses one that does not compile. Add `-c path/to/aether.toml` when the configuration
+is not in the usual place. While developing, `aether --serve --watch` loads and upgrades by itself whenever a file
+changes.
+
+A plugin that links to another plugin's model (`"target": "currency.currency"`) needs that plugin loaded first;
+list it under `dependencies`.
+
+## Learn more
+
+* `docs/plugin/rhai.md`: the language as Aether runs it, its limits and the commands a script can call.
+* `docs/plugin/commands.md`: every kernel command, its capability and payload.
+* `docs/plugin/pages.md` and `docs/plugin/cli-commands.md`: pages, and commands run with `aether --command`.
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,6 +370,7 @@ mod tests {
             ("ts", Language::TypeScript),
             ("JavaScript", Language::JavaScript),
             ("py", Language::Python),
+            ("Rhai", Language::Rhai),
         ] {
             assert_eq!(raw.parse::<Language>()?, expected);
         }
@@ -295,18 +378,15 @@ mod tests {
         Ok(())
     }
 
+    const WASM_LANGUAGES: [Language; 5] =
+        [Language::Go, Language::Rust, Language::TypeScript, Language::JavaScript, Language::Python];
+
     #[test]
     fn every_language_has_sources_a_makefile_and_no_unfilled_placeholders() {
-        for language in [
-            Language::Go,
-            Language::Rust,
-            Language::TypeScript,
-            Language::JavaScript,
-            Language::Python,
-        ] {
+        for language in WASM_LANGUAGES.into_iter().chain([Language::Rhai]) {
             let files = language.files("company");
-            assert!(files.iter().any(|f| f.path.starts_with("src/")));
-            assert!(files.iter().any(|f| f.path == "Makefile"));
+            assert!(files.iter().any(|f| f.path.starts_with("src/") || f.path == "main.rhai"));
+            assert_eq!(files.iter().any(|f| f.path == "Makefile"), language.is_wasm(), "{language:?}");
             assert!(
                 files.iter().all(|f| !f.content.contains("__NAME__")),
                 "{language:?} left a placeholder"
@@ -317,13 +397,7 @@ mod tests {
 
     #[test]
     fn makefiles_default_to_building_into_out_with_tab_recipes() {
-        for language in [
-            Language::Go,
-            Language::Rust,
-            Language::TypeScript,
-            Language::JavaScript,
-            Language::Python,
-        ] {
+        for language in WASM_LANGUAGES {
             let files = language.files("company");
             let makefile = files.iter().find(|f| f.path == "Makefile");
             let Some(makefile) = makefile else {
@@ -358,10 +432,34 @@ mod tests {
             assert!(!listed.contains(&"package.json"), "{language:?}");
             assert!(!listed.contains(&"tsconfig.json"), "{language:?}");
         }
-        for language in [Language::Go, Language::Rust, Language::TypeScript, Language::JavaScript, Language::Python] {
+        for language in WASM_LANGUAGES {
             for file in language.files("company") {
                 assert!(!file.content.contains("extism_pdk") && !file.content.contains("go-pdk") && !file.content.contains("@extism/js-pdk"), "{language:?} {}", file.path);
             }
         }
+    }
+
+    #[test]
+    fn rhai_has_a_script_and_no_makefile_because_nothing_is_built() {
+        let files = Language::Rhai.files("currency");
+        let get = |path: &str| files.iter().find(|f| f.path == path).map(|f| f.content.clone()).unwrap_or_default();
+        assert!(!Language::Rhai.is_wasm());
+        assert_eq!(Language::Rhai.code_line(), "script = \"main.rhai\"");
+        assert!(files.iter().all(|f| f.path != "Makefile"));
+
+        let readme = Language::Rhai.readme("currency", "Currency");
+        assert!(readme.contains("--install-plugin currency --org") && !readme.contains("make") && !readme.contains("plugin.wasm") && !readme.contains("__"));
+        assert!(get(".gitignore").contains("*.swp"));
+    }
+
+    /// The sample is a plugin the kernel accepts: it compiles, and `hello` is callable.
+    #[test]
+    fn the_rhai_sample_compiles_and_exports_hello() -> Result<(), Box<dyn std::error::Error>> {
+        let files = Language::Rhai.files("currency");
+        let source = files.iter().find(|f| f.path == "main.rhai").map(|f| f.content.clone()).ok_or("no main.rhai")?;
+        let program = aether_core::plugin_manager::script::ScriptProgram::compile(&source)?;
+        assert!(program.has_function("hello"));
+        assert!(source.contains("/api/plugins/currency/"));
+        Ok(())
     }
 }

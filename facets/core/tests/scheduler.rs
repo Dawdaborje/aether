@@ -302,7 +302,7 @@ struct FakeScheduler {
 #[async_trait::async_trait]
 impl SchedulerHandle for FakeScheduler {
     fn wake(&self, org: &str) {
-        self.woken.lock().unwrap().push(org.to_string());
+        self.woken.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(org.to_string());
     }
     fn reload(&self) {}
     async fn defaults(&self, _: &str) -> JobDefaults {
@@ -317,6 +317,16 @@ impl SchedulerHandle for FakeScheduler {
 }
 
 async fn plugin_context(db: &Surreal<Client>, org: &str, caps: &[&str], handle: Arc<FakeScheduler>) -> Result<PluginHostContext, Box<dyn std::error::Error>> {
+    plugin_context_as(db, org, "crm", caps, handle).await
+}
+
+async fn plugin_context_as(
+    db: &Surreal<Client>,
+    org: &str,
+    plugin: &str,
+    caps: &[&str],
+    handle: Arc<FakeScheduler>,
+) -> Result<PluginHostContext, Box<dyn std::error::Error>> {
     let cache = aether_core::cache::Cache::from_config(&aether_core::cache::CacheConfig {
         backend: aether_core::cache::CacheBackendKind::Moka,
         default_ttl_secs: None,
@@ -327,7 +337,7 @@ async fn plugin_context(db: &Surreal<Client>, org: &str, caps: &[&str], handle: 
     let media: Arc<dyn aether_storage::MediaBackend> =
         Arc::new(aether_storage::ObjectStoreBackend::new(object_store::memory::InMemory::new()));
     Ok(PluginHostContext::new(
-        "crm",
+        plugin,
         caps.iter().map(|c| c.to_string()).collect(),
         Default::default(),
         session(db, org).await?,
@@ -338,7 +348,7 @@ async fn plugin_context(db: &Surreal<Client>, org: &str, caps: &[&str], handle: 
             "send_welcome",
         ),
     )
-    .with_services(HostServices { cache, media, scheduler: Some(handle) }))
+    .with_services(HostServices { cache, media, scheduler: Some(handle), files_root: None, bridges: None }))
 }
 
 #[tokio::test]
@@ -356,7 +366,7 @@ async fn one_command_sends_any_type_of_message_one_job_per_recipient() -> TestRe
     assert_eq!(sent["data"]["jobs"].as_array().map(Vec::len), Some(2));
     let sms = kernel_command(&ctx, "communication::send", json!({ "type": "sms", "to": "+2348012345678", "text": "Code 1234" })).await?;
     assert_eq!(sms["data"]["jobs"].as_array().map(Vec::len), Some(1));
-    assert_eq!(handle.woken.lock().unwrap().as_slice(), [org.clone(), org.clone()], "the scheduler is woken after each send");
+    assert_eq!(handle.woken.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_slice(), [org.clone(), org.clone()], "the scheduler is woken after each send");
 
     // Each job is for one person, on the queue of its type, with the settings' retry defaults.
     let mut response = session.query("SELECT queue, kind, plugin, max_attempts, backoff_secs, payload.to AS to, enqueued_by FROM jobs ORDER BY queue, payload.to;").await?.check()?;
@@ -414,7 +424,7 @@ async fn plugin_jobs_and_tasks_through_the_scheduler_commands() -> TestResult {
     let id = made["data"]["id"].as_str().ok_or("no id")?.to_string();
     let again = kernel_command(&ctx, "scheduler::enqueue", json!({ "function": "export", "unique_key": "export-1" })).await?;
     assert_eq!(again["data"]["created"], false);
-    assert_eq!(handle.woken.lock().unwrap().len(), 1, "a duplicate does not wake anyone");
+    assert_eq!(handle.woken.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len(), 1, "a duplicate does not wake anyone");
     let status = kernel_command(&ctx, "scheduler::job", json!({ "id": id })).await?;
     assert_eq!(status["data"]["state"], "queued");
     assert_eq!(status["data"]["function"], "export");
@@ -549,7 +559,7 @@ async fn an_organization_uses_its_own_account_or_the_global_one_never_a_mix() ->
     set("account_sid", "AC_GLOBAL", None).await?;
     set("auth_token", "token_global", None).await?;
     set("from", "+15550000001", None).await?;
-    let values = messaging::resolve_values(&state, &org, twilio).await.unwrap();
+    let values = messaging::resolve_values(&state, &org, twilio).await.map_err(|e| e.message)?;
     assert_eq!((values["account_sid"].as_str(), values["auth_token"].as_str()), ("AC_GLOBAL", "token_global"));
 
     // The organization fills in only its account SID: that is a different account, so the global
@@ -561,7 +571,7 @@ async fn an_organization_uses_its_own_account_or_the_global_one_never_a_mix() ->
     // Complete, it uses all of its own.
     set("auth_token", "token_own", Some(&org)).await?;
     set("from", "+15550000002", Some(&org)).await?;
-    let values = messaging::resolve_values(&state, &org, twilio).await.unwrap();
+    let values = messaging::resolve_values(&state, &org, twilio).await.map_err(|e| e.message)?;
     assert_eq!(
         (values["account_sid"].as_str(), values["auth_token"].as_str(), values["from"].as_str()),
         ("AC_OWN", "token_own", "+15550000002")
@@ -571,7 +581,81 @@ async fn an_organization_uses_its_own_account_or_the_global_one_never_a_mix() ->
     set("auth_token", "", Some(&org)).await?;
     let core_org = session(&db, &org.db_name).await?;
     core_org.query("DELETE settings_items WHERE s_key CONTAINS 'bridge.twilio';").await?.check()?;
-    let values = messaging::resolve_values(&state, &org, twilio).await.unwrap();
+    let values = messaging::resolve_values(&state, &org, twilio).await.map_err(|e| e.message)?;
     assert_eq!(values["account_sid"], "AC_GLOBAL");
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "needs SurrealDB (AETHER_TEST_DB)"]
+async fn an_event_reaches_the_plugins_that_listen_and_only_those() -> TestResult {
+    let Some(db) = connect().await? else { return Ok(()) };
+    let (org, session) = fresh_org(&db, "events").await?;
+    let handle = Arc::new(FakeScheduler { woken: Default::default(), unconfigured: None });
+    for (name, enabled) in [("reports", true), ("audit", true), ("paused", false)] {
+        session
+            .query("CREATE installed_plugins SET plugin_name = $name, version = '1', is_enabled = $enabled;")
+            .bind(("name", name.to_string()))
+            .bind(("enabled", enabled))
+            .await?
+            .check()?;
+    }
+    // `ghost` is subscribed but not installed in this organization.
+    let listening = ["events::subscribe"];
+    for plugin in ["reports", "audit", "paused", "ghost"] {
+        let mut ctx = plugin_context_as(&db, &org, plugin, &listening, handle.clone()).await?;
+        ctx.dependencies = vec!["crm".into()];
+        kernel_command(&ctx, "events::subscribe", json!({ "event": "crm.lead_won", "function": format!("on_{plugin}") })).await?;
+    }
+    // A manifest subscription is the manifest's to change; others need the plugin as a dependency.
+    session
+        .query("CREATE event_subscriptions SET plugin = 'reports', event = 'crm.lead_lost', function_name = 'declared', source = 'manifest';")
+        .await?
+        .check()?;
+    let mut reports = plugin_context_as(&db, &org, "reports", &listening, handle.clone()).await?;
+    reports.dependencies = vec!["crm".into()];
+    let declared = kernel_command(&reports, "events::subscribe", json!({ "event": "crm.lead_lost", "function": "other" })).await;
+    assert!(matches!(&declared, Err(HostError::InvalidPayload(m)) if m.contains("plugin.toml")), "{declared:?}");
+    let stranger = kernel_command(&reports, "events::subscribe", json!({ "event": "billing.paid", "function": "f" })).await;
+    assert!(matches!(&stranger, Err(HostError::InvalidPayload(m)) if m.contains("dependencies")), "{stranger:?}");
+    let malformed = kernel_command(&reports, "events::subscribe", json!({ "event": "lead_won", "function": "f" })).await;
+    assert!(matches!(malformed, Err(HostError::InvalidPayload(_))));
+
+    // crm announces the event: reports and audit get a job; the disabled and the missing plugin do not.
+    let crm = plugin_context_as(&db, &org, "crm", &["events::emit"], handle.clone()).await?;
+    kernel_command(&crm, "events::emit", json!({ "event": "lead_won", "payload": { "lead": "L-1", "amount": 500 } })).await?;
+    let mut response = session
+        .query("SELECT plugin, function_name, enqueued_by, payload FROM jobs ORDER BY plugin;")
+        .await?
+        .check()?;
+    let jobs: Vec<Value> = response.take(0)?;
+    let who: Vec<_> = jobs.iter().map(|job| (job["plugin"].as_str().unwrap_or(""), job["function_name"].as_str().unwrap_or(""))).collect();
+    assert_eq!(who, [("audit", "on_audit"), ("reports", "on_reports")]);
+    assert_eq!(jobs[0]["enqueued_by"], "system:events");
+    assert_eq!(jobs[0]["payload"], json!({ "event": "crm.lead_won", "source": "crm", "payload": { "lead": "L-1", "amount": 500 }, "emitted_by": "users:u1", "depth": 1 }));
+    assert!(handle.woken.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains(&org), "the scheduler is woken");
+
+    // An event emitted by a handler that is itself four handlers deep is not passed on.
+    let deep = plugin_context_as(&db, &org, "crm", &["events::emit"], handle.clone()).await?.with_event_depth(4);
+    kernel_command(&deep, "events::emit", json!({ "event": "lead_won", "payload": {} })).await?;
+    let mut response = session.query("SELECT count() AS n FROM jobs GROUP ALL;").await?.check()?;
+    let count: Option<Value> = response.take(0)?;
+    assert_eq!(count.ok_or("no count")?["n"], 2, "no new jobs from the deep emit");
+    // One level shallower still passes it on, one level deeper.
+    let shallow = plugin_context_as(&db, &org, "crm", &["events::emit"], handle.clone()).await?.with_event_depth(3);
+    kernel_command(&shallow, "events::emit", json!({ "event": "lead_won", "payload": {} })).await?;
+    let mut response = session.query("SELECT payload.depth AS depth FROM jobs WHERE payload.depth = 4;").await?.check()?;
+    let deeper: Vec<Value> = response.take(0)?;
+    assert_eq!(deeper.len(), 2);
+
+    // Events with no listener, and browser-only names, make no jobs and do not fail.
+    kernel_command(&crm, "events::emit", json!({ "event": "nobody_listens", "payload": {} })).await?;
+    kernel_command(&crm, "events::emit", json!({ "event": "ui.only", "payload": {} })).await?;
+
+    // A subscription added while running can be removed; the manifest's cannot.
+    let removed = kernel_command(&reports, "events::unsubscribe", json!({ "event": "crm.lead_won" })).await?;
+    assert_eq!(removed["data"]["removed"], true);
+    let kept = kernel_command(&reports, "events::unsubscribe", json!({ "event": "crm.lead_lost" })).await?;
+    assert_eq!(kept["data"]["removed"], false);
     Ok(())
 }

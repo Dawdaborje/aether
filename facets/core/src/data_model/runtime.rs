@@ -56,8 +56,10 @@ impl ModelSchema {
         let table = model.model_id.clone()?;
         let mut columns = Vec::new();
         for field in model.live_fields() {
-            let link_table = field.target.as_ref().and_then(|target| {
-                all.iter().find(|other| &other.name == target).and_then(|other| other.model_id.clone())
+            let link_table = field.target.as_ref().and_then(|target| match super::definition::foreign_target(target) {
+                // Another plugin's model: its id was written into the field by `--sync-models`.
+                Some(_) => field.target_id.clone(),
+                None => all.iter().find(|other| &other.name == target).and_then(|other| other.model_id.clone()),
             });
             columns.push(Column { def: field.clone(), id: field.id.clone()?, link_table });
         }
@@ -479,5 +481,38 @@ mod tests {
         let row = Value::Object(stored);
         assert_eq!(after.decode(&row)["heading"], "Plan");
         assert!(after.encode_create(&data(json!({ "title": "x" }))).is_err(), "the old name is gone from the code's point of view");
+    }
+}
+
+#[cfg(test)]
+mod foreign_link_tests {
+    use super::*;
+    use crate::data_model::ModelDef;
+
+    fn invoice() -> Result<ModelDef, serde_json::Error> {
+        serde_json::from_value(serde_json::json!({
+            "model_id": "mdl_inv0000001", "name": "invoice",
+            "fields": [
+                { "id": "fld_cur0000001", "name": "currency", "type": "link", "target": "currency.currency", "target_id": "mdl_cur0000001" },
+                { "id": "fld_par0000001", "name": "parent", "type": "link", "target": "invoice" }
+            ]
+        }))
+    }
+
+    #[test]
+    fn a_link_to_another_plugins_model_must_point_into_that_models_table() -> Result<(), Box<dyn std::error::Error>> {
+        let model = invoice()?;
+        let schema = ModelSchema::new(&model, std::slice::from_ref(&model)).ok_or("no schema")?;
+        let mut data = serde_json::Map::new();
+        data.insert("currency".into(), serde_json::json!("mdl_cur0000001:abc"));
+        assert!(schema.encode_create(&data).is_ok());
+        data.insert("currency".into(), serde_json::json!("mdl_other00001:abc"));
+        let refused = schema.encode_create(&data).err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(refused.contains("linked model"), "{refused}");
+        // A link inside the plugin still resolves through the plugin's own models.
+        data.insert("currency".into(), serde_json::json!("mdl_cur0000001:abc"));
+        data.insert("parent".into(), serde_json::json!("mdl_inv0000001:x"));
+        assert!(schema.encode_create(&data).is_ok());
+        Ok(())
     }
 }

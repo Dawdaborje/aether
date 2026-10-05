@@ -225,6 +225,7 @@ mod tests {
             include_str!("../../../../seeds/settings/communications.json"),
             include_str!("../../../../seeds/settings/global_settings.json"),
             include_str!("../../../../seeds/settings/chatter.json"),
+            include_str!("../../../../seeds/settings/bridges.json"),
         ];
         let (mut labels, mut keys, mut groups) = (std::collections::HashSet::new(), std::collections::HashSet::new(), std::collections::HashSet::new());
         for file in files {

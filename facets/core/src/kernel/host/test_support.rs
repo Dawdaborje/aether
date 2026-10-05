@@ -45,15 +45,18 @@ pub fn dummy_ctx(caps: &[&str]) -> PluginHostContext {
 }
 
 pub fn with_services(mut ctx: PluginHostContext, media: std::sync::Arc<dyn aether_storage::MediaBackend>) -> PluginHostContext {
-    let cache = crate::cache::Cache::from_config(&crate::cache::CacheConfig {
+    let built = crate::cache::Cache::from_config(&crate::cache::CacheConfig {
         backend: crate::cache::CacheBackendKind::Moka,
         default_ttl_secs: None,
         max_entries: 100,
         max_value_bytes: 1024,
         redis: None,
-    })
-    .unwrap();
-    ctx.services = Some(crate::kernel::HostServices { cache, media, scheduler: None });
+    });
+    // Without a cache the context has no services, and the tests that need them fail saying so.
+    match built {
+        Ok(cache) => ctx.services = Some(crate::kernel::HostServices { cache, media, scheduler: None, files_root: None, bridges: None }),
+        Err(error) => log::error!("test cache could not be built: {error}"),
+    }
     ctx
 }
 

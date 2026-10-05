@@ -19,6 +19,9 @@ What the kernel offers a plugin today, and so what an SDK wraps:
 | Files | `storage::read`, `storage::write`, `storage::delete`, `storage::list` | same names |
 | Web APIs | `http::request` | `http::request` (+ `http_hosts`) |
 | Other plugins | `plugins::call` | `plugins::call` (+ `dependencies`) |
+| Files | `fs::read`, `fs::write`, `fs::list`, `fs::stat`, `fs::rename`, `fs::delete` (and `[[watch]]` in the manifest) | `fs::read`, `fs::write`, `fs::list`, `fs::delete` |
+| Integrations | `bridge::call` | `bridge::call` (+ `bridges` in `plugin.toml`) |
+| Events between plugins | `events::emit`, `events::subscribe`, `events::unsubscribe` | `events::emit`, `events::subscribe` |
 | Messages | `communication::send` (one command; the type says email, SMS, …) | `communication::send` + `email::send` / `sms::send` |
 | Background work | `scheduler::enqueue`, `scheduler::job`, `scheduler::cancel_job`, `scheduler::register`, `scheduler::cancel` | `scheduler::enqueue`, `scheduler::register`, `scheduler::cancel` |
 | Notifications | `notify::send` | `notify::send`, `notify::public` |

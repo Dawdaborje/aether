@@ -20,8 +20,9 @@ pub struct Args {
     #[arg(short = 'y', long, default_missing_value = "config")]
     pub get_plugins: Option<String>,
 
-    #[arg(long = "gen", num_args = 0..=1, default_missing_value = "workspace")]
-    /// Generate a scaffold: `workspace`, `plugin`, or `aether_config`
+    #[arg(long = "gen", num_args = 0..=1, default_missing_value = "")]
+    /// Create a plugin, a workspace or a configuration file. On its own (`aether --gen`) it asks what and how;
+    /// or name it: `plugin` (with --plugin-path and --plugin-language), `workspace` or `aether_config`
     pub generate: Option<String>,
 
     #[arg(long, value_name = "PATH")]
@@ -29,7 +30,7 @@ pub struct Args {
     pub plugin_path: Option<String>,
 
     #[arg(long, default_value = "go", value_name = "LANGUAGE")]
-    /// Language of a generated plugin: go, rust, typescript, javascript or python
+    /// Language of a generated plugin: go, rust, typescript, javascript, python or rhai (a script, with nothing to compile)
     pub plugin_language: String,
 
     #[arg(long, default_missing_value = "7890")]
@@ -48,7 +49,7 @@ pub struct Args {
     pub serve_listener: bool,
 
     #[arg(short = 'w', long, action = clap::ArgAction::SetTrue)]
-    /// Watch plugins for changes and reload them
+    /// With --serve, reload plugins when their source folders change (development only: every organization that has a changed plugin installed is moved to the new revision)
     pub watch: bool,
 
     #[arg(short = 'l', long = "log", default_value = "debug")]
@@ -107,6 +108,22 @@ pub struct Args {
     #[arg(long, value_name = "DB_NAME")]
     /// Organization database that `--install-plugin`, `--upgrade-plugin` and `--activate-theme` act on
     pub org: Option<String>,
+
+    #[arg(long = "command", value_name = "PLUGIN.COMMAND", requires = "org")]
+    /// Run a command a plugin offers, in an organization (e.g. `--command currency.import_rates --org acme --arg date=2026-10-05`). `--list-commands` shows what is available
+    pub command: Option<String>,
+
+    #[arg(long = "arg", value_name = "KEY=VALUE", action = clap::ArgAction::Append, requires = "command")]
+    /// An argument of the command (repeat for several); the plugin declares their names and types
+    pub command_args: Vec<String>,
+
+    #[arg(long = "json", value_name = "JSON", requires = "command")]
+    /// The command's arguments as a JSON object, instead of or together with `--arg`
+    pub command_json: Option<String>,
+
+    #[arg(long = "list-commands", action = clap::ArgAction::SetTrue, requires = "org")]
+    /// List the commands of every plugin installed in the organization (`--org`)
+    pub list_commands: bool,
 
     #[arg(long, value_name = "THEME", requires = "org")]
     /// Make an installed theme the organization's active theme (e.g. `--activate-theme ocean --org acme`)

@@ -4,3 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+aether_communication = { path = "../../../facets/communication" }
+async-trait.workspace = true
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "query"] }
+serde_json = "1"
+tokio = { version = "1.53.1", features = ["sync", "time"] }
+
+[dev-dependencies]
+aether_communication = { path = "../../../facets/communication", features = ["testing"] }
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread"] }

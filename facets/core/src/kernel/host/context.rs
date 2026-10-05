@@ -117,6 +117,18 @@ pub trait SchedulerHandle: Send + Sync {
     async fn check_messaging(&self, org: &str, kind: &str) -> Result<(), String>;
 }
 
+/// Calls a bridge on a plugin's behalf, with the organization's settings and credentials.
+#[async_trait::async_trait]
+pub trait BridgeHandle: Send + Sync {
+    async fn call(
+        &self,
+        org: &str,
+        bridge: &str,
+        action: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, aether_communication::SendError>;
+}
+
 /// Kernel services a plugin reaches through host commands. They are handed in already scoped
 /// to the organization of the call, so a command never has to pick the scope itself.
 #[derive(Clone)]
@@ -127,6 +139,10 @@ pub struct HostServices {
     pub media: std::sync::Arc<dyn aether_storage::MediaBackend>,
     /// The job scheduler; absent where background work is not available.
     pub scheduler: Option<std::sync::Arc<dyn SchedulerHandle>>,
+    /// The plugin's folder on disk for this organization, for `fs::*`.
+    pub files_root: Option<std::path::PathBuf>,
+    /// The bridges plugins call with `bridge::call`.
+    pub bridges: Option<std::sync::Arc<dyn BridgeHandle>>,
 }
 
 /// Execution context for one plugin invocation.
@@ -155,6 +171,10 @@ pub struct PluginHostContext {
     pub call_trail: Vec<String>,
     /// Runs other plugins' functions; absent when the call cannot make plugin calls.
     pub caller: Option<std::sync::Arc<dyn PluginCaller>>,
+    /// How many event handlers in a row led to this call (0 for a call that is not an event handler).
+    pub event_depth: u32,
+    /// The bridges this plugin may call (`bridges` in plugin.toml).
+    pub bridge_names: Vec<String>,
 }
 
 impl PluginHostContext {
@@ -182,6 +202,8 @@ impl PluginHostContext {
             dependencies: Vec::new(),
             call_trail: Vec::new(),
             caller: None,
+            event_depth: 0,
+            bridge_names: Vec::new(),
         }
     }
 
@@ -196,6 +218,20 @@ impl PluginHostContext {
     #[must_use]
     pub fn with_http_hosts(mut self, hosts: Vec<String>) -> Self {
         self.http_hosts = hosts;
+        self
+    }
+
+    /// Allow `bridge::call` to the bridges the plugin declared.
+    #[must_use]
+    pub fn with_bridges(mut self, names: Vec<String>) -> Self {
+        self.bridge_names = names;
+        self
+    }
+
+    /// Mark the call as an event handler `depth` handlers deep, so events it emits are limited.
+    #[must_use]
+    pub fn with_event_depth(mut self, depth: u32) -> Self {
+        self.event_depth = depth;
         self
     }
 

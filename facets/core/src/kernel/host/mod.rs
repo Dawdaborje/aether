@@ -9,15 +9,17 @@
 pub mod context;
 pub mod db;
 pub mod dispatch;
+pub mod bridge_call;
 pub mod communication;
 pub mod error;
+pub mod files;
 pub mod plugin_call;
 pub mod scheduling;
 pub mod http;
 pub mod storage;
 pub mod store;
 
-pub use context::{CallInfo, DbScope, HostServices, JobDefaults, ModelGrant, PluginCaller, PluginHostContext, SchedulerHandle};
+pub use context::{BridgeHandle, CallInfo, DbScope, HostServices, JobDefaults, ModelGrant, PluginCaller, PluginHostContext, SchedulerHandle};
 pub use dispatch::kernel_command;
 pub use error::HostError;
 

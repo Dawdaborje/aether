@@ -416,6 +416,8 @@ async fn thread(
 
     let me = scope.actor();
     let mine = followers.iter().find(|follower| follower.actor == me);
+    let mut tracked = Value::Array(scope.schema.tracked_fields());
+    crate::pages_api::localize_model_text(&state, &scope.identity, &headers, &scope.plugin, &mut tracked).await;
     Json(json!({
         "enabled": true,
         "config": {
@@ -432,7 +434,7 @@ async fn thread(
         },
         "me": me,
         "member": scope.member,
-        "tracked": scope.schema.tracked_fields(),
+        "tracked": tracked,
         "messages": messages.iter().map(|m| message_json(m, &names)).collect::<Vec<_>>(),
         "followers": followers.iter().map(|follower| json!({
             "actor": follower.actor,

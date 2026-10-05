@@ -11,6 +11,7 @@ aether_security = { path = "../security" }
 aether_web = { path = "../web" }
 aether_event_bus = { path = "../event_bus" }
 aether_storage = { path = "../storage" }
+aether_localization = { path = "../localization" }
 local_storage = { path = "../../bridges/storage_and_cdn/local_storage" }
 s3_storage = { path = "../../bridges/storage_and_cdn/s3_storage" }
 aether_communication = { path = "../communication" }
@@ -19,6 +20,8 @@ resend = { path = "../../bridges/communications/resend" }
 twilio = { path = "../../bridges/communications/twilio" }
 termii = { path = "../../bridges/communications/termii" }
 africas_talking = { path = "../../bridges/communications/africas_talking" }
+aether_paystack_integration = { path = "../../bridges/payments/paystack" }
+open_street_map = { path = "../../bridges/maps_and_locations/open_street_map" }
 # deps
 extism.workspace = true
 axum.workspace = true
@@ -50,6 +53,8 @@ chrono = "0.4"
 chrono-tz = "0.10"
 aes-gcm = "0.10"
 lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1", "tokio1-rustls-tls", "hostname"] }
+notify = "8"
+globset = "0.4"
 
 [dev-dependencies]
 wat = "1"

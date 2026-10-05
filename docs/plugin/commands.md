@@ -33,11 +33,15 @@ refusal is an error with a message (a script can `try`/`catch` it).
 | `notify::send` | `notify::send`, `notify::public` | `notify::send` | done |
 | `events::emit` | `events::emit` | `events::emit` | done |
 | `context::get` | none | `context::get` | done |
+| `fs::read`, `fs::stat` | `fs::read` | `fs::read/read_base64/stat` | done: the plugin's folder on disk, see [File watches](../architecture/watch.md) |
+| `fs::write`, `fs::rename` | `fs::write` | `fs::write/write_base64/rename` | done |
+| `fs::list` | `fs::list` | `fs::list` | done |
+| `fs::delete` | `fs::delete` | `fs::delete` | done |
 | `communication::send` | `communication::send` + `email::send` / `sms::send` | `communication::send` | done: one command for every message type, see [Communication](../architecture/communication.md) |
 | `scheduler::enqueue`, `scheduler::job`, `scheduler::cancel_job` | `scheduler::enqueue` | `scheduler::enqueue/job/cancel_job` | done: background jobs, see [the scheduler](../architecture/scheduler.md) |
 | `scheduler::register`, `scheduler::cancel` | same name | `scheduler::register/cancel` | done: recurring tasks (also `[[schedule]]` in `plugin.toml`) |
-| `bridge::call` | `bridge::call` | not bound | **not implemented**: the other bridges (payments, storage, …) are still empty |
-| `events::subscribe` | `events::subscribe` | not bound | **not implemented** |
+| `bridge::call` | `bridge::call` (+ `bridges`) | `bridge::invoke` | done: Paystack and OpenStreetMap, see [Bridges](../bridges.md) |
+| `events::subscribe`, `events::unsubscribe` | `events::subscribe` | `events::subscribe/unsubscribe` | done: see [Events](../architecture/events.md) |
 
 A command that is not implemented checks its capability and then answers "not implemented".
 `call` is a reserved word in Rhai, which is why `plugins::call` is `plugins::invoke` in scripts.
@@ -184,10 +188,32 @@ Tasks that always exist are declared as `[[schedule]]` in `plugin.toml`. See
 scheduler::enqueue("send_report", #{ month: "2026-10" }, #{ delay_secs: 60, unique_key: "report-2026-10" });
 ```
 
+## fs::*
+
+The plugin's own folder on local disk (`orgs/<organization>/plugins/<plugin>/`), the folder a
+`[[watch]]` in `plugin.toml` listens to: the plugin is told when a file arrives, reads it, and moves it away.
+Paths are relative to the folder and nothing outside it can be reached. See
+[File watches](../architecture/watch.md).
+
+```rhai
+let text = fs::read(change.path);
+fs::rename(change.path, "done/" + name);
+```
+
+## bridge::call
+
+`{ "bridge": "paystack", "action": "verify_transaction", "params": { "reference": "r1" } }` calls an
+integration the administrator set up. Needs `bridge::call` and the bridge listed under `bridges` in
+`plugin.toml`; the plugin never sees a key. Synchronous (at most 45 s). See [Bridges](../bridges.md).
+
+## events::subscribe, events::unsubscribe
+
+`events::emit` announces to browsers **and** to listening plugins; `events::subscribe { event, function }`
+adds a listener while running (`<plugin>.<event>`, the emitter being a dependency), `events::unsubscribe
+{ event }` removes it. Listeners run as background jobs. See [Events between plugins](../architecture/events.md).
+
 ## Not implemented yet
 
 | Command | What is missing |
 |---|---|
-| `bridge::call` | Bridges other than messaging: payments, storage, documents, … (their crates under `bridges/` are empty). |
-| `events::subscribe` | Plugin-to-plugin event delivery. `[[events]]` with `direction = "listen"` is parsed but nothing dispatches to it. |
-| Mailgun, Postmark, Bravo, WhatsApp | Messaging providers whose crates are still empty; the kernel routes only to SMTP, Resend, Twilio, Termii and Africa's Talking. |
+| Mailgun, Postmark, Bravo, WhatsApp, Stripe, Flutterwave, and the document, storage and identity bridges | Their crates are still empty. The kernel routes email to SMTP and Resend, SMS to Twilio, Termii and Africa's Talking, and `bridge::call` to Paystack and OpenStreetMap. |

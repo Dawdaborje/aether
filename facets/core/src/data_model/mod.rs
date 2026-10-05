@@ -20,6 +20,7 @@ pub mod runtime;
 
 pub use definition::{
     ChatterDef, FieldDef, FieldType, IndexKind, ModelDef, ModelFileError, SelectOption, ViewDef, new_id,
-    parse_model, read_models, sync_ids, sync_package, validate_set, VisitorChatter,
+    parse_model, read_models, sync_ids, sync_package, sync_package_with, validate_set, VisitorChatter, foreign_target,
+    foreign_targets,
 };
 pub use runtime::{ModelSchema, SchemaError, schemas_of};

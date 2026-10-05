@@ -1,0 +1,12 @@
+{
+  "code": "i18n",
+  "name": "Localization",
+  "description": "Translated text: the plugin's own catalogs are always available; overriding another plugin's text is a capability.",
+  "capabilities": [
+    {
+      "code": "override",
+      "name": "Override Text",
+      "description": "Replace text of a plugin this one depends on, with keys written <plugin>:<key> in its own i18n/<locale>.json files. Only text changes, never behaviour."
+    }
+  ]
+}

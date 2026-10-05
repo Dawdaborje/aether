@@ -32,6 +32,9 @@ pub enum CatalogError {
     #[error("database error: {0}")]
     Database(#[from] surrealdb::Error),
 
+    #[error("{0}")]
+    ForeignLink(String),
+
     #[error("the schedules of `{0}` could not be set up: {1}")]
     Schedule(String, String),
 
@@ -51,6 +54,9 @@ pub enum CatalogError {
 
     #[error(transparent)]
     Page(#[from] PageError),
+
+    #[error("i18n: {0}")]
+    I18n(String),
 
     #[error(transparent)]
     Theme(#[from] ThemeError),
@@ -237,6 +243,14 @@ struct NewPlugin {
     public_functions: Vec<String>,
     /// The manifest's `[[schedule]]` entries.
     schedules: Vec<serde_json::Value>,
+    /// The manifest's `[[command]]` entries.
+    commands: Vec<serde_json::Value>,
+    /// The plugin's translated text, from `i18n/<locale>.json`.
+    i18n: Option<serde_json::Value>,
+    /// The manifest's `[[watch]]` entries.
+    watches: Vec<serde_json::Value>,
+    /// The events the manifest listens to.
+    event_listeners: Vec<serde_json::Value>,
     is_builtin: bool,
     is_active: bool,
 }
@@ -425,6 +439,7 @@ pub async fn load_plugin(
     let pages = discover_pages(&package_dir).await?;
     let model_files = read_models(&package_dir)?;
     let models: Vec<ModelDef> = model_files.iter().map(|(_, model)| model.clone()).collect();
+    check_foreign_links(db, namespace, core_database, &manifest.plugin, &models).await?;
     validate_page_models(&manifest, &models, &pages)?;
     validate_granted_models(&manifest, &models, &manifest_path)?;
     validate_capabilities(&manifest, &manifest_path)?;
@@ -441,6 +456,13 @@ pub async fn load_plugin(
     }
     for declared in declared_files(&manifest) {
         files.insert(resolve_package_file(&package_dir, declared).await?);
+    }
+    let text_catalogs = super::i18n::read_catalogs(&package_dir, &manifest)
+        .await
+        .map_err(CatalogError::I18n)?;
+    if let Some(found) = &text_catalogs {
+        super::i18n::check_overrides(&manifest, &found.catalogs).map_err(CatalogError::I18n)?;
+        files.extend(found.files.iter().cloned());
     }
 
     // The artifact may live in a build folder such as `out/`; it is stored beside
@@ -504,6 +526,23 @@ pub async fn load_plugin(
         .map(|theme| (theme.name.clone(), theme.layout.clone()));
     let schedules: Vec<serde_json::Value> =
         manifest.schedule.iter().filter_map(|task| serde_json::to_value(task).ok()).collect();
+    let commands: Vec<serde_json::Value> =
+        manifest.command.iter().filter_map(|command| serde_json::to_value(command).ok()).collect();
+    let watches: Vec<serde_json::Value> =
+        manifest.watch.iter().filter_map(|watch| serde_json::to_value(watch).ok()).collect();
+    let event_listeners: Vec<serde_json::Value> = manifest
+        .events
+        .iter()
+        .filter(|event| event.direction() == "listen")
+        .map(|event| {
+            serde_json::json!({
+                "event": event.name,
+                "function": event.handler,
+                "queue": event.queue.clone().unwrap_or_else(|| "default".into()),
+                "max_attempts": event.max_attempts.unwrap_or(3),
+            })
+        })
+        .collect();
     let definition = manifest.plugin;
     let summary = |version: String,
                    artifact_path: Option<String>,
@@ -665,6 +704,10 @@ pub async fn load_plugin(
         app,
         public_functions: definition.public_functions.clone(),
         schedules,
+        commands,
+        i18n: text_catalogs.as_ref().map(|found| super::i18n::to_value(&found.catalogs)),
+        watches,
+        event_listeners,
         is_builtin: definition.is_builtin,
         is_active: true,
     };
@@ -1085,6 +1128,8 @@ pub async fn install_plugins(
         .await?
         .check()?;
         sync_schedules(db, &record.name, record.schedules.as_deref()).await?;
+        crate::plugin_files::watch::sync_watches(db, &record.name, record.watches.as_deref()).await?;
+        crate::plugin_events::sync_listeners(db, &record.name, record.event_listeners.as_deref()).await?;
         if let Some(theme) = theme {
             report.themes.push(InstalledTheme {
                 name: theme.name,
@@ -1208,10 +1253,101 @@ pub async fn upgrade_plugins(
         .await?
         .check()?;
         sync_schedules(db, &spec.name, target.schedules.as_deref()).await?;
+        crate::plugin_files::watch::sync_watches(db, &spec.name, target.watches.as_deref()).await?;
+        crate::plugin_events::sync_listeners(db, &spec.name, target.event_listeners.as_deref()).await?;
         installed.insert(spec.name.clone(), target.version.clone());
         report.upgraded.push((spec.name.clone(), from, target.version));
     }
     Ok(report)
+}
+
+/// Links to another plugin's model (`"target": "currency.currency"`): the plugin must list that plugin
+/// as a dependency, and the catalog must have the model under the `target_id` written in the field,
+/// so a typo or a model that moved is found when the plugin is loaded, not when it is used.
+async fn check_foreign_links(
+    db: &Surreal<Client>,
+    namespace: &str,
+    core_database: &str,
+    plugin: &super::models::plugin_def::PluginDefinition,
+    models: &[ModelDef],
+) -> Result<(), CatalogError> {
+    let mut wanted: Vec<(String, String, String, String)> = Vec::new();
+    for model in models {
+        for field in model.live_fields() {
+            let Some(target) = field.target.as_deref() else { continue };
+            let Some((other_plugin, other_model)) = crate::data_model::foreign_target(target) else { continue };
+            if other_plugin != plugin.name && !plugin.dependencies.iter().any(|dependency| dependency == other_plugin) {
+                return Err(CatalogError::ForeignLink(format!(
+                    "{}.{} links to `{target}`, so `{other_plugin}` must be listed under `dependencies` in plugin.toml",
+                    model.name, field.name
+                )));
+            }
+            wanted.push((
+                format!("{}.{}", model.name, field.name),
+                other_plugin.to_string(),
+                other_model.to_string(),
+                field.target_id.clone().unwrap_or_default(),
+            ));
+        }
+    }
+    if wanted.is_empty() {
+        return Ok(());
+    }
+    db.use_ns(namespace).await?;
+    db.use_db(core_database).await?;
+    for (field, other_plugin, other_model, id) in wanted {
+        let mut response = db
+            .query(
+                "SELECT VALUE model_id FROM plugin_models WHERE name = $model \
+                 AND plugin IN (SELECT VALUE id FROM plugins WHERE name = $plugin AND is_active = true);",
+            )
+            .bind(("model", other_model.clone()))
+            .bind(("plugin", other_plugin.clone()))
+            .await?
+            .check()?;
+        let ids: Vec<Option<String>> = response.take(0)?;
+        if ids.is_empty() {
+            return Err(CatalogError::ForeignLink(format!(
+                "{field} links to `{other_plugin}.{other_model}`, but the catalog has no such model: load `{other_plugin}` first (`aether --load-plugin`)"
+            )));
+        }
+        if !ids.iter().flatten().any(|known| known == &id) {
+            return Err(CatalogError::ForeignLink(format!(
+                "{field}: `target_id` `{id}` is not the id of `{other_plugin}.{other_model}`; run `aether --sync-models` again"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The ids of other plugins' models, by `plugin.model`, for `aether --sync-models` to write into links.
+/// A name the catalog does not have is simply missing from the answer.
+pub async fn foreign_model_ids(
+    db: &Surreal<Client>,
+    namespace: &str,
+    core_database: &str,
+    names: &std::collections::BTreeSet<String>,
+) -> Result<HashMap<String, String>, CatalogError> {
+    db.use_ns(namespace).await?;
+    db.use_db(core_database).await?;
+    let mut found = HashMap::new();
+    for name in names {
+        let Some((plugin, model)) = crate::data_model::foreign_target(name) else { continue };
+        let mut response = db
+            .query(
+                "SELECT VALUE model_id FROM plugin_models WHERE name = $model \
+                 AND plugin IN (SELECT VALUE id FROM plugins WHERE name = $plugin AND is_active = true) LIMIT 1;",
+            )
+            .bind(("model", model.to_string()))
+            .bind(("plugin", plugin.to_string()))
+            .await?
+            .check()?;
+        let ids: Vec<Option<String>> = response.take(0)?;
+        if let Some(Some(id)) = ids.into_iter().next() {
+            found.insert(name.clone(), id);
+        }
+    }
+    Ok(found)
 }
 
 /// Make an organization's recurring tasks for `plugin` match the catalog version's `[[schedule]]`.

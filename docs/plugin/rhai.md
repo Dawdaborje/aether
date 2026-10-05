@@ -36,6 +36,9 @@ fn add_note(input) {
 | `cache::get(key)`, `cache::set(key, value[, ttl_secs])`, `cache::invalidate(key)`, `cache::invalidate_prefix(prefix)`, `cache::clear()` | `cache::*` |
 | `storage::read(key)`, `storage::read_base64(key)`, `storage::write(key, text)`, `storage::write_base64(key, data)`, `storage::delete(key)`, `storage::list([prefix])` | `storage::*` |
 | `http::get(url)`, `http::post(url, body)`, `http::request(map)` | `http::request` (hosts must be listed in `http_hosts`) |
+| `fs::read(path)`, `fs::read_base64(path)`, `fs::write(path, text)`, `fs::write_base64(path, data)`, `fs::list([dir])`, `fs::stat(path)`, `fs::rename(from, to[, overwrite])`, `fs::delete(path)` | `fs::*`: the plugin's own folder on disk |
+| `bridge::invoke(bridge, action[, params])` | `bridge::call` (the bridge must be in `bridges`; `call` is reserved in Rhai) |
+| `events::subscribe(event, function)`, `events::unsubscribe(event)` | `events::subscribe/unsubscribe` |
 | `communication::send(map)` | `communication::send`: `#{ type: "email" \| "sms", to, … }` |
 | `scheduler::enqueue(function[, payload[, options]])`, `scheduler::job(id)`, `scheduler::cancel_job(id)` | `scheduler::enqueue/job/cancel_job` |
 | `scheduler::register(map)`, `scheduler::cancel(name)` | `scheduler::register/cancel` |
@@ -48,7 +51,7 @@ fn add_note(input) {
 
 Each command needs its capability in `capabilities` and is limited exactly as for a WASM plugin;
 see [Kernel commands](commands.md) for every payload, limit and what is not implemented yet
-(`bridge::call` and `events::subscribe` are not available to scripts yet).
+(every kernel command is available to scripts).
 
 A failed command (a model rule, a missing capability) raises an error you can `try`/`catch`; left
 uncaught it is internal: logged, and the caller sees "plugin invocation failed".

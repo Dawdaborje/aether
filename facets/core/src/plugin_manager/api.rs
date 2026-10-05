@@ -106,7 +106,7 @@ async fn invoke(
     };
 
     let trail = vec![format!("{plugin_name}.{function}")];
-    let result = run_call(&state, &mut identity, &plugin_name, &function, payload, trail.clone()).await;
+    let result = run_call(&state, &mut identity, &plugin_name, &function, payload, trail.clone(), 0).await;
     let status = match &result {
         Ok(_) => StatusCode::OK,
         Err(error) => error.status,
@@ -177,6 +177,7 @@ async fn run_call(
     function: &str,
     payload: Value,
     trail: Vec<String>,
+    event_depth: u32,
 ) -> Result<Value, CallError> {
     // The kernel's own jobs run with the plugin's full manifest, like a member; they are not visitors.
     let anonymous = !matches!(identity.actor, Actor::User(_) | Actor::System(_));
@@ -312,17 +313,21 @@ async fn run_call(
         state.notifications.clone(),
         CallInfo::new(identity.audit.clone(), function),
     )
+    .with_event_depth(event_depth)
+    .with_bridges(manifest.plugin.bridges.clone())
     .with_http_hosts(manifest.plugin.http_hosts.clone())
     .with_plugin_calls(
         manifest.plugin.dependencies.clone(),
         trail,
-        std::sync::Arc::new(NestedCalls { state: state.clone(), identity: identity.clone() }),
+        std::sync::Arc::new(NestedCalls { state: state.clone(), identity: identity.clone(), event_depth }),
     );
     let host = match state.org_media(&identity.org_db) {
         Ok(media) => host.with_services(crate::kernel::HostServices {
             cache: state.cache.clone(),
             media,
             scheduler: Some(std::sync::Arc::new(crate::scheduler::AppScheduler { state: state.clone() })),
+            files_root: crate::app_dir::AppDir::new(&state.config.app_dir).plugin_files_dir(&identity.org_db, plugin_name).ok(),
+            bridges: Some(std::sync::Arc::new(crate::bridges::AppBridges { state: state.clone() })),
         }),
         Err(error) => {
             // The plugin still runs; only its storage commands fail, and say why.
@@ -356,6 +361,7 @@ async fn run_call(
 struct NestedCalls {
     state: AppState,
     identity: Identity,
+    event_depth: u32,
 }
 
 #[async_trait::async_trait]
@@ -368,7 +374,7 @@ impl crate::kernel::PluginCaller for NestedCalls {
         trail: Vec<String>,
     ) -> Result<Value, crate::kernel::HostError> {
         let mut identity = self.identity.clone();
-        let result = run_call(&self.state, &mut identity, plugin, function, payload, trail).await;
+        let result = run_call(&self.state, &mut identity, plugin, function, payload, trail, self.event_depth).await;
         let status = match &result {
             Ok(_) => StatusCode::OK,
             Err(error) => error.status,
@@ -418,7 +424,20 @@ pub async fn run_system_call(
     payload: Value,
     request_id: &str,
 ) -> Result<Value, SystemCallError> {
-    let actor = Actor::System("system:scheduler".into());
+    run_system_call_as(state, org_db, "system:scheduler", plugin, function, payload, request_id).await
+}
+
+/// Like [`run_system_call`], recorded under another kernel actor such as `system:cli:ann`.
+pub async fn run_system_call_as(
+    state: &AppState,
+    org_db: &str,
+    actor_name: &str,
+    plugin: &str,
+    function: &str,
+    payload: Value,
+    request_id: &str,
+) -> Result<Value, SystemCallError> {
+    let actor = Actor::System(actor_name.to_string());
     let mut identity = Identity {
         org_db: org_db.to_string(),
         session: None,
@@ -429,12 +448,19 @@ pub async fn run_system_call(
             actor,
             request_id: request_id.to_string(),
             ip: None,
-            user_agent: Some("scheduler".into()),
+            user_agent: Some("kernel".into()),
         },
         new_visitor_token: None,
     };
     let trail = vec![format!("{plugin}.{function}")];
-    let result = run_call(state, &mut identity, plugin, function, payload, trail).await;
+    // A handler of an event knows how many handlers came before it (see `plugin_events`).
+    let event_depth = payload
+        .get("event")
+        .and_then(Value::as_str)
+        .and_then(|_| payload.get("depth"))
+        .and_then(Value::as_u64)
+        .map_or(0, |depth| u32::try_from(depth).unwrap_or(u32::MAX));
+    let result = run_call(state, &mut identity, plugin, function, payload, trail, event_depth).await;
     let status = match &result {
         Ok(_) => StatusCode::OK,
         Err(error) => error.status,

@@ -38,9 +38,29 @@ readable name as a `COMMENT`. So:
 
 `string` (short text, optional `max_length`), `text`, `int`, `float`, `bool`, `date`
 (`YYYY-MM-DD`), `datetime` (RFC 3339), `select` (one of `options`, each with its own id so an option
-can be renamed too), `link` (a record id of another model of the plugin, its `target`) and `json`.
+can be renamed too), `link` (a record id of another model, its `target`: of the same plugin, or of another plugin, see below) and `json`.
 A field can be `required`, have a `default`, and be indexed (`"index": "plain"` or `"unique"`).
 The tables are schemafull: the database enforces the types as well.
+
+## Links to another plugin's model
+
+A `link` whose `target` is `plugin.model` points at a model of another plugin:
+
+```json
+{ "name": "currency", "type": "link", "target": "currency.currency", "target_id": "mdl_khholv2eis" }
+```
+
+* **The ids.** Like every id, `target_id` is written by `aether --sync-models`, which looks the model up in the
+  catalog (so the other plugin must be loaded first: load plugins in dependency order). Loading a plugin then
+  needs no lookup, and a model keeps its id for ever, so the link survives renames.
+* **Checked when the plugin is loaded:** the other plugin is in `dependencies`; the catalog has a model of that
+  name with that `target_id` (a typo or a stale id is reported with what to do).
+* **Checked on every write:** the value must be a record id into that model's table, as for a link inside the
+  plugin. Whether the record exists is not checked, here or for links inside a plugin.
+* **Installing** the linking plugin in an organization installs its dependencies first, so the other model's table
+  is there.
+* Reading the linked record means calling the other plugin (`plugins::invoke`), which applies its own rules.
+  Plugins' `access_models` still name only their own models.
 
 ## Every write is checked
 
