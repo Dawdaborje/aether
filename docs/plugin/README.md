@@ -41,7 +41,7 @@ digits and `_`). Languages: `go`, `rust`, `typescript`, `javascript`, `python`.
 No Extism CLI is needed. The command writes `plugin.toml`, a sample source file
 (`src/main.go`, `src/lib.rs`, `src/main.ts`, `src/main.js` or `src/main.py`),
 a `Makefile` (`make` builds `out/plugin.wasm`), `README.md`, `.gitignore` and an
-MIT `LICENSE`. Generated plugins declare no dependencies yet; the per-language SDKs
+Business Source License 1.1 `LICENSE` (non-production use only; production use needs a commercial license from you). Generated plugins declare no dependencies yet; the per-language SDKs
 (`sdks/<language>`) are added by path. The Rust SDK is in `sdks/rust`, with examples in
 `plugins/test`.
 

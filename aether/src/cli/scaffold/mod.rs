@@ -2,7 +2,7 @@
 //!
 //! `aether --gen plugin --plugin-path company` creates `./company` with a
 //! manifest, a sample source file for the chosen language, a build `Makefile`,
-//! `README.md`, `.gitignore` and an MIT `LICENSE`. When the directory sits
+//! `README.md`, `.gitignore` and a BSL 1.1 `LICENSE`. When the directory sits
 //! inside a plugin workspace (an ancestor holds a `workspace.toml`), the plugin
 //! is also registered under `[workspace.plugins]`, the way `cargo new`
 //! registers a workspace member.
@@ -145,7 +145,7 @@ pub async fn create_plugin(path: &Path, language: Language) -> Result<CreatedPlu
     });
     files.push(language::TemplateFile {
         path: "LICENSE",
-        content: license::mit_license(license::current_year()?, &author_name),
+        content: license::bsl_license(license::current_year()?, &author_name),
     });
     files.push(language::TemplateFile {
         path: "README.md",

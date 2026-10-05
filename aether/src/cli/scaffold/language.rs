@@ -181,7 +181,7 @@ const RUST_CARGO: &str = r#"[package]
 name = "__NAME__"
 version = "0.1.0"
 edition = "2021"
-license = "MIT"
+license = "BUSL-1.1"
 
 [lib]
 crate-type = ["cdylib"]
