@@ -15,6 +15,8 @@
 	} = $props();
 
 	const isBoolean = $derived(item.value_type === 'boolean');
+	/** An API key or password: never shown, only replaced or cleared. */
+	const isSecret = $derived(item.value_type === 'secret');
 
 	/**
 	 * What the control shows. It starts as the saved value, follows it when it
@@ -140,6 +142,19 @@
 				value={String(draft)}
 				oninput={(event) => (draft = event.currentTarget.value)}
 			/>
+		{:else if isSecret}
+			<Input
+				class="rounded-sm border-input bg-card px-3 shadow-xs focus-visible:border-ring"
+				aria-label={item.label}
+				type="password"
+				autocomplete="new-password"
+				placeholder={item.has_value ? 'Saved. Type a new value to replace it' : 'Not set'}
+				value={String(draft)}
+				oninput={(event) => (draft = event.currentTarget.value)}
+			/>
+			<p class="text-xs text-muted-foreground">
+				{item.has_value ? 'A value is saved and stays hidden.' : 'No value is saved.'}
+			</p>
 		{:else}
 			<Input
 				class="rounded-sm border-input bg-card px-3 shadow-xs focus-visible:border-ring"
@@ -177,6 +192,21 @@
 					disabled={saving}
 					onclick={() => (draft = toDraft(item.value))}>Discard</Button
 				>
+			{:else if isSecret && item.has_value}
+				<Button
+					type="button"
+					size="sm"
+					variant="ghost"
+					disabled={saving}
+					onclick={() => void save('')}
+				>
+					{item.source === 'org' ? 'Remove (use the default)' : 'Remove'}
+				</Button>
+				{#if justSaved}
+					<span class="flex items-center gap-1 text-xs font-medium text-primary">
+						<CheckIcon class="size-3.5" /> Saved
+					</span>
+				{/if}
 			{:else if justSaved}
 				<span class="flex items-center gap-1 text-xs font-medium text-primary">
 					<CheckIcon class="size-3.5" /> Saved

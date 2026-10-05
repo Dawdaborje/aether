@@ -6,7 +6,10 @@ export type CatalogItem = {
 	source: 'global' | 'org' | string;
 	description?: string | null;
 	long_description?: string | null;
-	value_type: 'string' | 'boolean' | 'number' | 'list' | 'json' | string;
+	value_type: 'string' | 'boolean' | 'number' | 'list' | 'json' | 'secret' | string;
+	/** An API key or password: `value` is always blank; `has_value` says whether one is saved. */
+	secret?: boolean;
+	has_value?: boolean;
 };
 
 export type CatalogGroup = {
@@ -48,7 +51,11 @@ export async function updateSetting(key: string, value: unknown): Promise<Catalo
 		label: key,
 		value: body.value,
 		source: body.source,
-		value_type: Array.isArray(body.value)
+		secret: body.secret === true,
+		has_value: body.has_value === true,
+		value_type: body.secret === true
+			? 'secret'
+			: Array.isArray(body.value)
 			? 'list'
 			: typeof body.value === 'boolean'
 				? 'boolean'
