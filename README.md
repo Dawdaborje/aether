@@ -46,7 +46,6 @@ Aether is a modular, plugin-driven Business Suite framework built on a Rust kern
 | CLI | Rust (same workspace) |
 | Plugin interface | Extism, Rhai, Lua |
 
-
 ## Plugin System
 
 Plugins are WebAssembly modules. They implement the Extism interface and communicate with the kernel exclusively through typed kernel commands.
