@@ -98,22 +98,44 @@
 			if (was && row.def.deprecated) hidden.add(was);
 		}
 		const titleField = model.title_field && !hidden.has(model.title_field) ? (rename.get(model.title_field) ?? model.title_field) : undefined;
+		// Start from the whole field so what this editor has no control for (decimal scale, hierarchy,
+		// limits, naming series, calculated fields) survives a save, then drop what no longer applies.
 		const clean = (field: FieldDef): FieldDef => {
-			const out: FieldDef = { name: field.name, type: field.type };
-			if (field.id) out.id = field.id;
-			if (field.label?.trim()) out.label = field.label.trim();
-			if (field.required) out.required = true;
-			if (field.default !== undefined && field.default !== '') out.default = field.default;
-			if (field.max_length && (field.type === 'string' || field.type === 'text')) out.max_length = field.max_length;
-			if (field.index && field.type !== 'json' && field.type !== 'text') out.index = field.index;
-			if (field.type === 'select') out.options = (field.options ?? []).filter((o) => o.value.trim() !== '');
-			if (field.type === 'link' && field.target) out.target = field.target;
-			if (field.help?.trim()) out.help = field.help.trim();
-			if (field.deprecated) out.deprecated = true;
-			if (field.track && chatter.enabled && field.type !== 'json') out.track = true;
+			const out: FieldDef = { ...field };
+			if (out.label?.trim()) out.label = out.label.trim();
+			else delete out.label;
+			if (!out.required) delete out.required;
+			if (out.default === undefined || out.default === '') delete out.default;
+			if (!(out.max_length && (out.type === 'string' || out.type === 'text'))) delete out.max_length;
+			if (!out.index || out.type === 'json' || out.type === 'text') delete out.index;
+			if (out.type === 'select') out.options = (out.options ?? []).filter((o) => o.value.trim() !== '');
+			else delete out.options;
+			if (!(out.type === 'link' && out.target)) {
+				delete out.target;
+				delete out.target_id;
+			}
+			if (out.help?.trim()) out.help = out.help.trim();
+			else delete out.help;
+			if (!out.deprecated) delete out.deprecated;
+			if (!(out.track && chatter.enabled && out.type !== 'json')) delete out.track;
+			// A property of one type does not follow the field to another.
+			const numeric = out.type === 'int' || out.type === 'float' || out.type === 'decimal';
+			if (out.type !== 'decimal') delete out.scale;
+			if (out.type !== 'link') delete out.hierarchy;
+			if (!numeric) {
+				delete out.min;
+				delete out.max;
+			}
+			if (out.type !== 'string' && out.type !== 'text') {
+				delete out.min_length;
+				delete out.pattern;
+			}
+			if (out.type !== 'string') delete out.sequence;
 			return out;
 		};
 		return {
+			...(model.indexes?.length ? { indexes: model.indexes } : {}),
+			...(model.checks?.length ? { checks: model.checks } : {}),
 			...(model.model_id ? { model_id: model.model_id } : {}),
 			name: model.name,
 			...(label.trim() ? { label: label.trim() } : {}),

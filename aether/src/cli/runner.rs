@@ -67,7 +67,7 @@ fn report_plugin(created: &scaffold::CreatedPlugin) {
         println!("Registered it in workspace '{workspace}' under [workspace.plugins].");
     }
     if !created.language.is_wasm() {
-        println!("Nothing to compile: edit main.rhai, then run `aether --load-plugin .` in {} (and `aether --install-plugin {} --org <org>`).", created.directory.display(), created.name);
+        println!("Nothing to compile: edit {}, then run `aether --load-plugin .` in {} (and `aether --install-plugin {} --org <org>`).", created.language.script_file().unwrap_or("the script"), created.directory.display(), created.name);
     }
 }
 

@@ -15,6 +15,7 @@ pub mod error;
 pub mod files;
 pub mod graph;
 pub mod guard;
+pub mod integrity;
 pub mod plugin_call;
 pub mod scheduling;
 pub mod http;

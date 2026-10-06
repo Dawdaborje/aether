@@ -107,10 +107,12 @@ contains a date, for the default company or one named: `{ start, end }`, both in
 * **No separate permission for bank accounts.** Any member who can call the party functions can call
   `list_bank_accounts`; the plugin permission checks the first design assumed (`party.bank.read`) are not
   enforced by the kernel yet. They are kept out of `get_party_details` so they are never shown by accident.
-* **Search scans up to 1000 parties** matching the filters and matches text in the script, because
-  `db::find` filters by equality only.
-* **Links are checked for shape and table, not for existence.** A link must point into the right model's
-  table, as with every link, but the kernel does not check that the record is there.
+* **Search** matches text with the filter's `like` (a case-insensitive substring) over name, email, phone,
+  mobile and tax number, so the database does the work and `limit` counts matches. A tag filter handles up to
+  500 tagged parties.
+* **Links are checked for existence.** Writing a `link` (create or update) is refused when the record it points
+  to is not there, in the same transaction as the write. A link must also point into the right model's table.
+  A record that is deleted later can still leave links dangling; parties are archived, never deleted.
 * **Merging duplicates** (repointing every reference from one party to another) is not built; `find_duplicates`
   only reports.
 * **Personal data.** Access is audited like all data access. Parties are archived, never deleted, so a "right to

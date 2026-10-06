@@ -41,10 +41,10 @@ plugin, a workspace or a config file, then the language, path, label,
 description and author.
 
 The last segment of `--plugin-path` is the plugin name (lowercase letters,
-digits and `_`). Languages: `rhai` (a script, nothing to compile), `go`, `rust`, `typescript`,
+digits and `_`). Languages: `rhai` and `lua` (scripts, nothing to compile), `go`, `rust`, `typescript`,
 `javascript`, `python`. No Extism CLI is needed. The command writes `plugin.toml`, a sample source file
-(`main.rhai`, or `src/main.go`, `src/lib.rs`, `src/main.ts`, `src/main.js`, `src/main.py`),
-a `Makefile` (`make` builds `out/plugin.wasm`; Rhai has none, as there is nothing to build), `README.md`, `.gitignore` and an
+(`main.rhai`, `main.lua`, or `src/main.go`, `src/lib.rs`, `src/main.ts`, `src/main.js`, `src/main.py`),
+a `Makefile` (`make` builds `out/plugin.wasm`; scripts have none, as there is nothing to build), `README.md`, `.gitignore` and an
 Business Source License 1.1 `LICENSE` (only outside a workspace, whose own license covers its plugins; non-production use only, production use needs a commercial license from you). Generated plugins declare no dependencies yet; the per-language SDKs
 (`sdks/<language>`) are added by path. The Rust SDK is in `sdks/rust`, with examples in
 `plugins/test`.
@@ -53,7 +53,7 @@ Pages are XML files under `pages/`; see [Visitors, public pages and the audit
 trail](../architecture/access.md) and [Pages and data](pages.md) for showing a plugin's data.
 
 What a plugin may ask the kernel to do (database, cache, files, web APIs, other plugins) is
-described in [Kernel commands](commands.md); small script plugins in [Rhai plugins](rhai.md).
+described in [Kernel commands](commands.md); small script plugins in [Rhai plugins](rhai.md) and [Lua plugins](lua.md).
 Three `plugin.toml` keys control reach beyond the plugin's own data: `http_hosts` (outside hosts
 `http::request` may call), `dependencies` (plugins it may call with `plugins::call` and whose events
 it may listen to) and `bridges` (integrations it may call with `bridge::call`, see [Bridges](../bridges.md)).

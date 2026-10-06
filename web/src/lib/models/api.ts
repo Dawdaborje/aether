@@ -53,6 +53,17 @@ export interface FieldDef {
 	deprecated?: boolean;
 	/** Changes to this field are written in the record's chatter. */
 	track?: boolean;
+	/** Properties the editor has no control for are kept as they are when a model is saved. */
+	scale?: number;
+	hierarchy?: boolean;
+	target_id?: string;
+	min?: unknown;
+	max?: unknown;
+	min_length?: number;
+	pattern?: string;
+	sequence?: { pattern: string; reset?: 'never' | 'yearly' | 'monthly' };
+	related?: string;
+	compute?: string;
 }
 
 export type VisitorChatter = 'none' | 'read' | 'read_write';
@@ -78,6 +89,9 @@ export interface ModelDef {
 	fields: FieldDef[];
 	/** How the model is shown; kept as it is. */
 	view?: unknown;
+	/** Indexes over several fields, and checks on the whole record; kept as they are. */
+	indexes?: unknown[];
+	checks?: unknown[];
 }
 
 export interface PluginModels {

@@ -108,7 +108,7 @@ pub enum CatalogError {
     #[error("script {path} does not compile: {message}")]
     ScriptInvalid { path: PathBuf, message: String },
 
-    #[error("script {path} must end in `.rhai`")]
+    #[error("script {path} must end in `.rhai` or `.lua`")]
     ScriptExtension { path: PathBuf },
 
     #[error("{path} is not a regular file inside the plugin package {package}")]
@@ -503,7 +503,7 @@ pub async fn load_plugin(
     let artifact = match manifest.plugin.code_file() {
         Some(code_file) => {
             let source = resolve_package_file(&package_dir, code_file).await?;
-            if manifest.plugin.is_script() && source.extension().is_none_or(|extension| extension != "rhai") {
+            if manifest.plugin.is_script() && super::script::ScriptKind::of_path(&source).is_none() {
                 return Err(CatalogError::ScriptExtension { path: source });
             }
             let name = source
@@ -534,7 +534,9 @@ pub async fn load_plugin(
         // A script that does not compile is refused now, not at the first call.
         if manifest.plugin.is_script() {
             let text = String::from_utf8_lossy(&bytes);
-            super::script::ScriptProgram::compile(&text)
+            let kind = super::script::ScriptKind::of_path(&source)
+                .ok_or_else(|| CatalogError::ScriptExtension { path: source.clone() })?;
+            super::script::ScriptProgram::compile(kind, &text)
                 .map_err(|error| CatalogError::ScriptInvalid { path: source.clone(), message: error.to_string() })?;
         }
         wasm_hash = Some(sha256_hex(&bytes));

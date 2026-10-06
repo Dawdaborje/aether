@@ -12,7 +12,7 @@ Aether is a modular, plugin-driven Business Suite framework built on a Rust kern
 |---|---|
 | Plugin isolation | WebAssembly sandboxing + capability system |
 | Multi-tenancy | SurrealDB namespace/database isolation per org |
-| Plugin language | Any language that compiles to WASM (Rust, Python, Go, TypeScript) and support for rhai and lua |
+| Plugin language | Any language that compiles to WASM (Rust, Python, Go, TypeScript) and Rhai and Lua scripts (sandboxed Luau); plugins in any of them call each other |
 | UI extensibility | XML DSL (`.xml`) compiled to a SvelteKit component tree at build time |
 | Performance | Rust kernel, compiled WASM modules cached at startup |
 | Deployment | Single binary, minimal infrastructure |

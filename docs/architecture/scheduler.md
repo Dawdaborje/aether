@@ -53,6 +53,30 @@ A job calls one of **the plugin's own** functions. To involve another plugin, th
 it with `plugins::call`. A payload is a JSON object of at most 64 KiB. A plugin may have 10 000 jobs
 waiting at once.
 
+## Running one function over many calls at once (fan-out)
+
+A plugin's WebAssembly runs on one thread, and each call gets its own instance (up to
+`plugin_runtime.max_concurrent_calls`, default 64) on its own thread with a fixed budget of **50 million
+instructions** (`with_fuel_limit` in `plugin_manager/runtime.rs`) and `instance_memory_mb` of memory. To use
+more than one core, split the work into chunks and run one job per chunk: the scheduler runs them
+`scheduler.concurrency` at a time, in as many workers and processes as are started.
+
+The Rust SDK's `aether_sdk::parallel` does the splitting and the waiting on top of `scheduler::enqueue` and
+`scheduler::job`:
+
+* `parallel::fan_out("work").group("payroll-2026-10").queue("payroll").shared(&json!({..})).chunk_size(200).send(&ids)?`
+  queues one job per chunk (cut by count and by serialized size, so each payload stays under 64 KiB). The job's
+  `unique_key` is `<group>:<index>`, so sending it twice while its jobs wait or run queues nothing twice.
+* Each job receives a `Chunk<T>`: `group`, `index`, `count`, `items`, `shared`.
+* `parallel::join("finish", &launched).payload(..).send()?` queues `finish`; its input is a `Join`, and
+  `join.poll()?` says `Waiting` (it has queued itself again, every 10 s by default), `Finished(progress)` or `GaveUp`.
+  `Progress` counts queued, running, succeeded, failed, cancelled and missing jobs and names the chunks that failed.
+
+Limits to design around: a chunk must finish inside its **fuel budget** and the lease; chunks carry ids, not
+data; a job may run twice, so a chunk must be safe to repeat; queueing costs about 20 ms per chunk (one host
+call each); a plugin may have 10 000 jobs waiting. Measured on a scratch server (in-memory database, 60 chunks of
+150 database reads each): 25.7 s with `scheduler.concurrency = 1`, 7.9 s with 8.
+
 ## Delivery guarantee: at least once
 
 A job that finishes is recorded as finished. A job whose worker dies (the process is killed, the

@@ -10,6 +10,8 @@ use serde_json::{Map, Value};
 use thiserror::Error;
 
 use super::definition::{FieldDef, FieldType, ModelDef};
+use super::query::Filter;
+use super::sequence::Pattern;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum SchemaError {
@@ -33,6 +35,8 @@ struct Column {
     link_table: Option<String>,
     /// For a decimal: digits after the point.
     scale: Option<u32>,
+    /// For text: the expression the whole value must match.
+    pattern: Option<regex::Regex>,
 }
 
 impl Column {
@@ -67,6 +71,15 @@ pub struct Hierarchy {
     pub edge: String,
 }
 
+/// A plain (non-hierarchy) link: the column it is stored in, and the table it must point into.
+/// The kernel checks the target record exists whenever the link is written.
+#[derive(Debug, Clone)]
+pub struct LinkCheck {
+    pub field: String,
+    pub column: String,
+    pub table: String,
+}
+
 /// One model as plugin code sees it: its fields by name, with the ids they are stored under.
 #[derive(Debug, Clone)]
 pub struct ModelSchema {
@@ -85,6 +98,76 @@ pub struct ModelSchema {
     pub relations: Vec<Relation>,
     /// The model's hierarchy links.
     pub hierarchies: Vec<Hierarchy>,
+    /// The model's other links, whose targets must exist.
+    pub links: Vec<LinkCheck>,
+    /// The model's naming series.
+    pub sequences: Vec<SequenceField>,
+    /// The rules every record must satisfy after a write.
+    pub checks: Vec<ModelCheck>,
+    /// The fields the kernel calculates, in the order they are filled.
+    pub derived: Vec<DerivedField>,
+    /// The model's child fields.
+    pub children: Vec<ChildField>,
+    /// Models whose totals count rows of this one.
+    pub parents: Vec<ParentLink>,
+}
+
+/// A `child` field: rows of another model that point back at this model's records.
+#[derive(Debug, Clone)]
+pub struct ChildField {
+    pub field: String,
+    /// The rows' model, by name, and its table.
+    pub model: String,
+    pub table: String,
+    /// The link of the rows that points back, by name and by stored column.
+    pub inverse_field: String,
+    pub inverse_column: String,
+    /// The `int` field the kernel numbers the rows with, by name and column.
+    pub order: Option<(String, String)>,
+    /// The rows' whole-number and decimal fields (by name), for totals over the rows.
+    pub numbers: HashMap<String, super::compute::Operand>,
+}
+
+/// A model that has this one as a `child` field and totals over its rows: when a row is written
+/// on its own, the parent's totals are brought up to date.
+#[derive(Debug, Clone)]
+pub struct ParentLink {
+    pub schema: Box<ModelSchema>,
+    /// The row's column that holds the parent's id.
+    pub inverse_column: String,
+}
+
+/// How a calculated field gets its value.
+#[derive(Debug, Clone)]
+pub enum Derivation {
+    /// A copy of `source` (a column of the linked model's table) of the record `link` points at.
+    Related { link: String, source: String },
+    /// An expression over the record's own number columns, in whole units of `scale` digits.
+    Compute { expr: super::compute::Expr, scale: u32, operands: HashMap<String, super::compute::Operand> },
+}
+
+/// A field the kernel fills in on every write.
+#[derive(Debug, Clone)]
+pub struct DerivedField {
+    pub field: String,
+    pub column: String,
+    pub how: Derivation,
+}
+
+/// A field that numbers its records.
+#[derive(Debug, Clone)]
+pub struct SequenceField {
+    pub field: String,
+    pub column: String,
+    pub pattern: Pattern,
+    pub reset: super::definition::SequenceReset,
+}
+
+/// One of the model's `checks`, parsed.
+#[derive(Debug, Clone)]
+pub struct ModelCheck {
+    pub filter: Filter,
+    pub message: String,
 }
 
 impl ModelSchema {
@@ -95,7 +178,40 @@ impl ModelSchema {
         let mut columns = Vec::new();
         let mut relations = Vec::new();
         let mut hierarchies = Vec::new();
+        let mut links = Vec::new();
+        let mut sequences = Vec::new();
+        let mut children = Vec::new();
         for field in model.live_fields() {
+            if field.kind == super::definition::FieldType::Child {
+                let rows = all.iter().find(|other| Some(&other.name) == field.target.as_ref())?;
+                let inverse = rows.live_fields().find(|f| Some(&f.name) == field.inverse.as_ref())?;
+                let order = match &field.order {
+                    Some(name) => {
+                        let f = rows.live_fields().find(|f| &f.name == name)?;
+                        Some((f.name.clone(), f.id.clone()?))
+                    }
+                    None => None,
+                };
+                let mut numbers = HashMap::new();
+                for f in rows.live_fields() {
+                    let scale = match f.kind {
+                        super::definition::FieldType::Int => 0,
+                        super::definition::FieldType::Decimal => f.scale.unwrap_or(super::decimal::DEFAULT_SCALE),
+                        _ => continue,
+                    };
+                    numbers.insert(f.name.clone(), super::compute::Operand { column: f.id.clone()?, scale });
+                }
+                children.push(ChildField {
+                    field: field.name.clone(),
+                    model: rows.name.clone(),
+                    table: rows.model_id.clone()?,
+                    inverse_field: inverse.name.clone(),
+                    inverse_column: inverse.id.clone()?,
+                    order,
+                    numbers,
+                });
+                continue;
+            }
             if field.kind == super::definition::FieldType::Many2many {
                 let target_table = field.target.as_ref().and_then(|target| match super::definition::foreign_target(target) {
                     Some(_) => field.target_id.clone(),
@@ -116,7 +232,24 @@ impl ModelSchema {
             if field.hierarchy {
                 hierarchies.push(Hierarchy { field: field.name.clone(), column: field.id.clone()?, edge: edge_table(&table, field.id.as_deref()?) });
             }
-            columns.push(Column { def: field.clone(), id: field.id.clone()?, link_table, scale });
+            if field.kind == super::definition::FieldType::Link && !field.hierarchy {
+                if let Some(table) = &link_table {
+                    links.push(LinkCheck { field: field.name.clone(), column: field.id.clone()?, table: table.clone() });
+                }
+            }
+            let pattern = match &field.pattern {
+                Some(text) => Some(compile_pattern(text).ok()?),
+                None => None,
+            };
+            if let Some(sequence) = &field.sequence {
+                sequences.push(SequenceField {
+                    field: field.name.clone(),
+                    column: field.id.clone()?,
+                    pattern: Pattern::parse(&sequence.pattern).ok()?,
+                    reset: sequence.reset,
+                });
+            }
+            columns.push(Column { def: field.clone(), id: field.id.clone()?, link_table, scale, pattern });
         }
         let by_name = columns
             .iter()
@@ -137,7 +270,60 @@ impl ModelSchema {
             .as_ref()
             .and_then(|title| columns.iter().find(|column| &column.def.name == title))
             .map(|column| column.id.clone());
-        Some(Self { name: model.name.clone(), table, chatter, tracked, title_column, columns, by_name, relations, hierarchies })
+        let mut derived = Vec::new();
+        for field in model.live_fields() {
+            if let Some(related) = &field.related {
+                let (link_name, source_name) = related.split_once('.')?;
+                let link = model.live_fields().find(|f| f.name == link_name)?;
+                let target = all.iter().find(|m| Some(&m.name) == link.target.as_ref())?;
+                let source = target.live_fields().find(|f| f.name == source_name)?;
+                derived.push(DerivedField {
+                    field: field.name.clone(),
+                    column: field.id.clone()?,
+                    how: Derivation::Related { link: link.id.clone()?, source: source.id.clone()? },
+                });
+            }
+        }
+        for field in model.live_fields() {
+            if let Some(compute) = &field.compute {
+                let expr = super::compute::Expr::parse(compute).ok()?;
+                let mut operands = HashMap::new();
+                for name in expr.fields() {
+                    let input = model.live_fields().find(|f| f.name == name)?;
+                    let scale = match input.kind {
+                        super::definition::FieldType::Int => 0,
+                        _ => input.scale.unwrap_or(super::decimal::DEFAULT_SCALE),
+                    };
+                    operands.insert(name, super::compute::Operand { column: input.id.clone()?, scale });
+                }
+                let scale = match field.kind {
+                    super::definition::FieldType::Int => 0,
+                    _ => field.scale.unwrap_or(super::decimal::DEFAULT_SCALE),
+                };
+                derived.push(DerivedField { field: field.name.clone(), column: field.id.clone()?, how: Derivation::Compute { expr, scale, operands } });
+            }
+        }
+        let mut checks = Vec::new();
+        for check in &model.checks {
+            checks.push(ModelCheck { filter: Filter::parse(&check.require).ok()?, message: check.message.clone() });
+        }
+        Some(Self {
+            name: model.name.clone(),
+            table,
+            chatter,
+            tracked,
+            title_column,
+            columns,
+            by_name,
+            relations,
+            hierarchies,
+            links,
+            sequences,
+            checks,
+            derived,
+            children,
+            parents: Vec::new(),
+        })
     }
 
     fn column(&self, name: &str) -> Result<&Column, SchemaError> {
@@ -147,13 +333,27 @@ impl ModelSchema {
             .ok_or_else(|| SchemaError::UnknownField { model: self.name.clone(), field: name.to_string() })
     }
 
+    fn refuse_if_calculated(&self, column: &Column) -> Result<(), SchemaError> {
+        match (&column.def.related, &column.def.compute) {
+            (Some(related), _) => Err(self.invalid(&column.def.name, format!("is copied from `{related}` by the kernel, so it cannot be written"))),
+            (_, Some(_)) => Err(self.invalid(&column.def.name, "is calculated by the kernel, so it cannot be written")),
+            _ => Ok(()),
+        }
+    }
+
     fn invalid(&self, field: &str, reason: impl Into<String>) -> SchemaError {
         SchemaError::InvalidValue { model: self.name.clone(), field: field.to_string(), reason: reason.into() }
     }
 
     fn check(&self, column: &Column, value: &Value) -> Result<(), SchemaError> {
         check_value(&column.def, value, column.link_table.as_deref())
-            .map_err(|reason| self.invalid(&column.def.name, reason))
+            .map_err(|reason| self.invalid(&column.def.name, reason))?;
+        if let (Some(pattern), Some(text)) = (&column.pattern, value.as_str())
+            && !pattern.is_match(text)
+        {
+            return Err(self.invalid(&column.def.name, "is not in the expected format"));
+        }
+        Ok(())
     }
 
     /// What the chatter panel needs to show a tracked change: for each tracked field id, its
@@ -188,6 +388,17 @@ impl ModelSchema {
             | super::definition::FieldType::Decimal => Ok(&column.id),
             _ => Err(self.invalid(name, "only a whole number, number or decimal field can be incremented")),
         }
+    }
+
+    /// The child field called `name`.
+    pub fn child(&self, name: &str) -> Option<&ChildField> {
+        self.children.iter().find(|child| child.field == name)
+    }
+
+    /// A new record like [`Self::encode_create`], where the link `inverse` (by name) is filled in
+    /// by the kernel afterwards, so it may be missing from `data`.
+    pub fn encode_create_row(&self, data: &Map<String, Value>, inverse: &str) -> Result<Map<String, Value>, SchemaError> {
+        self.encode_create_inner(data, Some(inverse))
     }
 
     /// The many2many field called `name`.
@@ -240,9 +451,14 @@ impl ModelSchema {
     /// A new record, keyed by field id: values checked, defaults filled in, required fields present.
     /// A null is the same as leaving the field out.
     pub fn encode_create(&self, data: &Map<String, Value>) -> Result<Map<String, Value>, SchemaError> {
+        self.encode_create_inner(data, None)
+    }
+
+    fn encode_create_inner(&self, data: &Map<String, Value>, filled_later: Option<&str>) -> Result<Map<String, Value>, SchemaError> {
         let mut stored = Map::new();
         for (name, value) in data {
             let column = self.column(name)?;
+            self.refuse_if_calculated(column)?;
             if value.is_null() {
                 continue;
             }
@@ -258,7 +474,8 @@ impl ModelSchema {
                     let default = column.stored(default).map_err(|reason| self.invalid(&column.def.name, reason))?;
                     stored.insert(column.id.clone(), default);
                 }
-                None if column.def.required => {
+                // A numbered field gets its value from the series when the record is stored.
+                None if column.def.required && column.def.sequence.is_none() && filled_later != Some(column.def.name.as_str()) => {
                     return Err(SchemaError::Required { model: self.name.clone(), field: column.def.name.clone() });
                 }
                 None => {}
@@ -277,6 +494,7 @@ impl ModelSchema {
         let mut clear = Vec::new();
         for (name, value) in data {
             let column = self.column(name)?;
+            self.refuse_if_calculated(column)?;
             if value.is_null() {
                 if column.def.required {
                     return Err(self.invalid(name, "is required, so it cannot be cleared"));
@@ -315,17 +533,79 @@ impl ModelSchema {
 
 /// The schema of each model of a plugin, by model name.
 pub fn schemas_of(models: &[ModelDef]) -> HashMap<String, std::sync::Arc<ModelSchema>> {
-    models
+    let mut schemas: Vec<ModelSchema> = models.iter().filter_map(|model| ModelSchema::new(model, models)).collect();
+    // A model that totals over its child rows must be told when a row is written on its own.
+    let parents: Vec<(String, ParentLink)> = schemas
         .iter()
-        .filter_map(|model| {
-            ModelSchema::new(model, models).map(|schema| (model.name.clone(), std::sync::Arc::new(schema)))
+        .flat_map(|parent| {
+            parent.children.iter().filter_map(move |child| {
+                let totals = parent.derived.iter().any(|d| matches!(&d.how, Derivation::Compute { expr, .. }
+                    if expr.rollups().iter().any(|r| r.child == child.field)));
+                totals.then(|| (child.model.clone(), ParentLink { schema: Box::new(parent.clone()), inverse_column: child.inverse_column.clone() }))
+            })
         })
-        .collect()
+        .collect();
+    for (rows_model, link) in parents {
+        if let Some(rows) = schemas.iter_mut().find(|schema| schema.name == rows_model) {
+            rows.parents.push(link);
+        }
+    }
+    schemas.into_iter().map(|schema| (schema.name.clone(), std::sync::Arc::new(schema))).collect()
 }
 
 /// Whether `value` is allowed for `field`. `link_table` is the table a link must point into,
 /// when it is known.
 pub fn check_value(field: &FieldDef, value: &Value, link_table: Option<&str>) -> Result<(), String> {
+    check_type(field, value, link_table)?;
+    check_limits(field, value)
+}
+
+/// A pattern as a size-limited expression, so a model file cannot make a write expensive. The
+/// whole value must match.
+pub fn compile_pattern(pattern: &str) -> Result<regex::Regex, String> {
+    regex::RegexBuilder::new(&format!("^(?:{pattern})$"))
+        .size_limit(1 << 18)
+        .build()
+        .map_err(|error| format!("is not a valid expression: {error}"))
+}
+
+/// `min`, `max` and `min_length`, for a value that already has the right type.
+fn check_limits(field: &FieldDef, value: &Value) -> Result<(), String> {
+    use std::cmp::Ordering;
+    let bound = |limit: &Option<Value>, compare: &dyn Fn(Ordering) -> bool, what: &str| -> Result<(), String> {
+        let Some(limit) = limit else { return Ok(()) };
+        let ordering = match field.kind {
+            FieldType::Int => value.as_i64().zip(limit.as_i64()).map(|(a, b)| a.cmp(&b)),
+            FieldType::Float => value.as_f64().zip(limit.as_f64()).and_then(|(a, b)| a.partial_cmp(&b)),
+            FieldType::Decimal => {
+                let scale = field.scale.unwrap_or(super::decimal::DEFAULT_SCALE);
+                super::decimal::to_scaled(value, scale).ok().zip(super::decimal::to_scaled(limit, scale).ok()).map(|(a, b)| a.cmp(&b))
+            }
+            _ => None,
+        };
+        match ordering {
+            Some(ordering) if !compare(ordering) => Err(format!("must be {what} {}", limit_text(limit))),
+            _ => Ok(()),
+        }
+    };
+    bound(&field.min, &|o| o != Ordering::Less, "at least")?;
+    bound(&field.max, &|o| o != Ordering::Greater, "at most")?;
+    if let (Some(min), Some(text)) = (field.min_length, value.as_str())
+        && text.chars().count() < min as usize
+    {
+        return Err(format!("is shorter than {min} characters"));
+    }
+    Ok(())
+}
+
+fn limit_text(limit: &Value) -> String {
+    match limit {
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
+    }
+}
+
+fn check_type(field: &FieldDef, value: &Value, link_table: Option<&str>) -> Result<(), String> {
     let text = value.as_str();
     match field.kind {
         FieldType::String | FieldType::Text => {
@@ -383,6 +663,7 @@ pub fn check_value(field: &FieldDef, value: &Value, link_table: Option<&str>) ->
         }
         FieldType::Json => Ok(()),
         FieldType::Many2many => Err("is a relation: change it with db::relate, not as a value".into()),
+        FieldType::Child => Err("is a list of rows: write it with db::create or db::update".into()),
     }
 }
 
@@ -640,6 +921,104 @@ mod foreign_link_tests {
         data.insert("currency".into(), serde_json::json!("mdl_cur0000001:abc"));
         data.insert("parent".into(), serde_json::json!("mdl_inv0000001:x"));
         assert!(schema.encode_create(&data).is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn plain_links_are_listed_for_the_existence_check_but_hierarchy_links_are_not() -> Result<(), Box<dyn std::error::Error>> {
+        let mut model = invoice()?;
+        for field in &mut model.fields {
+            if field.name == "parent" {
+                field.hierarchy = true;
+            }
+        }
+        let schema = ModelSchema::new(&model, std::slice::from_ref(&model)).ok_or("no schema")?;
+        let links: Vec<(&str, &str)> = schema.links.iter().map(|l| (l.field.as_str(), l.table.as_str())).collect();
+        assert_eq!(links, vec![("currency", "mdl_cur0000001")]);
+        Ok(())
+    }
+
+    fn limited() -> Result<ModelDef, serde_json::Error> {
+        serde_json::from_value(serde_json::json!({
+            "model_id": "mdl_lim0000001", "name": "limited",
+            "fields": [
+                { "id": "fld_qty0000001", "name": "qty", "type": "int", "min": 1, "max": 10 },
+                { "id": "fld_prc0000001", "name": "price", "type": "decimal", "scale": 2, "min": "0.50", "max": "99.99" },
+                { "id": "fld_code000001", "name": "code", "type": "string", "pattern": "[A-Z]{3}-[0-9]+", "min_length": 5 },
+                { "id": "fld_num0000001", "name": "number", "type": "string", "required": true,
+                  "sequence": { "pattern": "N-{#####}" } }
+            ]
+        }))
+    }
+
+    #[test]
+    fn numbers_and_text_stay_inside_their_limits() -> Result<(), Box<dyn std::error::Error>> {
+        let model = limited()?;
+        assert!(model.problems().is_empty(), "{:?}", model.problems());
+        let schema = ModelSchema::new(&model, std::slice::from_ref(&model)).ok_or("no schema")?;
+        let refused = |field: &str, value: serde_json::Value| -> String {
+            let mut data = serde_json::Map::new();
+            data.insert(field.into(), value);
+            schema.encode_update(&data).err().map(|e| e.to_string()).unwrap_or_default()
+        };
+        let ok = |field: &str, value: serde_json::Value| -> bool {
+            let mut data = serde_json::Map::new();
+            data.insert(field.into(), value);
+            schema.encode_update(&data).is_ok()
+        };
+        assert!(ok("qty", serde_json::json!(1)) && ok("qty", serde_json::json!(10)));
+        assert!(refused("qty", serde_json::json!(0)).contains("at least 1"));
+        assert!(refused("qty", serde_json::json!(11)).contains("at most 10"));
+        assert!(ok("price", serde_json::json!("0.50")) && ok("price", serde_json::json!(99.99)));
+        assert!(refused("price", serde_json::json!("0.49")).contains("at least 0.50"));
+        assert!(refused("price", serde_json::json!("100")).contains("at most 99.99"));
+        assert!(ok("code", serde_json::json!("ABC-12")));
+        assert!(refused("code", serde_json::json!("abc-12")).contains("expected format"));
+        // Longer than the minimum but not the pattern, and the whole value must match.
+        assert!(refused("code", serde_json::json!("ABC-12x")).contains("expected format"));
+        assert!(refused("code", serde_json::json!("A-1")).contains("shorter than 5"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_numbered_field_may_be_left_out_of_a_create() -> Result<(), Box<dyn std::error::Error>> {
+        let model = limited()?;
+        let schema = ModelSchema::new(&model, std::slice::from_ref(&model)).ok_or("no schema")?;
+        assert_eq!(schema.sequences.len(), 1);
+        assert!(schema.encode_create(&serde_json::Map::new()).is_ok(), "the series supplies `number`");
+        Ok(())
+    }
+
+    #[test]
+    fn nonsense_limits_are_refused_when_the_model_loads() -> Result<(), Box<dyn std::error::Error>> {
+        let mut model = limited()?;
+        for field in &mut model.fields {
+            match field.name.as_str() {
+                "qty" => field.min = Some(serde_json::json!(20)),
+                "code" => field.pattern = Some("(".into()),
+                "number" => field.sequence = Some(crate::data_model::definition::SequenceDef { pattern: "NO-NUMBER".into(), reset: Default::default() }),
+                _ => {}
+            }
+        }
+        let problems = model.problems().join("; ");
+        assert!(problems.contains("`min` is above `max`"), "{problems}");
+        assert!(problems.contains("`pattern`"), "{problems}");
+        assert!(problems.contains("exactly one number"), "{problems}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_check_naming_a_missing_field_is_refused_when_the_model_loads() -> Result<(), Box<dyn std::error::Error>> {
+        let mut model = limited()?;
+        model.checks = serde_json::from_value(serde_json::json!([
+            { "require": { "or": [ { "qty": { "null": true } }, { "qty": { "gte": { "field": "nope" } } } ] }, "message": "bad" }
+        ]))?;
+        let problems = model.problems().join("; ");
+        assert!(problems.contains("nope"), "{problems}");
+        model.checks = serde_json::from_value(serde_json::json!([
+            { "require": { "or": [ { "qty": { "null": true } }, { "qty": { "gte": 5 } } ] }, "message": "qty is at least 5" }
+        ]))?;
+        assert!(model.problems().is_empty(), "{:?}", model.problems());
         Ok(())
     }
 }

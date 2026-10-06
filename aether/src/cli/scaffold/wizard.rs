@@ -176,6 +176,7 @@ pub fn run<R: BufRead, W: Write>(input: R, out: W, base: &Path, around: &Surroun
                     ("typescript", "WebAssembly module", Language::TypeScript),
                     ("javascript", "WebAssembly module", Language::JavaScript),
                     ("python", "WebAssembly module", Language::Python),
+                    ("lua", "a sandboxed Lua script; nothing to compile", Language::Lua),
                 ],
             )?;
             p.say("")?;
@@ -325,7 +326,7 @@ mod tests {
         let (plan, shown) = answer("what\n1\n9\nrust\nBad-Name\ntaken\nfresh_one\n\n\n\n\ny\n", &dir, &Surroundings::default());
         assert!(matches!(plan, Ok(Plan::Plugin { language: Language::Rust, .. })), "{plan:?}");
         assert!(shown.contains("Type a number from 1 to 3"), "{shown}");
-        assert!(shown.contains("Type a number from 1 to 6"), "{shown}");
+        assert!(shown.contains("Type a number from 1 to 7"), "{shown}");
         assert!(shown.contains("invalid plugin name `Bad-Name`"), "{shown}");
         assert!(shown.contains("already exists and is not empty"), "{shown}");
     }

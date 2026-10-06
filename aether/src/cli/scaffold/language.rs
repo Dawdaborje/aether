@@ -2,8 +2,8 @@
 //!
 //! Aether runs plugins as WebAssembly modules through Extism, but generating a
 //! plugin does not need the Extism CLI: each language only needs its own
-//! toolchain (see the generated README). Rhai is the exception: a Rhai plugin
-//! is its script, with nothing to compile.
+//! toolchain (see the generated README). Rhai and Lua are the exceptions: such a
+//! plugin is its script, with nothing to compile.
 
 use std::str::FromStr;
 
@@ -17,6 +17,7 @@ pub enum Language {
     JavaScript,
     Python,
     Rhai,
+    Lua,
 }
 
 impl FromStr for Language {
@@ -30,6 +31,7 @@ impl FromStr for Language {
             "javascript" | "js" => Ok(Self::JavaScript),
             "python" | "py" => Ok(Self::Python),
             "rhai" => Ok(Self::Rhai),
+            "lua" | "luau" => Ok(Self::Lua),
             _ => Err(ScaffoldError::UnsupportedLanguage(raw.to_string())),
         }
     }
@@ -50,17 +52,31 @@ impl Language {
             Self::JavaScript => "JavaScript",
             Self::Python => "Python",
             Self::Rhai => "Rhai",
+            Self::Lua => "Lua",
         }
     }
 
-    /// Whether the plugin is compiled to a WebAssembly module (every language but Rhai).
+    /// Whether the plugin is compiled to a WebAssembly module (every language but the scripts).
     pub fn is_wasm(self) -> bool {
-        self != Self::Rhai
+        !matches!(self, Self::Rhai | Self::Lua)
+    }
+
+    /// The script file of a script plugin.
+    pub fn script_file(self) -> Option<&'static str> {
+        match self {
+            Self::Rhai => Some("main.rhai"),
+            Self::Lua => Some("main.lua"),
+            _ => None,
+        }
     }
 
     /// The line of `plugin.toml` that names the plugin's code.
     pub fn code_line(self) -> &'static str {
-        if self.is_wasm() { "wasm_file = \"out/plugin.wasm\"" } else { "script = \"main.rhai\"" }
+        match self {
+            Self::Rhai => "script = \"main.rhai\"",
+            Self::Lua => "script = \"main.lua\"",
+            _ => "wasm_file = \"out/plugin.wasm\"",
+        }
     }
 
     /// Toolchain requirements and the command that produces `plugin.wasm`.
@@ -71,7 +87,7 @@ impl Language {
             Self::TypeScript => "Requires `esbuild` and the [extism-js](https://github.com/extism/js-pdk) compiler on your `PATH`.",
             Self::JavaScript => "Requires the [extism-js](https://github.com/extism/js-pdk) compiler on your `PATH`.",
             Self::Python => "Requires the [extism-py](https://github.com/extism/python-pdk) compiler on your `PATH`.",
-            Self::Rhai => "Nothing to install: the script is read by Aether itself.",
+            Self::Rhai | Self::Lua => "Nothing to install: the script is read by Aether itself.",
         }
     }
 
@@ -123,14 +139,20 @@ impl Language {
             Self::Rhai => vec![
                 file("main.rhai", RHAI_MAIN),
                 // Nothing is built, so only editor leftovers are ignored.
-                TemplateFile { path: ".gitignore", content: "*~\n*.swp\n.DS_Store\n".to_string() },
+                TemplateFile { path: ".gitignore", content: SCRIPT_GITIGNORE.to_string() },
+            ],
+            Self::Lua => vec![
+                file("main.lua", LUA_MAIN),
+                TemplateFile { path: ".gitignore", content: SCRIPT_GITIGNORE.to_string() },
             ],
         }
     }
 
     pub fn readme(self, name: &str, label: &str) -> String {
-        if self == Self::Rhai {
-            return RHAI_README.replace("__NAME__", name).replace("__LABEL__", label);
+        match self {
+            Self::Rhai => return RHAI_README.replace("__NAME__", name).replace("__LABEL__", label),
+            Self::Lua => return LUA_README.replace("__NAME__", name).replace("__LABEL__", label),
+            _ => {}
         }
         README
             .replace("__NAME__", name)
@@ -300,6 +322,71 @@ clean:
 ";
 
 
+const SCRIPT_GITIGNORE: &str = "*~\n*.swp\n.DS_Store\n";
+
+const LUA_MAIN: &str = r#"-- __LABEL__, an Aether plugin written in Lua (Luau). There is nothing to compile: this file is the plugin.
+--
+-- Every global function can be called (POST /api/plugins/__NAME__/<function>, from a page, or with
+-- `aether --command` once it is declared in plugin.toml). It takes the call's JSON input as its one
+-- parameter and returns JSON. A `local function`, or one whose name starts with `_`, is a helper
+-- nobody can call. The top level may only define functions and constants. The kernel commands
+-- (db, cache, fs, communication, scheduler, plugins, ...) are listed in docs/plugin/commands.md, and
+-- the capabilities each one needs go in `capabilities` in plugin.toml. JSON null is nil.
+
+function hello(input)
+    return { message = "Hello from __NAME__", actor = context.get().actor }
+end
+
+-- A function that reports a mistake to the caller:
+--
+-- function greet(input)
+--     if input.name == nil or input.name == "" then fail("a name is required") end
+--     return "Hello " .. input.name
+-- end
+--
+-- Another plugin's function, in any language (list it under `dependencies` in plugin.toml):
+--
+-- local total = plugins.call("billing", "total", { order = input.order })
+"#;
+
+const LUA_README: &str = r#"# __LABEL__
+
+An [Aether](https://github.com/Dawdaborje) plugin written in Lua ([Luau](https://luau.org)): the plugin is the
+script `main.lua`, with nothing to compile.
+
+## Files
+
+| File | |
+|---|---|
+| `plugin.toml` | name, version, `capabilities`, `access_models`, `dependencies`, pages' app tile, commands, schedules |
+| `main.lua` | the functions; every global function is callable |
+| `models/<name>.json` | the plugin's data models (optional); `aether --sync-models .` gives them their ids |
+| `pages/*.xml` | the pages (optional) |
+
+## Work on it
+
+```sh
+aether --sync-models .                  # give the models ids
+aether --load-plugin .                  # register the plugin in the catalog
+aether --install-plugin __NAME__ --org <org>   # install it for an organization
+aether --upgrade-plugin __NAME__ --org <org>   # move an organization to the version you just loaded
+```
+
+Loading reads the script and refuses one that does not compile. Add `-c path/to/aether.toml` when the configuration
+is not in the usual place. While developing, `aether --serve --watch` loads and upgrades by itself whenever a file
+changes.
+
+A plugin that links to another plugin's model (`"target": "currency.currency"`) needs that plugin loaded first;
+list it under `dependencies`. The same list lets `plugins.call(plugin, function, input)` reach that plugin's
+functions, whether it is written in Lua, Rhai or compiled to WebAssembly.
+
+## Learn more
+
+* `docs/plugin/lua.md`: the language as Aether runs it, its limits and the commands a script can call.
+* `docs/plugin/commands.md`: every kernel command, its capability and payload.
+* `docs/plugin/pages.md` and `docs/plugin/cli-commands.md`: pages, and commands run with `aether --command`.
+"#;
+
 const RHAI_MAIN: &str = r#"// __LABEL__, an Aether plugin written in Rhai. There is nothing to compile: this file is the plugin.
 //
 // Every public `fn` can be called (POST /api/plugins/__NAME__/<function>, from a page, or with
@@ -371,6 +458,8 @@ mod tests {
             ("JavaScript", Language::JavaScript),
             ("py", Language::Python),
             ("Rhai", Language::Rhai),
+            ("lua", Language::Lua),
+            ("Luau", Language::Lua),
         ] {
             assert_eq!(raw.parse::<Language>()?, expected);
         }
@@ -383,9 +472,9 @@ mod tests {
 
     #[test]
     fn every_language_has_sources_a_makefile_and_no_unfilled_placeholders() {
-        for language in WASM_LANGUAGES.into_iter().chain([Language::Rhai]) {
+        for language in WASM_LANGUAGES.into_iter().chain([Language::Rhai, Language::Lua]) {
             let files = language.files("company");
-            assert!(files.iter().any(|f| f.path.starts_with("src/") || f.path == "main.rhai"));
+            assert!(files.iter().any(|f| f.path.starts_with("src/") || Some(f.path) == language.script_file()));
             assert_eq!(files.iter().any(|f| f.path == "Makefile"), language.is_wasm(), "{language:?}");
             assert!(
                 files.iter().all(|f| !f.content.contains("__NAME__")),
@@ -457,7 +546,33 @@ mod tests {
     fn the_rhai_sample_compiles_and_exports_hello() -> Result<(), Box<dyn std::error::Error>> {
         let files = Language::Rhai.files("currency");
         let source = files.iter().find(|f| f.path == "main.rhai").map(|f| f.content.clone()).ok_or("no main.rhai")?;
-        let program = aether_core::plugin_manager::script::ScriptProgram::compile(&source)?;
+        let program = aether_core::plugin_manager::script::ScriptProgram::compile(aether_core::plugin_manager::script::ScriptKind::Rhai, &source)?;
+        assert!(program.has_function("hello"));
+        assert!(source.contains("/api/plugins/currency/"));
+        Ok(())
+    }
+
+    #[test]
+    fn lua_has_a_script_and_no_makefile_because_nothing_is_built() {
+        let files = Language::Lua.files("currency");
+        let get = |path: &str| files.iter().find(|f| f.path == path).map(|f| f.content.clone()).unwrap_or_default();
+        assert!(!Language::Lua.is_wasm());
+        assert_eq!(Language::Lua.code_line(), "script = \"main.lua\"");
+        assert!(files.iter().all(|f| f.path != "Makefile"));
+
+        let readme = Language::Lua.readme("currency", "Currency");
+        assert!(readme.contains("--install-plugin currency --org") && !readme.contains("make") && !readme.contains("plugin.wasm") && !readme.contains("__"));
+        assert!(readme.contains("main.lua") && readme.contains("docs/plugin/lua.md"));
+        assert!(get(".gitignore").contains("*.swp"));
+    }
+
+    /// The sample is a plugin the kernel accepts: it compiles, and `hello` is callable.
+    #[test]
+    fn the_lua_sample_compiles_and_exports_hello() -> Result<(), Box<dyn std::error::Error>> {
+        use aether_core::plugin_manager::script::{ScriptKind, ScriptProgram};
+        let files = Language::Lua.files("currency");
+        let source = files.iter().find(|f| f.path == "main.lua").map(|f| f.content.clone()).ok_or("no main.lua")?;
+        let program = ScriptProgram::compile(ScriptKind::Lua, &source)?;
         assert!(program.has_function("hello"));
         assert!(source.contains("/api/plugins/currency/"));
         Ok(())

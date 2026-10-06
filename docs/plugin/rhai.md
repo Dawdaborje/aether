@@ -65,3 +65,6 @@ runs with: 2 million operations, 10 seconds, 32 call levels, strings up to 1 MB,
 because the script goes through the same kernel commands.
 
 Pick WASM (Rust, Go, …) for heavy computation, third-party libraries or large plugins; Rhai for glue.
+
+To call another plugin from a script, or to write the plugin in Lua instead, see [Lua plugins](lua.md); `plugins::invoke` reaches
+plugins in any of the three runtimes.

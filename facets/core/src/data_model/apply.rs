@@ -122,7 +122,7 @@ fn base_type(kind: FieldType) -> &'static str {
         FieldType::Int | FieldType::Decimal => "int",
         FieldType::Float => "number",
         FieldType::Bool => "bool",
-        FieldType::Json | FieldType::Many2many => "any",
+        FieldType::Json | FieldType::Many2many | FieldType::Child => "any",
     }
 }
 
@@ -260,7 +260,7 @@ pub fn plan(plugin: &str, def: &ModelDef, applied: Option<&AppliedModel>, row_co
                 }
             }
         }
-        if redefine && field.kind != FieldType::Many2many {
+        if redefine && field.kind.has_column() {
             ops.push(define_field(&table, &model, id, name, field.kind, now.required));
         }
         ops.extend(backfill);
@@ -291,7 +291,7 @@ pub fn plan(plugin: &str, def: &ModelDef, applied: Option<&AppliedModel>, row_co
             hidden.index = None;
             if !before.deprecated {
                 notes.push(format!("`{model}.{}` was removed: it is hidden and its data is kept", before.name));
-                if before.kind != FieldType::Many2many {
+                if before.kind.has_column() {
                     ops.push(define_field(&table, &model, id, &before.name, before.kind, false));
                 }
                 if before.index.is_some() {

@@ -24,6 +24,7 @@ What the kernel offers a plugin today, and so what an SDK wraps:
 | Events between plugins | `events::emit`, `events::subscribe`, `events::unsubscribe` | `events::emit`, `events::subscribe` |
 | Messages | `communication::send` (one command; the type says email, SMS, …) | `communication::send` + `email::send` / `sms::send` |
 | Background work | `scheduler::enqueue`, `scheduler::job`, `scheduler::cancel_job`, `scheduler::register`, `scheduler::cancel` | `scheduler::enqueue`, `scheduler::register`, `scheduler::cancel` |
+| Many calls at once | `parallel::fan_out(..).send(items)`, `parallel::join(..)`, `parallel::progress` (Rust SDK; built on the scheduler, no new host command) | `scheduler::enqueue` |
 | Notifications | `notify::send` | `notify::send`, `notify::public` |
 | Live events | `events::emit` | `events::emit` |
 | Who is calling | `context::get` | none |

@@ -13,6 +13,9 @@ in the model (and replaced by their stored ids); values are always bound, never 
 * `"field": value` is an equality; `"field": { op: value, … }` takes `eq ne gt gte lt lte in nin like null`.
   `like` is a case-insensitive substring. `null: true` means the field is empty, `false` that it has a value.
   `nin` is also true for a record where the field is empty.
+* `eq ne gt gte lt lte` also take `{ "field": "other" }` to compare with another field of the same record
+  (`{ "end": { "gte": { "field": "start" } } }`). Both fields must be the same kind of number; for an ordering,
+  a record missing either field does not match.
 * The keys of one object are ANDed. `and` / `or` take a list of filters, `not` takes one.
 * Limits: 8 levels of nesting, 64 comparisons, 500 values in a list. The old flat form
   (`{"field": value}`) is still a filter of equalities.

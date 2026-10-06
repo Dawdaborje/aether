@@ -158,7 +158,7 @@ impl PluginRuntimeError {
     }
 }
 
-/// What a loaded plugin runs: a compiled WebAssembly module or a checked Rhai script.
+/// What a loaded plugin runs: a compiled WebAssembly module or a checked Rhai or Lua script.
 pub enum Executable {
     Wasm(Arc<CompiledPlugin>),
     Script(Arc<super::script::ScriptProgram>),
@@ -449,7 +449,7 @@ impl PluginRuntime {
         let artifact_path = self.resolve_app_path(artifact).await?;
         let wasm_bytes = tokio::fs::metadata(&artifact_path).await?.len();
 
-        if artifact_path.extension().is_some_and(|extension| extension == "rhai") {
+        if super::script::ScriptKind::of_path(&artifact_path).is_some() {
             if wasm_bytes > super::script::MAX_SCRIPT_BYTES {
                 return Err(PluginRuntimeError::Script {
                     name: record.name,
@@ -540,14 +540,23 @@ impl PluginRuntime {
         let runtime_handle = tokio::runtime::Handle::current();
 
         // Every running instance holds memory, so only so many run at once; the rest
-        // wait briefly, then are told to retry.
-        let permit = tokio::time::timeout(
-            Duration::from_secs(self.inner.config.compile_timeout_secs.min(10)),
-            self.inner.calls.clone().acquire_owned(),
-        )
-        .await
-        .map_err(|_| PluginRuntimeError::Busy)?
-        .map_err(|_| PluginRuntimeError::Busy)?;
+        // wait briefly, then are told to retry. A call made by another plugin's function
+        // (`plugins::call`, more than the one step in the trail) runs under the permit of the
+        // request that started the chain: the caller is blocked until it answers, so a permit of
+        // its own could never be had once every permit is held by a caller waiting for one.
+        let permit = if host.call_trail.len() > 1 {
+            None
+        } else {
+            Some(
+                tokio::time::timeout(
+                    Duration::from_secs(self.inner.config.compile_timeout_secs.min(10)),
+                    self.inner.calls.clone().acquire_owned(),
+                )
+                .await
+                .map_err(|_| PluginRuntimeError::Busy)?
+                .map_err(|_| PluginRuntimeError::Busy)?,
+            )
+        };
 
         if let Executable::Script(program) = &loaded.compiled {
             let program = program.clone();
@@ -654,7 +663,10 @@ impl PluginRuntime {
             };
             let source = String::from_utf8(bytes)
                 .map_err(|error| script_error(super::script::ScriptError::Compile(error.to_string())))?;
-            let program = super::script::ScriptProgram::compile(&source).map_err(script_error)?;
+            let kind = super::script::ScriptKind::of_path(&artifact_path).ok_or_else(|| {
+                script_error(super::script::ScriptError::Compile("a script must end in `.rhai` or `.lua`".into()))
+            })?;
+            let program = super::script::ScriptProgram::compile(kind, &source).map_err(script_error)?;
             let schemas = crate::data_model::schemas_of(&models);
             return Ok(LoadedPlugin {
                 manifest,
@@ -1356,6 +1368,69 @@ mod tests {
             );
             drop(kept);
         }
+        Ok(())
+    }
+
+    /// A script plugin held in memory, with no catalog behind it.
+    fn script_plugin(name: &str, kind: super::super::script::ScriptKind, source: &str) -> Result<Arc<LoadedPlugin>, Box<dyn std::error::Error>> {
+        let manifest = PluginManifest::parse(&format!("[plugin]\nname = \"{name}\"\nlabel = \"{name}\"\nversion = \"1.0.0\"\n"))?;
+        let program = super::super::script::ScriptProgram::compile(kind, source)?;
+        Ok(Arc::new(LoadedPlugin {
+            manifest,
+            models: Vec::new(),
+            schemas: Default::default(),
+            rules: Default::default(),
+            compiled: Executable::Script(Arc::new(program)),
+            estimated_mb: 0.1,
+            wasm_bytes: source.len() as u64,
+        }))
+    }
+
+    /// Answers `plugins::call` by running the target on the same runtime, as the kernel does.
+    struct Chain {
+        runtime: PluginRuntime,
+        target: Arc<LoadedPlugin>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::kernel::PluginCaller for Chain {
+        async fn call(
+            &self,
+            _plugin: &str,
+            function: &str,
+            payload: serde_json::Value,
+            trail: Vec<String>,
+        ) -> Result<serde_json::Value, crate::kernel::HostError> {
+            let mut host = crate::kernel::host::test_support::dummy_ctx(&[]);
+            host.call_trail = trail;
+            self.runtime
+                .invoke(self.target.clone(), function, payload, host)
+                .await
+                .map_err(|error| crate::kernel::HostError::Message(error.to_string()))
+        }
+    }
+
+    /// With one call permit, a plugin that calls another must not wait for a permit its own
+    /// request is holding.
+    #[tokio::test]
+    async fn a_nested_call_does_not_need_a_permit_of_its_own() -> Result<(), Box<dyn std::error::Error>> {
+        use super::super::script::ScriptKind;
+        let dir = tempfile::tempdir()?;
+        let runtime = runtime(
+            dir.path(),
+            PluginRuntimeConfig { max_concurrent_calls: 1, compile_timeout_secs: 1, ..config() },
+        )?;
+        let inner = script_plugin("inner", ScriptKind::Rhai, "fn double(input) { #{ n: input.n * 2 } }")?;
+        let outer = script_plugin(
+            "outer",
+            ScriptKind::Lua,
+            r#"function run() return plugins.call("inner", "double", { n = 21 }) end"#,
+        )?;
+        let caller = Arc::new(Chain { runtime: runtime.clone(), target: inner });
+        let host = crate::kernel::host::test_support::dummy_ctx(&["plugins::call"])
+            .with_plugin_calls(vec!["inner".into()], vec!["outer.run".into()], caller);
+        let answer = runtime.invoke(outer, "run", serde_json::Value::Null, host).await?;
+        assert_eq!(answer, serde_json::json!({ "n": 42 }));
         Ok(())
     }
 }

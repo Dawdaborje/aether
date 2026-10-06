@@ -56,4 +56,8 @@ and anonymous visitors apply as usual: a public page can only use functions list
 An error the function reports with the SDK's `Error::msg(...)` is shown under the form.
 Saving or deleting anything makes every list on the page load again.
 
-The widgets that are not listed here (kanban, dashboard, charts) are still placeholders.
+Widget status: `list`, `form`, `group`, `notebook` and chatter work. `kanban`, `dashboard`, `chart` and `stat`
+are placeholders with no data binding. `tree` and `pivot` currently render as a plain list, and `statusbar`
+and `buttonbox` are generic header and action containers with no state behaviour. `calendar`, `gantt`, `graph`,
+`map` and report views do not exist yet. A `list` searches only the rows it has loaded: it has no server-side
+sort, filter or pagination yet.

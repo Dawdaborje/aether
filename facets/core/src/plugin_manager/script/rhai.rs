@@ -17,7 +17,7 @@
 //! the call with a message for the caller; any other error is internal and only logged.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use rhai::{
     AST, Dynamic, Engine, EvalAltResult, FnAccess, Map, Module, Position,
@@ -25,43 +25,20 @@ use rhai::{
 };
 use serde_json::Value;
 
-use crate::kernel::{PluginHostContext, kernel_command};
+use crate::kernel::PluginHostContext;
 
-use super::runtime::USER_ERROR_PREFIX;
+use super::{
+    MAX_CALL_LEVELS, MAX_ITEMS, MAX_OPERATIONS, MAX_RUN_TIME, MAX_STRING_BYTES, ScriptError, USER_MARK, kernel_data,
+};
 
-/// Operations a single call may run (Rhai's counterpart of the WASM fuel limit).
-pub const MAX_OPERATIONS: u64 = 2_000_000;
-/// How long a single call may run.
-pub const MAX_RUN_TIME: Duration = Duration::from_secs(10);
-const MAX_CALL_LEVELS: usize = 32;
-const MAX_STRING_BYTES: usize = 1024 * 1024;
-const MAX_ITEMS: usize = 100_000;
-/// Longest script accepted, in bytes.
-pub const MAX_SCRIPT_BYTES: u64 = 512 * 1024;
-
-#[derive(Debug, thiserror::Error)]
-pub enum ScriptError {
-    #[error("script does not compile: {0}")]
-    Compile(String),
-    #[error("function `{0}` is not in the script")]
-    NoSuchFunction(String),
-    /// The script called `fail`; the text is for the caller.
-    #[error("{USER_ERROR_PREFIX}{0}")]
-    User(String),
-    #[error("script failed: {0}")]
-    Failed(String),
-    #[error("input or output is not valid JSON data: {0}")]
-    Data(String),
-}
-
-/// A checked script, ready to run. Cheap to share; each call builds its own engine.
-pub struct ScriptProgram {
+/// A checked Rhai script, ready to run. Cheap to share; each call builds its own engine.
+pub struct RhaiProgram {
     ast: AST,
     /// Public functions and how many parameters each takes.
     functions: Vec<(String, usize)>,
 }
 
-impl ScriptProgram {
+impl RhaiProgram {
     /// Compile a script and check that it is allowed to run.
     pub fn compile(source: &str) -> Result<Self, ScriptError> {
         let ast = limited_engine(None, Instant::now())
@@ -123,20 +100,9 @@ struct Host {
 }
 
 impl Host {
-    fn command(&self, command: &str, payload: Value) -> Result<Value, Box<EvalAltResult>> {
-        match self.runtime.block_on(kernel_command(&self.context, command, payload)) {
-            Ok(value) => Ok(value),
-            Err(error) => Err(runtime_error(error.to_string())),
-        }
-    }
-
     /// The command's `data` (or the whole answer without one), as a script value.
     fn data(&self, command: &str, payload: Value) -> Result<Dynamic, Box<EvalAltResult>> {
-        let answer = self.command(command, payload)?;
-        let data = match answer {
-            Value::Object(mut object) if object.contains_key("data") => object.remove("data").unwrap_or(Value::Null),
-            other => other,
-        };
+        let data = kernel_data(&self.context, &self.runtime, command, payload).map_err(runtime_error)?;
         to_script(&data)
     }
 }
@@ -152,9 +118,6 @@ fn to_json(value: &Dynamic) -> Result<Value, Box<EvalAltResult>> {
 fn runtime_error(message: String) -> Box<EvalAltResult> {
     Box::new(EvalAltResult::ErrorRuntime(Dynamic::from(message), Position::NONE))
 }
-
-/// Marks an error as meant for the caller.
-const USER_MARK: &str = "\u{1}user\u{1}";
 
 fn describe(error: EvalAltResult) -> ScriptError {
     // An error inside a script function arrives wrapped in each call that led to it.
@@ -458,7 +421,6 @@ fn register_commands(engine: &mut Engine, host: &Arc<Host>) {
 
     let mut events = Module::new();
     let h = host.clone();
-    let h = host.clone();
     events.set_native_fn("subscribe", move |event: &str, function: &str| {
         h.data("events::subscribe", serde_json::json!({ "event": event, "function": function }))
     });
@@ -480,9 +442,10 @@ fn register_commands(engine: &mut Engine, host: &Arc<Host>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plugin_manager::runtime::USER_ERROR_PREFIX;
 
-    fn program(source: &str) -> Result<ScriptProgram, Box<dyn std::error::Error>> {
-        Ok(ScriptProgram::compile(source)?)
+    fn program(source: &str) -> Result<RhaiProgram, Box<dyn std::error::Error>> {
+        Ok(RhaiProgram::compile(source)?)
     }
 
     #[test]
@@ -495,13 +458,13 @@ mod tests {
 
     #[test]
     fn a_script_that_does_not_compile_is_refused_when_loaded() {
-        assert!(matches!(ScriptProgram::compile("fn broken( {"), Err(ScriptError::Compile(_))));
+        assert!(matches!(RhaiProgram::compile("fn broken( {"), Err(ScriptError::Compile(_))));
     }
 
     #[test]
     fn eval_and_import_are_off() {
-        assert!(ScriptProgram::compile(r#"fn a(i) { eval("1") }"#).is_err());
-        assert!(ScriptProgram::compile(r#"import "x" as y; fn a(i) { i }"#).is_ok());
+        assert!(RhaiProgram::compile(r#"fn a(i) { eval("1") }"#).is_err());
+        assert!(RhaiProgram::compile(r#"import "x" as y; fn a(i) { i }"#).is_ok());
     }
 
     #[test]
@@ -606,7 +569,7 @@ mod tests {
     /// the way the runtime does.
     async fn run_script(source: &str, caps: &[&str]) -> Result<Value, ScriptError> {
         use crate::kernel::host::test_support::{dummy_ctx, in_memory_media, with_services};
-        let script = ScriptProgram::compile(source)?;
+        let script = RhaiProgram::compile(source)?;
         let host = with_services(dummy_ctx(caps), in_memory_media());
         let runtime = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || script.call("run", Value::Null, host, runtime))

@@ -112,7 +112,7 @@ pub struct PluginDefinition {
     /// The plugin's WebAssembly module (any language that compiles to WASM).
     #[serde(default)]
     pub wasm_file: Option<String>,
-    /// The plugin's Rhai script, instead of a WASM module: for small plugins that only read and
+    /// The plugin's Rhai (`.rhai`) or Lua (`.lua`) script, instead of a WASM module: for small plugins that only read and
     /// write records. A plugin has one or the other.
     #[serde(default)]
     pub script: Option<String>,
@@ -164,7 +164,7 @@ impl PluginDefinition {
             .filter(|file| !file.is_empty())
     }
 
-    /// Whether the code is a Rhai script.
+    /// Whether the code is a script (Rhai or Lua).
     pub fn is_script(&self) -> bool {
         self.wasm_file.as_deref().is_none_or(str::is_empty) && self.script.as_deref().is_some_and(|s| !s.is_empty())
     }

@@ -341,6 +341,26 @@ const SCRIPT: &str = r#"
     fn who() { context::get().actor }
 "#;
 
+const LUA_SCRIPT: &str = r#"
+    function add(input)
+        return db.create("ticket", { title = input.title })
+    end
+    function titles()
+        local titles = {}
+        for _, row in ipairs(db.find("ticket", { order = "title" })) do
+            titles[#titles + 1] = row.title
+        end
+        return titles
+    end
+    function close(input)
+        local row = db.get("ticket", input.id)
+        if row == nil then fail("no such ticket") end
+        return db.update("ticket", input.id, { status = "closed" })
+    end
+    function bad() return db.create("ticket", { nonsense = 1 }) end
+    function who() return context.get().actor end
+"#;
+
 async fn run(
     program: &Arc<aether_core::plugin_manager::script::ScriptProgram>,
     ctx: &PluginHostContext,
@@ -357,12 +377,22 @@ async fn run(
 #[tokio::test]
 #[ignore = "needs SurrealDB (AETHER_TEST_DB)"]
 async fn a_rhai_plugin_uses_the_same_models_grants_and_chatter() -> TestResult {
+    script_plugin_uses_the_same_models_grants_and_chatter("rhai", aether_core::plugin_manager::script::ScriptKind::Rhai, SCRIPT).await
+}
+
+#[tokio::test]
+#[ignore = "needs SurrealDB (AETHER_TEST_DB)"]
+async fn a_lua_plugin_uses_the_same_models_grants_and_chatter() -> TestResult {
+    script_plugin_uses_the_same_models_grants_and_chatter("lua", aether_core::plugin_manager::script::ScriptKind::Lua, LUA_SCRIPT).await
+}
+
+async fn script_plugin_uses_the_same_models_grants_and_chatter(label: &str, kind: aether_core::plugin_manager::script::ScriptKind, source: &str) -> TestResult {
     use aether_core::plugin_manager::script::{ScriptError, ScriptProgram};
-    let Some(world) = World::new("rhai").await? else { return Ok(()) };
+    let Some(world) = World::new(label).await? else { return Ok(()) };
     let model = ticket();
     world.apply(std::slice::from_ref(&model)).await?;
     let ctx = world.ctx(std::slice::from_ref(&model));
-    let program = Arc::new(ScriptProgram::compile(SCRIPT)?);
+    let program = Arc::new(ScriptProgram::compile(kind, source)?);
 
     let created = run(&program, &ctx, "add", json!({ "title": "From a script" })).await?;
     assert_eq!(created["title"], "From a script");
@@ -739,4 +769,158 @@ mod rules_enforcement {
         let _ = ann_ticket;
         Ok(())
     }
+}
+
+fn invoice_models() -> Result<Vec<ModelDef>, Box<dyn std::error::Error>> {
+    let mut customer: ModelDef = serde_json::from_value(json!({
+        "name": "customer",
+        "fields": [{ "name": "name", "type": "string", "required": true }]
+    }))?;
+    let mut invoice: ModelDef = serde_json::from_value(json!({
+        "name": "invoice",
+        "fields": [
+            { "name": "number", "type": "string", "index": "unique",
+              "sequence": { "pattern": "INV-{YYYY}-{###}", "reset": "yearly" } },
+            { "name": "customer", "type": "link", "target": "customer" },
+            { "name": "amount", "type": "decimal", "scale": 2, "min": "0.01", "max": "1000" },
+            { "name": "status", "type": "select", "default": "draft",
+              "options": [{ "value": "draft" }, { "value": "paid" }] },
+            { "name": "paid_on", "type": "date" },
+            { "name": "start", "type": "date" },
+            { "name": "end", "type": "date" }
+        ],
+        "checks": [
+            { "require": { "or": [ { "status": { "ne": "paid" } }, { "paid_on": { "null": false } } ] },
+              "message": "a paid invoice needs the date it was paid" },
+            { "require": { "or": [ { "end": { "null": true } }, { "end": { "gte": { "field": "start" } } } ] },
+              "message": "the end is before the start" }
+        ]
+    }))?;
+    sync_ids(&mut customer);
+    // The invoice links to the customer by the id the customer was just given.
+    sync_ids(&mut invoice);
+    Ok(vec![customer, invoice])
+}
+
+#[tokio::test]
+#[ignore = "needs SurrealDB (AETHER_TEST_DB)"]
+async fn numbering_checks_limits_and_link_existence_hold_inside_the_write() -> TestResult {
+    let Some(world) = World::new("integrity").await? else { return Ok(()) };
+    let models = invoice_models()?;
+    world.apply(&models).await?;
+    let ctx = world.ctx(&models);
+    let year = chrono::Datelike::year(&chrono::Utc::now());
+
+    let customer = kernel_command(&ctx, "db::create", json!({ "model": "customer", "data": { "name": "Acme" } })).await?;
+    let customer_id = customer["data"]["id"].clone();
+
+    // Numbers come from the series, in order, and the created record shows its number.
+    let first = kernel_command(&ctx, "db::create", json!({ "model": "invoice", "data": { "customer": customer_id, "amount": "10.00" } })).await?;
+    assert_eq!(first["data"]["number"], format!("INV-{year}-001"));
+    let second = kernel_command(&ctx, "db::create", json!({ "model": "invoice", "data": { "amount": "20" } })).await?;
+    assert_eq!(second["data"]["number"], format!("INV-{year}-002"));
+
+    // A create that fails gives its number back: nothing is skipped.
+    let refused = kernel_command(&ctx, "db::create", json!({ "model": "invoice", "data": { "status": "paid" } })).await;
+    assert!(matches!(&refused, Err(HostError::InvalidPayload(m)) if m.contains("needs the date it was paid")), "{refused:?}");
+    let third = kernel_command(&ctx, "db::create", json!({ "model": "invoice", "data": { "amount": "30" } })).await?;
+    assert_eq!(third["data"]["number"], format!("INV-{year}-003"), "the refused create used no number");
+
+    // A number given by the caller is kept and takes nothing from the series.
+    let given = kernel_command(&ctx, "db::create", json!({ "model": "invoice", "data": { "number": "MANUAL-1" } })).await?;
+    assert_eq!(given["data"]["number"], "MANUAL-1");
+    let fourth = kernel_command(&ctx, "db::create", json!({ "model": "invoice", "data": { "amount": "1" } })).await?;
+    assert_eq!(fourth["data"]["number"], format!("INV-{year}-004"));
+
+    // Limits.
+    let low = kernel_command(&ctx, "db::create", json!({ "model": "invoice", "data": { "amount": "0" } })).await;
+    assert!(low.is_err(), "{low:?}");
+    let high = kernel_command(&ctx, "db::update", json!({ "model": "invoice", "id": first["data"]["id"], "data": { "amount": "1000.01" } })).await;
+    assert!(high.is_err(), "{high:?}");
+
+    // Checks on update, including one field against another.
+    let id = first["data"]["id"].clone();
+    let paid = kernel_command(&ctx, "db::update", json!({ "model": "invoice", "id": id, "data": { "status": "paid" } })).await;
+    assert!(matches!(&paid, Err(HostError::InvalidPayload(m)) if m.contains("needs the date")), "{paid:?}");
+    kernel_command(&ctx, "db::update", json!({ "model": "invoice", "id": id, "data": { "status": "paid", "paid_on": "2026-10-01" } })).await?;
+    let backwards = kernel_command(&ctx, "db::update", json!({ "model": "invoice", "id": id, "data": { "start": "2026-10-05", "end": "2026-10-01" } })).await;
+    assert!(matches!(&backwards, Err(HostError::InvalidPayload(m)) if m.contains("end is before the start")), "{backwards:?}");
+    kernel_command(&ctx, "db::update", json!({ "model": "invoice", "id": id, "data": { "start": "2026-10-01", "end": "2026-10-05" } })).await?;
+    let after = kernel_command(&ctx, "db::get", json!({ "model": "invoice", "id": id })).await?;
+    assert_eq!(after["data"]["end"], "2026-10-05", "a refused write left nothing behind");
+
+    // A link must point at a record that exists.
+    let ghost = format!("{}:doesnotexist", models[0].model_id.clone().unwrap_or_default());
+    let dangling = kernel_command(&ctx, "db::create", json!({ "model": "invoice", "data": { "customer": ghost } })).await;
+    assert!(matches!(&dangling, Err(HostError::InvalidPayload(m)) if m.contains("does not exist")), "{dangling:?}");
+    let dangling = kernel_command(&ctx, "db::update", json!({ "model": "invoice", "id": id, "data": { "customer": ghost } })).await;
+    assert!(dangling.is_err(), "{dangling:?}");
+    kernel_command(&ctx, "db::update", json!({ "model": "invoice", "id": id, "data": { "customer": customer_id } })).await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "needs SurrealDB (AETHER_TEST_DB)"]
+async fn calculated_fields_are_filled_exactly_on_every_write_and_cannot_be_written() -> TestResult {
+    let Some(world) = World::new("derived").await? else { return Ok(()) };
+    let mut customer: ModelDef = serde_json::from_value(json!({
+        "name": "customer",
+        "fields": [{ "name": "name", "type": "string", "required": true }]
+    }))?;
+    let mut line: ModelDef = serde_json::from_value(json!({
+        "name": "line",
+        "fields": [
+            { "name": "customer", "type": "link", "target": "customer" },
+            { "name": "customer_name", "type": "string", "related": "customer.name" },
+            { "name": "qty", "type": "int" },
+            { "name": "price", "type": "decimal", "scale": 2 },
+            { "name": "discount", "type": "decimal", "scale": 2 },
+            { "name": "subtotal", "type": "decimal", "scale": 2, "compute": "qty * price" },
+            { "name": "total", "type": "decimal", "scale": 2, "compute": "subtotal - discount" },
+            { "name": "vat", "type": "decimal", "scale": 2, "compute": "total * 0.075" }
+        ]
+    }))?;
+    sync_ids(&mut customer);
+    sync_ids(&mut line);
+    let models = vec![customer, line];
+    for model in &models {
+        assert!(model.problems().is_empty(), "{:?}", model.problems());
+    }
+    aether_core::data_model::definition::validate_set(&models)?;
+    world.apply(&models).await?;
+    let ctx = world.ctx(&models);
+
+    let acme = kernel_command(&ctx, "db::create", json!({ "model": "customer", "data": { "name": "Acme" } })).await?;
+    let created = kernel_command(
+        &ctx,
+        "db::create",
+        json!({ "model": "line", "data": { "customer": acme["data"]["id"], "qty": 3, "price": "19.99", "discount": "1.00" } }),
+    )
+    .await?;
+    assert_eq!(created["data"]["customer_name"], "Acme");
+    assert_eq!(created["data"]["subtotal"], "59.97");
+    assert_eq!(created["data"]["total"], "58.97");
+    // 58.97 * 0.075 = 4.42275, rounded half away from zero to 4.42.
+    assert_eq!(created["data"]["vat"], "4.42");
+    let id = created["data"]["id"].clone();
+
+    // A change recalculates; a missing number counts as zero; the copy follows a cleared link.
+    let updated = kernel_command(&ctx, "db::update", json!({ "model": "line", "id": id, "data": { "qty": 10, "discount": null, "customer": null } })).await?;
+    assert_eq!(updated["data"]["subtotal"], "199.90");
+    assert_eq!(updated["data"]["total"], "199.90");
+    assert!(updated["data"].get("customer_name").is_none_or(Value::is_null));
+
+    // A copy catches up with its source the next time the record is written.
+    kernel_command(&ctx, "db::update", json!({ "model": "customer", "id": acme["data"]["id"], "data": { "name": "Acme Ltd" } })).await?;
+    let relinked = kernel_command(&ctx, "db::update", json!({ "model": "line", "id": id, "data": { "customer": acme["data"]["id"] } })).await?;
+    assert_eq!(relinked["data"]["customer_name"], "Acme Ltd");
+
+    // Filters work on a calculated number, and plugins cannot write one.
+    let found = kernel_command(&ctx, "db::find", json!({ "model": "line", "filter": { "total": { "gte": "100" } } })).await?;
+    assert_eq!(found["data"].as_array().map(Vec::len), Some(1));
+    let written = kernel_command(&ctx, "db::update", json!({ "model": "line", "id": id, "data": { "total": "1" } })).await;
+    assert!(written.is_err(), "{written:?}");
+    let written = kernel_command(&ctx, "db::create", json!({ "model": "line", "data": { "customer_name": "x" } })).await;
+    assert!(written.is_err(), "{written:?}");
+    Ok(())
 }

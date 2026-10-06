@@ -52,6 +52,69 @@ as input); more digits than the scale are refused, never rounded. The database s
 smallest digit (`123450`), so `sum`, `avg`, comparisons, ordering and `db::increment` are exact and done
 by the database. Aggregates over a decimal come back as text too.
 
+### Limits on a value
+
+| Option | On | Means |
+|---|---|---|
+| `min`, `max` | `int`, `float`, `decimal` | the value is at least / at most this (a number, or text for a decimal). `min` above `max` is refused when the model loads |
+| `min_length`, `max_length` | `string`, `text` | the fewest / most characters |
+| `pattern` | `string`, `text` | a regular expression the **whole** value must match (`"[A-Z]{3}-[0-9]+"`). Size-limited; an invalid one is refused when the model loads |
+
+A value outside its limits is refused with a plain message ("must be at most 10").
+
+### Naming series
+
+`{"name": "number", "type": "string", "index": "unique", "sequence": {"pattern": "INV-{YYYY}-{#####}", "reset": "yearly"}}`
+numbers records. A create that leaves the field out gets the next number; one that supplies a value keeps it and uses
+no number. The pattern is literal text (letters, digits and ` -_/.:`), `{YYYY}`, `{YY}` and `{MM}` (the date of
+creation, UTC) and exactly one `{#####}` (the zero-padded counter; more digits than the width are never cut).
+`reset` is `never` (default), `yearly` or `monthly`: it starts a new counter per period. The counter row
+(`aether_sequence`) is incremented in the same transaction as the create, so a create that fails gives its number
+back: numbers are never skipped or repeated. Give the field a `unique` index if hand-typed values could collide.
+
+### Checks on the whole record
+
+```json
+"checks": [
+  { "require": { "or": [ { "status": { "ne": "paid" } }, { "paid_on": { "null": false } } ] },
+    "message": "a paid invoice needs the date it was paid" },
+  { "require": { "or": [ { "end": { "null": true } }, { "end": { "gte": { "field": "start" } } } ] },
+    "message": "the end is before the start" }
+]
+```
+
+`require` is a filter (see [Queries](queries.md); `{ "field": "other" }` compares two fields of the record). After every
+create and update of a record the kernel checks that the record still matches each `require`, inside the write's
+transaction, and refuses the write with `message` otherwise, leaving nothing behind. Field names are checked when the
+model loads. A check runs on whole-record writes (`db::create`, `db::update`, and inside `db::transaction`); a
+`db::increment` is not checked. At most 20 per model. A record that already breaks a check cannot be updated at all
+until it is fixed, so add a check to a model with data only after the data satisfies it.
+
+### Calculated fields
+
+Two options make the kernel fill a field, so a plugin no longer keeps a copy in step by hand. Both are
+**read-only for plugins** (a write is refused), **stored** (so they can be filtered, ordered and indexed), and
+refilled by the kernel on **every create and update** of the record, inside the write's transaction.
+
+* `"related": "customer.name"` copies a field of the record a link points at. The link must point at a model of the
+  same plugin, and the field must have the same type (and decimal scale); links, many2many, json and select fields
+  cannot be copies. It is a *copy*: when the customer is renamed, the copy changes the next time the record is
+  written, not before. Clearing the link clears the copy.
+* `"compute": "qty * price"` is a number worked out from the record's own `int` and `decimal` fields: numbers, field
+  names, `+`, `-`, `*` and parentheses (up to 8 deep). It is integer arithmetic on the stored whole units, so it is
+  exact; a result with more digits than the field has is rounded half away from zero (`58.97 * 0.075` into a
+  2-digit field is `4.42`). A missing number counts as zero. There is no division, because it cannot be exact:
+  work it out in the plugin. A calculated field may use another one declared before it. The expression's
+  field names are checked when the model loads.
+
+```json
+{ "name": "subtotal", "type": "decimal", "scale": 2, "compute": "qty * price" },
+{ "name": "total",    "type": "decimal", "scale": 2, "compute": "subtotal - discount" },
+{ "name": "customer_name", "type": "string", "related": "customer.name" }
+```
+
+Not yet: totals over child rows (needs a one-to-many field), and propagating a changed source to its copies.
+
 ### Several fields in one index
 
 `"indexes": [{"fields": ["person", "post"], "unique": true}]` on the model indexes fields together
@@ -89,7 +152,9 @@ A `link` whose `target` is `plugin.model` points at a model of another plugin:
 * **Checked when the plugin is loaded:** the other plugin is in `dependencies`; the catalog has a model of that
   name with that `target_id` (a typo or a stale id is reported with what to do).
 * **Checked on every write:** the value must be a record id into that model's table, as for a link inside the
-  plugin. Whether the record exists is not checked, here or for links inside a plugin.
+  plugin, and the record must exist: the check runs in the same transaction as the write and refuses it
+  otherwise (for hierarchy links the parent check already did this). A record deleted later can still leave
+  a link dangling.
 * **Installing** the linking plugin in an organization installs its dependencies first, so the other model's table
   is there.
 * Reading the linked record means calling the other plugin (`plugins::invoke`), which applies its own rules.

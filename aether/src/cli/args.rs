@@ -30,7 +30,7 @@ pub struct Args {
     pub plugin_path: Option<String>,
 
     #[arg(long, default_value = "go", value_name = "LANGUAGE")]
-    /// Language of a generated plugin: go, rust, typescript, javascript, python or rhai (a script, with nothing to compile)
+    /// Language of a generated plugin: go, rust, typescript, javascript, python, rhai or lua (a script, with nothing to compile)
     pub plugin_language: String,
 
     #[arg(long, default_missing_value = "7890")]

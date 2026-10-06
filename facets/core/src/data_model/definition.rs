@@ -78,11 +78,21 @@ pub enum FieldType {
     /// person's skills, a group's members. Changed with `db::relate` / `db::unrelate`, read
     /// with `db::related`.
     Many2many,
+    /// The rows of another model of the plugin that point back at this record (`inverse`): the
+    /// lines of an invoice. No column. Written as a list of rows with `db::create` and
+    /// `db::update`, read with `expand`; see [`super::runtime::ChildField`].
+    Child,
     /// Any JSON.
     Json,
 }
 
 impl FieldType {
+    /// Whether records hold a value for the field. A many2many is edges and a child is rows of
+    /// another model.
+    pub fn has_column(self) -> bool {
+        !matches!(self, Self::Many2many | Self::Child)
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::String => "string",
@@ -96,6 +106,7 @@ impl FieldType {
             Self::Select => "select",
             Self::Link => "link",
             Self::Many2many => "many2many",
+            Self::Child => "child",
             Self::Json => "json",
         }
     }
@@ -185,6 +196,70 @@ pub struct FieldDef {
     /// Record changes to this field in the record's chatter. Needs the model's chatter on.
     #[serde(default, skip_serializing_if = "is_false")]
     pub track: bool,
+    /// For `int`, `float` and `decimal`: the smallest value allowed (a number, or text for a decimal).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<Value>,
+    /// For `int`, `float` and `decimal`: the largest value allowed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<Value>,
+    /// For `string` and `text`: the fewest characters allowed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_length: Option<u32>,
+    /// For `string` and `text`: a regular expression the whole value must match.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
+    /// For `string`: a naming series. A record created without a value gets the next number of
+    /// the series, allocated inside the create's transaction so numbers are never skipped or repeated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequence: Option<SequenceDef>,
+    /// A copy of a field of the record a link points at: `"customer.name"` is the `name` of the
+    /// record in this model's `customer` link (a link to a model of the same plugin). Filled by the
+    /// kernel on every write of the record and read-only for plugins. It is a copy: a change to the
+    /// linked record shows here when this record is next written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub related: Option<String>,
+    /// A number calculated from the record's own whole-number and decimal fields, such as
+    /// `"qty * price"` (see [`super::compute`]). Stored, so it can be filtered and indexed; recalculated
+    /// on every write of the record and read-only for plugins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compute: Option<String>,
+    /// For a `child` field: the link of the target model that points back at this model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inverse: Option<String>,
+    /// For a `child` field: an `int` field of the target model that the kernel sets to each row's
+    /// position (1, 2, 3 …) when rows are written, and the rows are read in that order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order: Option<String>,
+}
+
+/// When a naming series starts again from 1.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SequenceReset {
+    #[default]
+    Never,
+    Yearly,
+    Monthly,
+}
+
+/// A naming series such as `INV-{YYYY}-{#####}`: literal text, `{YYYY}`, `{YY}`, `{MM}` (the date the
+/// record is created, UTC) and one `{#####}` for the zero-padded number.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SequenceDef {
+    pub pattern: String,
+    #[serde(default)]
+    pub reset: SequenceReset,
+}
+
+/// A rule every record of the model must satisfy after it is written, such as "the end date is
+/// not before the start date". `require` is a filter (see the queries doc); a write that leaves
+/// the record not matching it is refused with `message`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CheckDef {
+    pub require: serde_json::Map<String, Value>,
+    pub message: String,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -296,6 +371,9 @@ pub struct ModelDef {
     /// The record's conversation and history. Absent means off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chatter: Option<ChatterDef>,
+    /// Rules every record must satisfy after a write.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<CheckDef>,
 }
 
 #[derive(Debug, Error)]
@@ -375,6 +453,40 @@ impl ModelDef {
             field_problems(model, field, &mut problems);
         }
 
+        for (position, field) in self.fields.iter().enumerate() {
+            if let Some(compute) = &field.compute
+                && let Ok(expr) = super::compute::Expr::parse(compute)
+            {
+                for rollup in expr.rollups() {
+                    match self.live_fields().find(|f| f.name == rollup.child) {
+                        Some(f) if f.kind == FieldType::Child => {}
+                        _ => problems.push(format!("{model}.{}: `compute` rolls up `{}`, which is not a child field of this model", field.name, rollup.child)),
+                    }
+                }
+                for used in expr.fields() {
+                    match self.fields.iter().position(|f| !f.deprecated && f.name == used) {
+                        None => problems.push(format!("{model}.{}: `compute` uses `{used}`, which is not a field", field.name)),
+                        Some(at) => {
+                            let input = &self.fields[at];
+                            if !matches!(input.kind, FieldType::Int | FieldType::Decimal) {
+                                problems.push(format!("{model}.{}: `compute` uses `{used}`, which is not a whole-number or decimal field", field.name));
+                            } else if input.compute.is_some() && at >= position {
+                                problems.push(format!("{model}.{}: `compute` uses the calculated field `{used}`, which must be declared before it", field.name));
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(related) = &field.related
+                && let Some((link, _)) = related.split_once('.')
+            {
+                match self.live_fields().find(|f| f.name == link) {
+                    Some(l) if l.kind == FieldType::Link && l.target.as_deref().is_some_and(|t| foreign_target(t).is_none()) => {}
+                    _ => problems.push(format!("{model}.{}: `related` needs `{link}` to be a link to a model of this plugin", field.name)),
+                }
+            }
+        }
+
         let mut index_ids = BTreeSet::new();
         for (position, index) in self.indexes.iter().enumerate() {
             let label = format!("{model}: index #{}", position + 1);
@@ -405,6 +517,23 @@ impl ModelDef {
             }
         }
 
+        if self.checks.len() > MAX_CHECKS {
+            problems.push(format!("{model}: at most {MAX_CHECKS} checks"));
+        }
+        for (position, check) in self.checks.iter().enumerate() {
+            let label = format!("{model}: check #{}", position + 1);
+            if check.message.trim().is_empty() || check.message.chars().count() > 200 {
+                problems.push(format!("{label}: `message` is 1 to 200 characters"));
+            }
+            match super::query::Filter::parse(&check.require) {
+                Err(error) => problems.push(format!("{label}: {error}")),
+                Ok(filter) => {
+                    if let Err(error) = super::query::compile_filter(&filter, &FieldNames(&self.fields), "c") {
+                        problems.push(format!("{label}: {error}"));
+                    }
+                }
+            }
+        }
         if let Some(chatter) = &self.chatter {
             if chatter.visitors != VisitorChatter::None && !chatter.enabled {
                 problems.push(format!("{model}: `chatter.visitors` needs `chatter.enabled`"));
@@ -441,8 +570,97 @@ impl ModelDef {
     }
 }
 
+/// Most checks one model may have.
+pub const MAX_CHECKS: usize = 20;
+
+/// Field names of a model, to validate a filter before any schema exists.
+struct FieldNames<'a>(&'a [FieldDef]);
+
+impl super::query::Columns for FieldNames<'_> {
+    fn column(&self, field: &str) -> Result<String, super::query::QueryError> {
+        if self.0.iter().any(|f| !f.deprecated && f.name == field && f.kind.has_column()) {
+            Ok(field.to_string())
+        } else {
+            Err(super::query::QueryError::Invalid(format!("`{field}` is not a field of this model")))
+        }
+    }
+
+    fn value(&self, _field: &str, value: &Value) -> Result<Value, super::query::QueryError> {
+        Ok(value.clone())
+    }
+}
+
 fn field_problems(model: &str, field: &FieldDef, problems: &mut Vec<String>) {
     let name = &field.name;
+    let numeric = matches!(field.kind, FieldType::Int | FieldType::Float | FieldType::Decimal);
+    let texty = matches!(field.kind, FieldType::String | FieldType::Text);
+    if (field.min.is_some() || field.max.is_some()) && !numeric {
+        problems.push(format!("{model}.{name}: `min` and `max` are only for int, float and decimal fields"));
+    }
+    if numeric {
+        let scale = field.scale.unwrap_or(super::decimal::DEFAULT_SCALE);
+        let mut bounds = Vec::new();
+        for (label, bound) in [("min", &field.min), ("max", &field.max)] {
+            let Some(bound) = bound else { continue };
+            match number_of(field.kind, bound, scale) {
+                Ok(number) => bounds.push(number),
+                Err(reason) => problems.push(format!("{model}.{name}: `{label}` {reason}")),
+            }
+        }
+        if let [low, high] = bounds[..]
+            && low > high
+        {
+            problems.push(format!("{model}.{name}: `min` is above `max`"));
+        }
+    }
+    if (field.min_length.is_some() || field.pattern.is_some()) && !texty {
+        problems.push(format!("{model}.{name}: `min_length` and `pattern` are only for string and text fields"));
+    }
+    if let (Some(min), Some(max)) = (field.min_length, field.max_length)
+        && min > max
+    {
+        problems.push(format!("{model}.{name}: `min_length` is above `max_length`"));
+    }
+    if let Some(pattern) = &field.pattern
+        && let Err(reason) = super::runtime::compile_pattern(pattern)
+    {
+        problems.push(format!("{model}.{name}: `pattern` {reason}"));
+    }
+    if field.related.is_some() || field.compute.is_some() {
+        if field.related.is_some() && field.compute.is_some() {
+            problems.push(format!("{model}.{name}: a field is `related` or `compute`, not both"));
+        }
+        if field.required || field.default.is_some() || field.sequence.is_some() {
+            problems.push(format!("{model}.{name}: a calculated field cannot be `required`, have a `default` or a `sequence`"));
+        }
+    }
+    if let Some(compute) = &field.compute {
+        if !matches!(field.kind, FieldType::Int | FieldType::Decimal) {
+            problems.push(format!("{model}.{name}: only int and decimal fields can be calculated"));
+        }
+        if let Err(reason) = super::compute::Expr::parse(compute) {
+            problems.push(format!("{model}.{name}: `compute` {reason}"));
+        }
+    }
+    if let Some(related) = &field.related {
+        if matches!(field.kind, FieldType::Link | FieldType::Many2many | FieldType::Child | FieldType::Json | FieldType::Select) {
+            problems.push(format!("{model}.{name}: a `related` field cannot be a link, select, many2many or json field"));
+        }
+        if related.split_once('.').is_none_or(|(link, target)| !is_name(link) || !is_name(target)) {
+            problems.push(format!("{model}.{name}: `related` is `link_field.field`, such as `customer.name`"));
+        }
+    }
+    if let Some(sequence) = &field.sequence {
+        if field.kind != FieldType::String {
+            problems.push(format!("{model}.{name}: only string fields can have a `sequence`"));
+        }
+        if let Err(reason) = super::sequence::Pattern::parse(&sequence.pattern) {
+            problems.push(format!("{model}.{name}: sequence `pattern` {reason}"));
+        }
+        if field.default.is_some() {
+            problems.push(format!("{model}.{name}: a sequence field has no `default`"));
+        }
+    }
     match field.kind {
         FieldType::Select => {
             if field.options.is_empty() {
@@ -482,6 +700,27 @@ fn field_problems(model: &str, field: &FieldDef, problems: &mut Vec<String>) {
             problems.push(format!("{model}.{name}: a `hierarchy` link cannot be required (the root has no parent)"));
         }
     }
+    if field.kind == FieldType::Child {
+        if field.required || field.default.is_some() || field.index.is_some() || field.track {
+            problems.push(format!("{model}.{name}: a child field has no column, so it cannot be required, indexed, tracked or have a default"));
+        }
+        match field.target.as_deref() {
+            None => problems.push(format!("{model}.{name}: a child field needs a `target` model")),
+            Some(target) if foreign_target(target).is_some() => {
+                problems.push(format!("{model}.{name}: the rows of a child field are a model of this plugin, not `{target}`"));
+            }
+            Some(_) => {}
+        }
+        match field.inverse.as_deref() {
+            Some(inverse) if is_name(inverse) => {}
+            _ => problems.push(format!("{model}.{name}: a child field needs `inverse`, the link of the rows that points back")),
+        }
+        if field.order.as_deref().is_some_and(|order| !is_name(order)) {
+            problems.push(format!("{model}.{name}: `order` is the name of an int field of the rows"));
+        }
+    } else if field.inverse.is_some() || field.order.is_some() {
+        problems.push(format!("{model}.{name}: only child fields have `inverse` and `order`"));
+    }
     if field.kind == FieldType::Many2many {
         if field.required || field.default.is_some() || field.index.is_some() || field.track {
             problems.push(format!("{model}.{name}: a many2many field has no column, so it cannot be required, indexed, tracked or have a default"));
@@ -491,8 +730,12 @@ fn field_problems(model: &str, field: &FieldDef, problems: &mut Vec<String>) {
         }
     }
     match (field.kind, &field.target) {
-        (FieldType::Link | FieldType::Many2many, None) if field.kind == FieldType::Many2many => {}
+        (FieldType::Link | FieldType::Many2many | FieldType::Child, None) if field.kind != FieldType::Link => {}
         (FieldType::Link, None) => problems.push(format!("{model}.{name}: a link field needs a `target` model")),
+        (FieldType::Child, Some(target)) if !is_name(target) && foreign_target(target).is_none() => {
+            problems.push(format!("{model}.{name}: `target` must be a model name"));
+        }
+        (FieldType::Child, Some(_)) => {}
         (FieldType::Link | FieldType::Many2many, Some(target)) if foreign_target(target).is_some() => match &field.target_id {
             None => problems.push(format!(
                 "{model}.{name}: a link to `{target}` needs its `target_id`; run `aether --sync-models` (the other plugin must be loaded first)"
@@ -589,6 +832,56 @@ pub fn validate_set(models: &[ModelDef]) -> Result<(), ModelFileError> {
                 && !names.contains(target.as_str())
             {
                 problems.push(format!("{}.{}: links to `{target}`, which is not a model of this plugin", model.name, field.name));
+            }
+            if field.kind == FieldType::Child
+                && let Some(target) = field.target.as_deref()
+                && let Some(rows) = models.iter().find(|m| m.name == target)
+            {
+                let label = format!("{}.{}", model.name, field.name);
+                match field.inverse.as_deref().and_then(|name| rows.live_fields().find(|f| f.name == name)) {
+                    Some(back) if back.kind == FieldType::Link && !back.hierarchy && back.target.as_deref() == Some(model.name.as_str()) => {}
+                    _ => problems.push(format!(
+                        "{label}: `inverse` must be a link of `{target}` that points at `{}`",
+                        model.name
+                    )),
+                }
+                if let Some(order) = field.order.as_deref() {
+                    match rows.live_fields().find(|f| f.name == order) {
+                        Some(f) if f.kind == FieldType::Int && f.related.is_none() && f.compute.is_none() => {}
+                        _ => problems.push(format!("{label}: `order` must be a plain int field of `{target}`")),
+                    }
+                }
+            }
+            if let Some(compute) = field.compute.as_deref().and_then(|c| super::compute::Expr::parse(c).ok()) {
+                for rollup in compute.rollups() {
+                    let rows = model
+                        .live_fields()
+                        .find(|f| f.name == rollup.child)
+                        .and_then(|f| f.target.as_deref())
+                        .and_then(|target| models.iter().find(|m| m.name == target));
+                    if let (Some(rows), Some(source)) = (rows, rollup.source.as_deref()) {
+                        match rows.live_fields().find(|f| f.name == source) {
+                            Some(f) if matches!(f.kind, FieldType::Int | FieldType::Decimal) => {}
+                            _ => problems.push(format!(
+                                "{}.{}: `compute` adds up `{}.{source}`, which is not a whole-number or decimal field",
+                                model.name, field.name, rollup.child
+                            )),
+                        }
+                    }
+                }
+            }
+            if let Some((link, source)) = field.related.as_deref().and_then(|r| r.split_once('.'))
+                && let Some(target) = model.live_fields().find(|f| f.name == link).and_then(|f| f.target.as_deref())
+                && let Some(other) = models.iter().find(|m| m.name == target)
+            {
+                match other.live_fields().find(|f| f.name == source) {
+                    None => problems.push(format!("{}.{}: `related` names `{source}`, which `{target}` does not have", model.name, field.name)),
+                    Some(src) if src.kind != field.kind || src.scale != field.scale => problems.push(format!(
+                        "{}.{}: `related` copies `{target}.{source}`, so it must be the same type (and decimal scale)",
+                        model.name, field.name
+                    )),
+                    Some(_) => {}
+                }
             }
         }
     }
@@ -1011,5 +1304,15 @@ mod tests {
         let problems = model.problems();
         assert!(problems.iter().any(|p| p.contains("at most")), "{problems:?}");
         assert!(problems.iter().any(|p| p.contains("only for decimal")), "{problems:?}");
+    }
+}
+
+/// A bound as a comparable number: a whole number, a float, or a decimal's scaled whole number
+/// (as a float, enough to compare two bounds).
+fn number_of(kind: FieldType, bound: &Value, scale: u32) -> Result<f64, String> {
+    match kind {
+        FieldType::Int => bound.as_i64().map(|n| n as f64).ok_or_else(|| "must be a whole number".to_string()),
+        FieldType::Float => bound.as_f64().filter(|n| n.is_finite()).ok_or_else(|| "must be a number".to_string()),
+        _ => super::decimal::to_scaled(bound, scale).map(|n| n as f64),
     }
 }

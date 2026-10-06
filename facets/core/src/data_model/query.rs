@@ -17,6 +17,8 @@
 //! * `"field": value` is an equality test; `"field": { op: value, … }` takes one or more of
 //!   `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`, `nin` (also true for a record with no value), `like` (case-insensitive substring) and
 //!   `null` (`true`: the field is empty; `false`: it has a value).
+//! * `lt`, `lte`, `gt`, `gte`, `eq` and `ne` also take `{ "field": "other" }`: compare with another field
+//!   of the same record (`{ "end": { "gte": { "field": "start" } } }`). A record missing either field never matches an ordering.
 //! * Every key of one object must hold, so an object is an AND. `and` / `or` take a list of
 //!   filters, `not` takes one.
 //!
@@ -313,6 +315,12 @@ fn compile_node(
     }
 }
 
+/// `{ "field": "start" }`: compare with another field of the same record instead of a value.
+fn field_reference(value: &Value) -> Option<&str> {
+    let object = value.as_object().filter(|object| object.len() == 1)?;
+    object.get("field")?.as_str()
+}
+
 fn compile_cmp(
     field: &str,
     op: Op,
@@ -355,6 +363,27 @@ fn compile_cmp(
             Ok(format!(
                 "string::contains(string::lowercase(<string> {column}), string::lowercase({placeholder}))"
             ))
+        }
+        Op::Eq | Op::Ne | Op::Gt | Op::Gte | Op::Lt | Op::Lte if field_reference(value).is_some() => {
+            let other = field_reference(value).unwrap_or_default();
+            let other_column = columns.column(other)?;
+            if columns.scale(field) != columns.scale(other) {
+                return Err(invalid(format!("`{field}` and `{other}` are decimals of different scales, so they cannot be compared")));
+            }
+            let symbol = match op {
+                Op::Eq => "=",
+                Op::Ne => "!=",
+                Op::Gt => ">",
+                Op::Gte => ">=",
+                Op::Lt => "<",
+                _ => "<=",
+            };
+            // As with a value: a missing field is not "less than" anything.
+            Ok(if matches!(op, Op::Eq | Op::Ne) {
+                format!("{column} {symbol} {other_column}")
+            } else {
+                format!("({column} != NONE AND {other_column} != NONE AND {column} {symbol} {other_column})")
+            })
         }
         Op::Eq | Op::Ne | Op::Gt | Op::Gte | Op::Lt | Op::Lte => {
             let checked = columns.value(field, value)?;

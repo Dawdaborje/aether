@@ -1,7 +1,7 @@
 //! Native plugin scaffolding: no Extism CLI required.
 //!
 //! `aether --gen plugin --plugin-path company` creates `./company` with a
-//! manifest, a sample source file for the chosen language, a build `Makefile` (not for Rhai),
+//! manifest, a sample source file for the chosen language, a build `Makefile` (not for Rhai or Lua),
 //! `README.md`, `.gitignore` and, outside a workspace, a BSL 1.1 `LICENSE`. When the directory sits
 //! inside a plugin workspace (an ancestor holds a `workspace.toml`), the plugin
 //! is also registered under `[workspace.plugins]`, the way `cargo new`
@@ -33,7 +33,7 @@ pub enum ScaffoldError {
     #[error("invalid plugin name `{0}`: use lowercase letters, digits and `_`, starting with a letter")]
     InvalidName(String),
 
-    #[error("unsupported plugin language `{0}`; choose go, rust, typescript, javascript, python or rhai")]
+    #[error("unsupported plugin language `{0}`; choose go, rust, typescript, javascript, python, rhai or lua")]
     UnsupportedLanguage(String),
 
     #[error("{0} already exists and is not an empty directory")]
@@ -451,6 +451,31 @@ mod tests {
         let manifest = aether_core::plugin_manager::models::plugin_def::PluginManifest::parse(&std::fs::read_to_string(target.join("plugin.toml"))?)?;
         assert!(manifest.plugin.is_script());
         assert_eq!(manifest.plugin.code_file(), Some("main.rhai"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_lua_plugin_names_its_script_instead_of_a_module() -> Result<(), toml_edit::TomlError> {
+        let text = render_manifest("currency", "Currency", "Ada", "a@x.io", Some("base"), Language::Lua, "Currencies.");
+        let document: toml_edit::DocumentMut = text.parse()?;
+        assert_eq!(document["plugin"]["script"].as_str(), Some("main.lua"));
+        assert!(document["plugin"].get("wasm_file").is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_generated_lua_plugin_is_complete_and_loadable() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let target = dir.path().join("currency");
+        let created = create_plugin(&target, Language::Lua).await?;
+        assert_eq!(created.name, "currency");
+        for file in ["plugin.toml", "main.lua", "README.md", ".gitignore"] {
+            assert!(target.join(file).is_file(), "{file} is missing");
+        }
+        assert!(!target.join("out").exists() && !target.join("src").exists() && !target.join("Makefile").exists());
+        let manifest = aether_core::plugin_manager::models::plugin_def::PluginManifest::parse(&std::fs::read_to_string(target.join("plugin.toml"))?)?;
+        assert!(manifest.plugin.is_script());
+        assert_eq!(manifest.plugin.code_file(), Some("main.lua"));
         Ok(())
     }
 }

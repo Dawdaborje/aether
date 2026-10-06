@@ -118,6 +118,7 @@ pub const MAX_ROWS_PER_FIND: u32 = 1000;
 /// Tables the kernel owns in every organization database. A plugin cannot map
 /// a model onto one of them.
 const RESERVED_TABLES: &[&str] = &[
+    "aether_sequence",
     "bridge_configs",
     "chatter_followers",
     "chatter_messages",
@@ -348,13 +349,31 @@ pub(super) const RECORD_ID: &str = "[type::record($__table, $__key)]";
 
 /// One write, ready to run: the statement, what it binds, and the audit facts about it. A single
 /// command runs one plan in its own transaction; `db::transaction` runs several in one.
-struct Plan<'a> {
-    access: Access<'a>,
-    grant: &'a ModelGrant,
-    body: String,
-    ids: String,
-    binds: Vec<(String, JsonValue)>,
-    extra: Extra,
+pub(super) struct Plan<'a> {
+    pub(super) access: Access<'a>,
+    pub(super) grant: &'a ModelGrant,
+    pub(super) body: String,
+    pub(super) ids: String,
+    pub(super) binds: Vec<(String, JsonValue)>,
+    pub(super) extra: Extra,
+}
+
+/// How a write differs when it is one row of a record's child field.
+#[derive(Default)]
+pub(super) struct Options {
+    /// The link of the row that points at its record, filled in by the kernel from this SurrealQL
+    /// value (the record's id, which is not known yet when both are created together).
+    pub(super) inject: Option<Injection>,
+    /// A write with nothing to set is fine (the kernel adds what is missing).
+    pub(super) allow_empty: bool,
+    /// The record's totals are brought up to date by the caller, once, after all the rows.
+    pub(super) skip_parent_refresh: bool,
+}
+
+pub(super) struct Injection {
+    pub(super) field: String,
+    pub(super) column: String,
+    pub(super) value_sql: String,
 }
 
 async fn run_plan(ctx: &PluginHostContext, plan: Plan<'_>) -> Result<JsonValue, HostError> {
@@ -577,19 +596,29 @@ pub async fn db_create(ctx: &PluginHostContext, payload: &JsonValue) -> Result<J
 }
 
 async fn plan_create<'a>(ctx: &'a PluginHostContext, payload: &JsonValue) -> Result<Plan<'a>, HostError> {
-    ctx.require_cap("db::mutate")?;
     let req: CreateRequest = parse_req(payload)?;
-    let grant = require_model(ctx, &req.model, true)?;
-    if req.data.is_empty() {
+    plan_create_with(ctx, req.model, req.data, Options::default()).await
+}
+
+pub(super) async fn plan_create_with<'a>(
+    ctx: &'a PluginHostContext,
+    model: String,
+    given: Map<String, JsonValue>,
+    options: Options,
+) -> Result<Plan<'a>, HostError> {
+    ctx.require_cap("db::mutate")?;
+    let grant = require_model(ctx, &model, true)?;
+    if given.is_empty() && !options.allow_empty {
         return Err(HostError::InvalidPayload("data must not be empty".into()));
     }
     let (_, locked) = guard::field_limits(ctx, grant).await?;
-    guard::check_locked(&locked, req.data.keys(), &req.model)?;
-    let scope = guard::scope(ctx, grant, Operation::Create, "d8").await?.ok_or_else(|| guard::denied(&req.model, "create"))?;
+    guard::check_locked(&locked, given.keys(), &model)?;
+    let scope = guard::scope(ctx, grant, Operation::Create, "d8").await?.ok_or_else(|| guard::denied(&model, "create"))?;
     // Checked against the model and keyed by field id, or (without one) as given.
-    let data = match &grant.schema {
-        Some(schema) => schema.encode_create(&req.data)?,
-        None => req.data,
+    let data = match (&grant.schema, &options.inject) {
+        (Some(schema), Some(inject)) => schema.encode_create_row(&given, &inject.field)?,
+        (Some(schema), None) => schema.encode_create(&given)?,
+        (None, _) => given,
     };
     for key in data.keys() {
         validate_field_name(key)?;
@@ -600,21 +629,30 @@ async fn plan_create<'a>(ctx: &'a PluginHostContext, payload: &JsonValue) -> Res
         ("__data".to_string(), JsonValue::Object(data.clone())),
     ];
     let mut extra = chatter_extra(grant, "create")?;
+    let mut content = "$__data".to_string();
     if let Some(schema) = &grant.schema {
         super::graph::create_extra(schema, &data, &mut binds, &mut extra);
+        super::graph::link_checks(schema, &data, &mut binds, &mut extra);
+        let injected = options.inject.as_ref().map(|i| (i.column.as_str(), i.value_sql.as_str()));
+        content = super::integrity::create_content(schema, &data, injected, &mut binds, &mut extra)?;
+        super::integrity::derived_fields(schema, &mut extra)?;
+        super::integrity::model_checks(schema, "$rows", &mut binds, &mut extra)?;
+        if !options.skip_parent_refresh {
+            super::integrity::refresh_parents(schema, &mut extra)?;
+        }
     }
     if !scope.sql.is_empty() {
         // The new record must be one the rules let this person create; if not, the whole write is undone.
         extra.after.push(format!(
             "IF array::len((SELECT VALUE id FROM $rows[0].id WHERE {})) = 0 {{ THROW 'aether-denied: you may not create `{}` records like this'; }};",
-            scope.sql, req.model
+            scope.sql, model
         ));
         binds.extend(scope.binds);
     }
     Ok(Plan {
-        access: Access { operation: "create", model: req.model, table: &grant.table },
+        access: Access { operation: "create", model: model, table: &grant.table },
         grant,
-        body: "LET $rows = (CREATE type::table($__table) CONTENT $__data RETURN AFTER);".into(),
+        body: format!("LET $rows = (CREATE type::table($__table) CONTENT {content} RETURN AFTER);"),
         ids: "$rows.id".into(),
         binds,
         extra,
@@ -626,20 +664,36 @@ pub async fn db_update(ctx: &PluginHostContext, payload: &JsonValue) -> Result<J
 }
 
 async fn plan_update<'a>(ctx: &'a PluginHostContext, payload: &JsonValue) -> Result<Plan<'a>, HostError> {
-    ctx.require_cap("db::mutate")?;
     let req: UpdateRequest = parse_req(payload)?;
-    let grant = require_model(ctx, &req.model, true)?;
+    plan_update_with(ctx, req.model, req.id, req.data, Options::default()).await
+}
+
+pub(super) async fn plan_update_with<'a>(
+    ctx: &'a PluginHostContext,
+    model: String,
+    id: String,
+    data: Map<String, JsonValue>,
+    options: Options,
+) -> Result<Plan<'a>, HostError> {
+    ctx.require_cap("db::mutate")?;
+    let grant = require_model(ctx, &model, true)?;
     let (_, locked) = guard::field_limits(ctx, grant).await?;
-    guard::check_locked(&locked, req.data.keys(), &req.model)?;
-    let scope = guard::scope(ctx, grant, Operation::Write, "d8").await?.ok_or_else(|| guard::denied(&req.model, "change"))?;
-    let mut binds = record_binds(grant, &req.id);
+    guard::check_locked(&locked, data.keys(), &model)?;
+    let scope = guard::scope(ctx, grant, Operation::Write, "d8").await?.ok_or_else(|| guard::denied(&model, "change"))?;
+    let mut binds = record_binds(grant, &id);
     let mut extra = chatter_extra(grant, "update")?;
-    add_record_check(&mut extra, &mut binds, scope, &req.model, "change");
+    add_record_check(&mut extra, &mut binds, scope, &model, "change");
     let body = match &grant.schema {
         Some(schema) => {
             // One statement that sets the changed columns (by id) and clears the ones set to null.
-            let (set, clear) = schema.encode_update(&req.data)?;
+            let (set, clear) = schema.encode_update(&data)?;
             super::graph::update_extra(schema, &set, &clear, &mut binds, &mut extra);
+            super::graph::link_checks(schema, &set, &mut binds, &mut extra);
+            super::integrity::derived_fields(schema, &mut extra)?;
+            super::integrity::model_checks(schema, "$rows", &mut binds, &mut extra)?;
+            if !options.skip_parent_refresh {
+                super::integrity::refresh_parents(schema, &mut extra)?;
+            }
             let mut assignments = Vec::new();
             for (index, (column, value)) in set.into_iter().enumerate() {
                 validate_field_name(&column)?;
@@ -658,15 +712,15 @@ async fn plan_update<'a>(ctx: &'a PluginHostContext, payload: &JsonValue) -> Res
             format!("LET $rows = (UPDATE type::record($__table, $__key){clause} RETURN AFTER);")
         }
         None => {
-            for key in req.data.keys() {
+            for key in data.keys() {
                 validate_field_name(key)?;
             }
-            binds.push(("__data".to_string(), JsonValue::Object(req.data)));
+            binds.push(("__data".to_string(), JsonValue::Object(data)));
             "LET $rows = (UPDATE type::record($__table, $__key) MERGE $__data RETURN AFTER);".to_string()
         }
     };
     Ok(Plan {
-        access: Access { operation: "update", model: req.model, table: &grant.table },
+        access: Access { operation: "update", model: model, table: &grant.table },
         grant,
         body,
         ids: RECORD_ID.into(),
@@ -726,18 +780,30 @@ pub async fn db_delete(ctx: &PluginHostContext, payload: &JsonValue) -> Result<J
 }
 
 async fn plan_delete<'a>(ctx: &'a PluginHostContext, payload: &JsonValue) -> Result<Plan<'a>, HostError> {
-    ctx.require_cap("db::mutate")?;
     let req: DeleteRequest = parse_req(payload)?;
-    let grant = require_model(ctx, &req.model, true)?;
-    let scope = guard::scope(ctx, grant, Operation::Delete, "d8").await?.ok_or_else(|| guard::denied(&req.model, "delete"))?;
-    let mut binds = record_binds(grant, &req.id);
+    plan_delete_with(ctx, req.model, req.id, Options::default()).await
+}
+
+pub(super) async fn plan_delete_with<'a>(
+    ctx: &'a PluginHostContext,
+    model: String,
+    id: String,
+    options: Options,
+) -> Result<Plan<'a>, HostError> {
+    ctx.require_cap("db::mutate")?;
+    let grant = require_model(ctx, &model, true)?;
+    let scope = guard::scope(ctx, grant, Operation::Delete, "d8").await?.ok_or_else(|| guard::denied(&model, "delete"))?;
+    let mut binds = record_binds(grant, &id);
     let mut extra = chatter_extra(grant, "delete")?;
     if let Some(schema) = &grant.schema {
         super::graph::delete_extra(schema, &mut extra);
+        if !options.skip_parent_refresh {
+            super::integrity::refresh_parents(schema, &mut extra)?;
+        }
     }
-    add_record_check(&mut extra, &mut binds, scope, &req.model, "delete");
+    add_record_check(&mut extra, &mut binds, scope, &model, "delete");
     Ok(Plan {
-        access: Access { operation: "delete", model: req.model, table: &grant.table },
+        access: Access { operation: "delete", model: model, table: &grant.table },
         grant,
         body: "LET $rows = (DELETE type::record($__table, $__key) RETURN BEFORE);".into(),
         ids: RECORD_ID.into(),
@@ -816,8 +882,15 @@ pub async fn db_transaction(ctx: &PluginHostContext, payload: &JsonValue) -> Res
         plans.push(plan);
     }
 
+    let data = run_composed(ctx, &plans).await?;
+    Ok(serde_json::json!({ "ok": true, "data": data }))
+}
+
+/// Run several writes in one transaction, each with its own copy of the per-write variables, and
+/// answer each write's record (or null), decoded as the plugin sees it.
+pub(super) async fn run_composed(ctx: &PluginHostContext, plans: &[Plan<'_>]) -> Result<Vec<JsonValue>, HostError> {
     let mut hiddens = Vec::with_capacity(plans.len());
-    for plan in &plans {
+    for plan in plans {
         hiddens.push(guard::field_limits(ctx, plan.grant).await?.0);
     }
     let mut statements = String::from("BEGIN TRANSACTION;\n");
@@ -867,11 +940,11 @@ pub async fn db_transaction(ctx: &PluginHostContext, payload: &JsonValue) -> Res
     let results: Vec<Vec<JsonValue>> = response.take(statement_count)?;
     let data: Vec<JsonValue> = results
         .into_iter()
-        .zip(&plans)
+        .zip(plans)
         .zip(&hiddens)
         .map(|((rows, plan), hidden)| rows.into_iter().next().map_or(JsonValue::Null, |row| guard::strip(hidden, decode(plan.grant, row))))
         .collect();
-    Ok(serde_json::json!({ "ok": true, "data": data }))
+    Ok(data)
 }
 
 pub(super) fn strip_table_prefix<'a>(id: &'a str, table: &str) -> &'a str {

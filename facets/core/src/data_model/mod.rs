@@ -15,11 +15,13 @@
 //! an upgrade needs in an organization's database.
 
 pub mod apply;
+pub mod compute;
 pub mod decimal;
 pub mod definition;
 pub mod query;
 pub mod rules;
 pub mod runtime;
+pub mod sequence;
 
 pub use definition::{
     ChatterDef, FieldDef, FieldType, IndexDef, IndexKind, ModelDef, ModelFileError, SelectOption, ViewDef, new_id,

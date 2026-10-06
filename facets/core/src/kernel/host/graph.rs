@@ -38,6 +38,31 @@ fn parent_bind(index: usize) -> String {
     format!("d{}", 900 + index)
 }
 
+/// Bind names for the links whose targets are checked; renamed per write like the hierarchy ones.
+fn link_bind(index: usize, part: usize) -> String {
+    format!("d{}", 800 + index * 2 + part)
+}
+
+/// Refuse a write that points a plain link at a record that does not exist. `values` is the
+/// written columns (by field id); the check runs before the write, in the same transaction.
+pub(super) fn link_checks(
+    schema: &ModelSchema,
+    values: &Map<String, JsonValue>,
+    binds: &mut Vec<(String, JsonValue)>,
+    extra: &mut Extra,
+) {
+    for (index, link) in schema.links.iter().enumerate() {
+        let Some(target) = values.get(&link.column).and_then(JsonValue::as_str) else { continue };
+        let (table_bind, key_bind) = (link_bind(index, 0), link_bind(index, 1));
+        binds.push((table_bind.clone(), JsonValue::String(link.table.clone())));
+        binds.push((key_bind.clone(), JsonValue::String(strip_table_prefix(target, &link.table).to_string())));
+        extra.before.push(format!(
+            "IF !record::exists(type::record(${table_bind}, ${key_bind})) {{ THROW 'aether: the record `{}` points to does not exist'; }};",
+            link.field
+        ));
+    }
+}
+
 /// What a create must also do for its hierarchy links: check the parent exists and add the edge.
 pub(super) fn create_extra(schema: &ModelSchema, data: &Map<String, JsonValue>, binds: &mut Vec<(String, JsonValue)>, extra: &mut Extra) {
     for (index, hierarchy) in schema.hierarchies.iter().enumerate() {

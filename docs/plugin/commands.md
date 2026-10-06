@@ -2,7 +2,7 @@
 
 A plugin has no database, file system or network of its own. Everything it does outside its own
 code is a **kernel command**: a named request such as `db::create` that the kernel checks and then
-carries out. WebAssembly plugins send them through their SDK; [Rhai scripts](rhai.md) call them as
+carries out. WebAssembly plugins send them through their SDK; [Rhai](rhai.md) and [Lua](lua.md) scripts call them as
 functions (`db::create(...)`). Both reach the same code, so the same checks apply.
 
 ## How a command is checked
@@ -15,7 +15,7 @@ functions (`db::create(...)`). Both reach the same code, so the same checks appl
    its own cache entries and files, the hosts in `http_hosts`, the plugins in `dependencies`.
 3. **Audit.** Database commands leave a `data_access` row; plugin calls leave a call record.
 
-The same payloads are used by WASM and Rhai; an answer is `{ "ok": true, "data": ... }`, and a
+The same payloads are used by WASM, Rhai and Lua; an answer is `{ "ok": true, "data": ... }`, and a
 refusal is an error with a message (a script can `try`/`catch` it).
 
 ## Reference
@@ -44,7 +44,7 @@ refusal is an error with a message (a script can `try`/`catch` it).
 | `events::subscribe`, `events::unsubscribe` | `events::subscribe` | `events::subscribe/unsubscribe` | done: see [Events](../architecture/events.md) |
 
 A command that is not implemented checks its capability and then answers "not implemented".
-`call` is a reserved word in Rhai, which is why `plugins::call` is `plugins::invoke` in scripts.
+`call` is a reserved word in Rhai, which is why `plugins::call` is `plugins::invoke` in Rhai scripts (Lua has both `plugins.call` and `plugins.invoke`).
 
 ## db::transaction
 

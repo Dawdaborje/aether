@@ -244,10 +244,10 @@ mod tests {
 
     #[test]
     fn build_output_and_editor_files_do_not_trigger_a_reload() {
-        for path in ["target/release/x.wasm", ".git/index", "node_modules/a/b.js", "src/.main.rs.swp", "main.rhai~", "pages/.hidden.xml"] {
+        for path in ["target/release/x.wasm", ".git/index", "node_modules/a/b.js", "src/.main.rs.swp", "main.rhai~", "main.lua~", "pages/.hidden.xml"] {
             assert!(ignored(Path::new(path)), "{path}");
         }
-        for path in ["main.rhai", "plugin.toml", "models/note.json", "pages/notes.xml", "out/plugin.wasm"] {
+        for path in ["main.rhai", "main.lua", "plugin.toml", "models/note.json", "pages/notes.xml", "out/plugin.wasm"] {
             assert!(!ignored(Path::new(path)), "{path}");
         }
     }
