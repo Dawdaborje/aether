@@ -60,6 +60,42 @@ In a `when`, a string starting with `$` is a variable (`$$` writes a literal `$`
 * A variable with no value (the caller is not an employee) makes its comparison match nothing. A list
   stands for "one of", so `{"employee": "$hr.subordinates"}` and `{"employee": {"in": ...}}` mean the same.
 
+## Workflow: states and the moves between them
+
+A `workflow` section in the same rule file says how a `select` field (the state) may change. It is built from the
+same parts as `restrict`: who (`roles`), what the record must look like before the move (`when`, with the same
+`$variables`), and the same exemption for administrators.
+
+```json
+"workflow": {
+  "field": "state",
+  "initial": ["draft"],
+  "transitions": [
+    { "name": "submit",  "label": "Submit", "from": ["draft"],     "to": "submitted", "when": { "employee": "$user" } },
+    { "name": "approve", "from": ["submitted"], "to": "approved", "roles": ["approver"],
+      "when": { "employee": { "ne": "$user" } } },
+    { "name": "reject",  "from": ["submitted"], "to": "rejected", "roles": ["approver"] },
+    { "name": "reopen",  "from": ["rejected"],  "to": "draft" }
+  ]
+}
+```
+
+* **A write that sets the state field is a move.** It is refused unless a transition the caller may make (`roles`;
+  none listed: anyone who may change the record) leads to the new state from the state the record is in now and the
+  transition's `when` holds. The check runs in the write's own transaction, before the change, so nothing skips a step
+  and a refused move changes nothing. Setting the state it already has is not a move.
+* **A new record** may only be created in one of `initial` (default: the field's `default`).
+* **Other writes** are not affected: say who may change the other fields of a record in a state with `restrict`
+  (`"when": { "state": "draft" }`), exactly as before. Field rules can still limit who writes the state field at all.
+* **Administrators** (`org_admin`) and the kernel's own jobs are not held to the workflow, like any other rule.
+* **History:** mark the state field `"track": true` on a model with chatter on, and every move is written to the
+  record's chatter with who made it and when.
+* **`db::transitions`** (`{ "model": …, "id": … }`, needs `db::query`) lists the moves the caller can make with that
+  record right now, `[{ name, label, from, to }]`: empty when none, or when they cannot read and change the record. A
+  page uses it to show only the buttons that will work; the move is checked again when it is made. In Rhai:
+  `db::transitions(model, id)`; in Rust: `db::transitions`.
+* The field, every state and every `when` are checked against the model when the plugin loads.
+
 ## What each command does
 
 | Command | Effect |

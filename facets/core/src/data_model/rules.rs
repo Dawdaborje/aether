@@ -135,6 +135,38 @@ pub struct FieldRule {
     pub write_roles: Option<Vec<String>>,
 }
 
+/// One move of a record from a state to another.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Transition {
+    pub name: String,
+    /// Shown instead of the name.
+    #[serde(default)]
+    pub label: Option<String>,
+    /// The states the record may be in. Never empty.
+    pub from: Vec<String>,
+    pub to: String,
+    /// Who may make the move; none listed: anyone who may change the record.
+    #[serde(default)]
+    pub roles: Vec<String>,
+    /// What the record must match (before the move), like a `restrict` row's `when`.
+    #[serde(default)]
+    pub when: Option<Map<String, Value>>,
+}
+
+/// The states of a model and the moves between them. A write that changes the `field` is allowed
+/// only as one of the `transitions` the caller may make; a new record starts in `initial`.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Workflow {
+    /// A `select` field of the model.
+    pub field: String,
+    /// The states a record may be created in. Default: the field's default.
+    #[serde(default)]
+    pub initial: Vec<String>,
+    pub transitions: Vec<Transition>,
+}
+
 /// The rules of one model.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -146,6 +178,8 @@ pub struct RuleSet {
     pub restrict: Vec<RestrictRule>,
     #[serde(default)]
     pub fields: Vec<FieldRule>,
+    #[serde(default)]
+    pub workflow: Option<Workflow>,
 }
 
 /// What the rules say about one operation for one person.
@@ -246,6 +280,81 @@ impl RuleSet {
         Ok(if allowed.is_empty() { Decision::Open } else { Decision::Only(allowed) })
     }
 
+    /// The transitions `roles` may make, whatever the record looks like.
+    fn transitions_for(&self, plugin: &str, roles: &[String]) -> Vec<&Transition> {
+        match &self.workflow {
+            Some(workflow) => workflow
+                .transitions
+                .iter()
+                .filter(|t| t.roles.is_empty() || holds(plugin, roles, &t.roles))
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// The variables the transitions that `roles` may make need answered first.
+    pub fn workflow_variables(&self, plugin: &str, roles: &[String]) -> BTreeSet<String> {
+        let mut found = BTreeSet::new();
+        for transition in self.transitions_for(plugin, roles) {
+            if let Some(when) = &transition.when {
+                collect_variables(&Value::Object(when.clone()), &mut found);
+            }
+        }
+        found
+    }
+
+    /// The transitions `roles` may make, each with the condition a record must meet for the move
+    /// (its state is one of the `from` states, and the transition's `when` holds). A `when` that
+    /// depends on a variable the caller has no value for makes the move impossible.
+    pub fn available_moves(
+        &self,
+        plugin: &str,
+        roles: &[String],
+        variables: &HashMap<String, Value>,
+    ) -> Result<Vec<(&Transition, Filter)>, QueryError> {
+        let Some(workflow) = &self.workflow else { return Ok(Vec::new()) };
+        let mut out = Vec::new();
+        for transition in self.transitions_for(plugin, roles) {
+            let from = Filter::Cmp {
+                field: workflow.field.clone(),
+                op: Op::In,
+                value: Value::Array(transition.from.iter().map(|s| Value::String(s.clone())).collect()),
+            };
+            let when = match &transition.when {
+                Some(when) => bind(Filter::parse(when)?, variables),
+                None => Filter::always(),
+            };
+            let condition = simplify(from.and(when));
+            if condition != Filter::Never {
+                out.push((transition, condition));
+            }
+        }
+        Ok(out)
+    }
+
+    /// What `roles` may do to move a record to `to`: records already in that state are fine, and
+    /// so are records a transition into it applies to. `Deny` when no transition applies to them.
+    pub fn move_to(
+        &self,
+        plugin: &str,
+        to: &str,
+        roles: &[String],
+        variables: &HashMap<String, Value>,
+    ) -> Result<Decision, QueryError> {
+        let Some(workflow) = &self.workflow else { return Ok(Decision::Open) };
+        let mut allowed = Filter::Never;
+        for (transition, condition) in self.available_moves(plugin, roles, variables)? {
+            if transition.to == to {
+                allowed = allowed.or(condition);
+            }
+        }
+        if allowed == Filter::Never {
+            return Ok(Decision::Deny);
+        }
+        let unchanged = Filter::Cmp { field: workflow.field.clone(), op: Op::Eq, value: Value::String(to.to_string()) };
+        Ok(Decision::Only(unchanged.or(allowed)))
+    }
+
     /// Fields `roles` may not read.
     pub fn hidden_fields(&self, plugin: &str, roles: &[String]) -> HashSet<&str> {
         self.fields
@@ -289,6 +398,9 @@ impl RuleSet {
             }
             self.check_when(&rule.name, &rule.when, &known, &mut problems);
         }
+        if let Some(workflow) = &self.workflow {
+            self.workflow_problems(workflow, model, &known, &mut problems);
+        }
         for rule in &self.fields {
             if rule.fields.is_empty() {
                 problems.push(format!("{}: a field rule names no fields", self.model));
@@ -303,6 +415,54 @@ impl RuleSet {
             }
         }
         problems
+    }
+
+    fn workflow_problems(&self, workflow: &Workflow, model: &ModelDef, known: &dyn Fn(&str) -> bool, problems: &mut Vec<String>) {
+        let name = &self.model;
+        let Some(field) = model.live_fields().find(|f| f.name == workflow.field) else {
+            problems.push(format!("{name}: the workflow's field `{}` is not a field", workflow.field));
+            return;
+        };
+        if field.kind != super::definition::FieldType::Select {
+            problems.push(format!("{name}: the workflow's field `{}` must be a select field", workflow.field));
+            return;
+        }
+        let states: HashSet<&str> = field.options.iter().map(|o| o.value.as_str()).collect();
+        let state = |text: &str, what: &str, problems: &mut Vec<String>| {
+            if !states.contains(text) {
+                problems.push(format!("{name}: the workflow {what} `{text}`, which is not an option of `{}`", workflow.field));
+            }
+        };
+        let initial: Vec<String> = if workflow.initial.is_empty() {
+            field.default.as_ref().and_then(Value::as_str).map(|d| vec![d.to_string()]).unwrap_or_default()
+        } else {
+            workflow.initial.clone()
+        };
+        if initial.is_empty() {
+            problems.push(format!("{name}: the workflow needs `initial` states (or the field a `default`)"));
+        }
+        for text in &initial {
+            state(text, "starts in", problems);
+        }
+        if workflow.transitions.is_empty() {
+            problems.push(format!("{name}: the workflow has no transitions"));
+        }
+        let mut names = HashSet::new();
+        for transition in &workflow.transitions {
+            if !names.insert(transition.name.as_str()) {
+                problems.push(format!("{name}: two transitions are named `{}`", transition.name));
+            }
+            if transition.from.is_empty() {
+                problems.push(format!("{name}: transition `{}` has no `from` states", transition.name));
+            }
+            for text in &transition.from {
+                state(text, &format!("moves `{}` from", transition.name), problems);
+            }
+            state(&transition.to, &format!("moves `{}` to", transition.name), problems);
+            if let Some(when) = &transition.when {
+                self.check_when(&format!("transition {}", transition.name), when, known, problems);
+            }
+        }
     }
 
     fn check_when(&self, rule: &str, when: &Map<String, Value>, known: &dyn Fn(&str) -> bool, problems: &mut Vec<String>) {

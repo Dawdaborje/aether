@@ -21,6 +21,7 @@ pub async fn kernel_command(
         "db::relate" => graph::db_relate(ctx, &payload).await,
         "db::unrelate" => graph::db_unrelate(ctx, &payload).await,
         "db::related" => graph::db_related(ctx, &payload).await,
+        "db::transitions" => super::transitions::db_transitions(ctx, &payload).await,
         "db::tree" => graph::db_tree(ctx, &payload).await,
         "db::count" => db::db_count(ctx, &payload).await,
         "db::aggregate" => db::db_aggregate(ctx, &payload).await,
@@ -280,7 +281,7 @@ mod tests {
     async fn every_capability_a_command_checks_is_in_the_catalog() {
         let catalog = aether_security::capabilities::CapabilityCatalog::builtin().unwrap();
         let commands = [
-            "db::get", "db::find", "db::query", "db::count", "db::aggregate", "db::relate", "db::unrelate", "db::related", "db::tree", "db::create", "db::update", "db::delete", "db::increment",
+            "db::get", "db::find", "db::query", "db::count", "db::aggregate", "db::relate", "db::unrelate", "db::related", "db::transitions", "db::tree", "db::create", "db::update", "db::delete", "db::increment",
             "db::mutate", "db::transaction", "cache::get", "cache::set", "cache::invalidate",
             "cache::clear", "storage::read", "storage::write", "storage::delete",
             "storage::list", "fs::read", "fs::write", "fs::list", "fs::stat", "fs::rename", "fs::delete", "communication::send", "events::emit", "events::subscribe", "events::unsubscribe",

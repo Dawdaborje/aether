@@ -201,6 +201,20 @@ fn register_commands(engine: &mut Engine, host: &Arc<Host>) {
         h.data("db::get", serde_json::json!({ "model": model, "id": id }))
     });
     let h = host.clone();
+    db.set_native_fn("transitions", move |model: &str, id: &str| {
+        h.data("db::transitions", serde_json::json!({ "model": model, "id": id }))
+    });
+    // `db::get(model, id, #{ expand: ["lines"] })`.
+    let h = host.clone();
+    db.set_native_fn("get", move |model: &str, id: &str, options: Map| {
+        let mut payload = to_json(&Dynamic::from_map(options))?;
+        if let Value::Object(object) = &mut payload {
+            object.insert("model".into(), Value::String(model.to_string()));
+            object.insert("id".into(), Value::String(id.to_string()));
+        }
+        h.data("db::get", payload)
+    });
+    let h = host.clone();
     db.set_native_fn("find", move |model: &str, query: Map| {
         let mut payload = to_json(&Dynamic::from_map(query))?;
         if let Value::Object(object) = &mut payload {

@@ -113,7 +113,42 @@ refilled by the kernel on **every create and update** of the record, inside the 
 { "name": "customer_name", "type": "string", "related": "customer.name" }
 ```
 
-Not yet: totals over child rows (needs a one-to-many field), and propagating a changed source to its copies.
+Not yet: propagating a changed source to its copies.
+
+### Child rows (one-to-many)
+
+```json
+// invoice.json
+{ "name": "lines", "type": "child", "target": "invoice_line", "inverse": "invoice", "order": "position" },
+{ "name": "subtotal", "type": "decimal", "scale": 2, "compute": "sum(lines.amount)" },
+{ "name": "line_count", "type": "int", "compute": "count(lines)" }
+// invoice_line.json: an ordinary model with a link back (and, optionally, the int field that numbers the rows)
+{ "name": "invoice", "type": "link", "target": "invoice", "required": true },
+{ "name": "position", "type": "int" }
+```
+
+A `child` field has no column: it is the rows of another model **of the same plugin** that point back
+(`inverse` names their link; `order` names an `int` field the kernel numbers 1, 2, 3 … so rows keep their order).
+Every row is an ordinary record of its own model, checked, ruled, audited and tracked like any other write. The field
+adds these behaviours to the record's own commands:
+
+* **`db::create`** with `"lines": [ {…}, {…} ]` writes the record and its rows in one transaction. A refused row refuses
+  the whole call. A row has no `id` or `invoice` here; the kernel sets them. At most 200 rows per call.
+* **`db::update`** with `"lines": [ … ]` makes the rows exactly that list: a row with an `id` is changed, one without is
+  added, and a row of the record that is not listed is deleted (a `[]` deletes them all). A row is only taken as
+  one of the record's rows if it is. Only rows the caller can read take part, so rules that hide rows are never undone by
+  leaving them out. Leave the field out of the update to leave the rows alone. Two callers replacing the same
+  list at once: the last one wins.
+* **`db::delete`** deletes the rows with the record, and is refused when the record has rows the caller cannot see.
+* **`db::get` and `db::find`** with `"expand": ["lines"]` return the rows too, as a list under the field's name, in
+  `order`. Without `expand` the field is absent. Expanding is for up to 400 records and 1000 rows at a time.
+  In Rhai: `db::get("invoice", id, #{ expand: ["lines"] })`; in Rust: `db::get_expanded` and `Find::expand`.
+* **Totals:** `sum(lines.amount)` and `count(lines)` in a `compute` (see above) are worked out after the last row of a
+  nested write, and again whenever a row is created, changed or deleted on its own (a row moved to another record
+  recalculates only the new one). The record's `checks` run after the rows are written too, so "the total is not
+  negative" sees the new rows.
+
+Not in `db::transaction`: nest rows with `db::create`/`db::update` there, or write the rows as their own operations.
 
 ### Several fields in one index
 

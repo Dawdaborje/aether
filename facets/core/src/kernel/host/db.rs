@@ -13,6 +13,9 @@ use super::error::HostError;
 pub struct GetRequest {
     pub model: String,
     pub id: String,
+    /// Child fields whose rows to include.
+    #[serde(default)]
+    pub expand: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -26,6 +29,9 @@ pub struct FindRequest {
     pub offset: Option<u32>,
     #[serde(default)]
     pub order: Option<String>,
+    /// Child fields whose rows to include.
+    #[serde(default)]
+    pub expand: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -368,6 +374,8 @@ pub(super) struct Options {
     pub(super) allow_empty: bool,
     /// The record's totals are brought up to date by the caller, once, after all the rows.
     pub(super) skip_parent_refresh: bool,
+    /// The model's checks are run by the caller, after all the rows are written.
+    pub(super) defer_checks: bool,
 }
 
 pub(super) struct Injection {
@@ -417,7 +425,11 @@ pub async fn db_get(ctx: &PluginHostContext, payload: &JsonValue) -> Result<Json
         Extra::default(),
     )
     .await?;
-    Ok(serde_json::json!({ "ok": true, "data": rows.into_iter().next().map(|row| guard::strip(&hidden, decode(grant, row))) }))
+    let mut records: Vec<JsonValue> = rows.into_iter().take(1).map(|row| guard::strip(&hidden, decode(grant, row))).collect();
+    if let (Some(schema), false) = (&grant.schema, req.expand.is_empty()) {
+        super::nested::expand(ctx, schema, &mut records, &req.expand).await?;
+    }
+    Ok(serde_json::json!({ "ok": true, "data": records.into_iter().next() }))
 }
 
 /// The `WHERE` condition for a filter over `grant`'s model, with the values it binds (the table
@@ -547,6 +559,22 @@ pub async fn db_aggregate(ctx: &PluginHostContext, payload: &JsonValue) -> Resul
 pub async fn db_find(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
     ctx.require_cap("db::query")?;
     let req: FindRequest = parse_req(payload)?;
+    let mut reply = find_records(ctx, payload).await?;
+    if !req.expand.is_empty() {
+        let grant = require_model(ctx, &req.model, false)?;
+        if let Some(schema) = &grant.schema {
+            let mut rows: Vec<JsonValue> = reply.get("data").and_then(JsonValue::as_array).cloned().unwrap_or_default();
+            super::nested::expand(ctx, schema, &mut rows, &req.expand).await?;
+            reply["data"] = JsonValue::Array(rows);
+        }
+    }
+    Ok(reply)
+}
+
+/// `db::find` without the rows of child fields.
+pub(super) async fn find_records(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
+    ctx.require_cap("db::query")?;
+    let req: FindRequest = parse_req(payload)?;
     let grant = require_model(ctx, &req.model, false)?;
 
     let Some((condition, mut binds, hidden)) = guarded_condition(ctx, grant, &req.model, &req.filter).await? else {
@@ -592,7 +620,12 @@ pub async fn db_find(ctx: &PluginHostContext, payload: &JsonValue) -> Result<Jso
 }
 
 pub async fn db_create(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
-    run_plan(ctx, plan_create(ctx, payload).await?).await
+    ctx.require_cap("db::mutate")?;
+    let req: CreateRequest = parse_req(payload)?;
+    if let Some(reply) = super::nested::create(ctx, &req).await? {
+        return Ok(reply);
+    }
+    run_plan(ctx, plan_create_with(ctx, req.model, req.data, Options::default()).await?).await
 }
 
 async fn plan_create<'a>(ctx: &'a PluginHostContext, payload: &JsonValue) -> Result<Plan<'a>, HostError> {
@@ -636,10 +669,21 @@ pub(super) async fn plan_create_with<'a>(
         let injected = options.inject.as_ref().map(|i| (i.column.as_str(), i.value_sql.as_str()));
         content = super::integrity::create_content(schema, &data, injected, &mut binds, &mut extra)?;
         super::integrity::derived_fields(schema, &mut extra)?;
-        super::integrity::model_checks(schema, "$rows", &mut binds, &mut extra)?;
+        if !options.defer_checks {
+            super::integrity::model_checks(schema, "$rows", &mut binds, &mut extra)?;
+        }
         if !options.skip_parent_refresh {
             super::integrity::refresh_parents(schema, &mut extra)?;
         }
+    }
+    if let (Some((field, states)), Some(schema)) = (guard::workflow_initial(ctx, grant).await?, &grant.schema) {
+        let column = schema.column_id(&field)?;
+        validate_field_name(column)?;
+        extra.after.push(format!(
+            "IF array::len((SELECT VALUE id FROM $rows[0].id WHERE {column} IN $d30010)) = 0 {{ THROW $d30011; }};"
+        ));
+        binds.push(("d30011".to_string(), JsonValue::String(format!("aether-denied: a new `{model}` record starts as {}", states.join(" or ")))));
+        binds.push(("d30010".to_string(), JsonValue::Array(states.into_iter().map(JsonValue::String).collect())));
     }
     if !scope.sql.is_empty() {
         // The new record must be one the rules let this person create; if not, the whole write is undone.
@@ -660,7 +704,12 @@ pub(super) async fn plan_create_with<'a>(
 }
 
 pub async fn db_update(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
-    run_plan(ctx, plan_update(ctx, payload).await?).await
+    ctx.require_cap("db::mutate")?;
+    let req: UpdateRequest = parse_req(payload)?;
+    if let Some(reply) = super::nested::update(ctx, &req).await? {
+        return Ok(reply);
+    }
+    run_plan(ctx, plan_update_with(ctx, req.model, req.id, req.data, Options::default()).await?).await
 }
 
 async fn plan_update<'a>(ctx: &'a PluginHostContext, payload: &JsonValue) -> Result<Plan<'a>, HostError> {
@@ -687,10 +736,13 @@ pub(super) async fn plan_update_with<'a>(
         Some(schema) => {
             // One statement that sets the changed columns (by id) and clears the ones set to null.
             let (set, clear) = schema.encode_update(&data)?;
+            workflow_move(ctx, grant, schema, &set, &clear, &model, &mut binds, &mut extra).await?;
             super::graph::update_extra(schema, &set, &clear, &mut binds, &mut extra);
             super::graph::link_checks(schema, &set, &mut binds, &mut extra);
             super::integrity::derived_fields(schema, &mut extra)?;
-            super::integrity::model_checks(schema, "$rows", &mut binds, &mut extra)?;
+            if !options.defer_checks {
+                super::integrity::model_checks(schema, "$rows", &mut binds, &mut extra)?;
+            }
             if !options.skip_parent_refresh {
                 super::integrity::refresh_parents(schema, &mut extra)?;
             }
@@ -727,6 +779,43 @@ pub(super) async fn plan_update_with<'a>(
         binds,
         extra,
     })
+}
+
+/// A write that sets the workflow field is a move: refused unless a transition the caller may make
+/// leads to the new state from the record's state as it is now (checked in the write's own
+/// transaction, before the change).
+#[allow(clippy::too_many_arguments)]
+async fn workflow_move(
+    ctx: &PluginHostContext,
+    grant: &ModelGrant,
+    schema: &crate::data_model::ModelSchema,
+    set: &Map<String, JsonValue>,
+    clear: &[String],
+    model: &str,
+    binds: &mut Vec<(String, JsonValue)>,
+    extra: &mut Extra,
+) -> Result<(), HostError> {
+    let Some(workflow) = grant.rules.as_ref().and_then(|rules| rules.workflow.as_ref()) else { return Ok(()) };
+    let column = schema.column_id(&workflow.field)?.to_string();
+    let refuse = |to: &str| HostError::Denied(format!("you may not move this `{model}` record to `{to}`"));
+    if clear.contains(&column) {
+        return match guard::workflow_scope(ctx, grant, "", "d9").await? {
+            Some(scope) if scope.sql.is_empty() => Ok(()),
+            _ => Err(refuse("(nothing)")),
+        };
+    }
+    let Some(to) = set.get(&column).and_then(JsonValue::as_str) else { return Ok(()) };
+    let Some(scope) = guard::workflow_scope(ctx, grant, to, "d9").await? else { return Err(refuse(to)) };
+    if scope.sql.is_empty() {
+        return Ok(());
+    }
+    extra.before.push(format!(
+        "IF array::len((SELECT VALUE id FROM type::record($__table, $__key) WHERE {})) = 0 {{ THROW $d30012; }};",
+        scope.sql
+    ));
+    binds.extend(scope.binds);
+    binds.push(("d30012".to_string(), JsonValue::String(format!("aether-denied: you may not move this `{model}` record to `{to}` from its state now"))));
+    Ok(())
 }
 
 /// Add to a number field in place. The addition happens in the database, in one statement, so two
@@ -776,7 +865,12 @@ async fn plan_increment<'a>(ctx: &'a PluginHostContext, payload: &JsonValue) -> 
 }
 
 pub async fn db_delete(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
-    run_plan(ctx, plan_delete(ctx, payload).await?).await
+    ctx.require_cap("db::mutate")?;
+    let req: DeleteRequest = parse_req(payload)?;
+    if let Some(reply) = super::nested::delete(ctx, &req).await? {
+        return Ok(reply);
+    }
+    run_plan(ctx, plan_delete_with(ctx, req.model, req.id, Options::default()).await?).await
 }
 
 async fn plan_delete<'a>(ctx: &'a PluginHostContext, payload: &JsonValue) -> Result<Plan<'a>, HostError> {

@@ -12,6 +12,7 @@ export type FieldType =
 	| 'select'
 	| 'link'
 	| 'many2many'
+	| 'child'
 	| 'json';
 
 export const FIELD_TYPES: { value: FieldType; label: string }[] = [
@@ -64,6 +65,9 @@ export interface FieldDef {
 	sequence?: { pattern: string; reset?: 'never' | 'yearly' | 'monthly' };
 	related?: string;
 	compute?: string;
+	/** For a child field: the rows' link back, and the int field that numbers them. */
+	inverse?: string;
+	order?: string;
 }
 
 export type VisitorChatter = 'none' | 'read' | 'read_write';

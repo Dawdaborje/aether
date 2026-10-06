@@ -702,6 +702,15 @@ impl PluginRuntime {
                 [extism::ValType::I64],
                 extism::UserData::default(),
                 kernel_command_host_function,
+            )
+            // The same command in Extism's default namespace (`extism:host/user`), which is the only one the
+            // JavaScript and TypeScript PDK (extism-js) can import from.
+            .with_function(
+                "command",
+                [extism::ValType::I64],
+                [extism::ValType::I64],
+                extism::UserData::default(),
+                kernel_command_host_function,
             );
             // Say where compiled code is cached, or that it is not: otherwise Extism
             // falls back to wasmtime's system-wide default location.

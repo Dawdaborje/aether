@@ -110,9 +110,13 @@
 			if (!out.index || out.type === 'json' || out.type === 'text') delete out.index;
 			if (out.type === 'select') out.options = (out.options ?? []).filter((o) => o.value.trim() !== '');
 			else delete out.options;
-			if (!(out.type === 'link' && out.target)) {
+			if (!((out.type === 'link' || out.type === 'many2many' || out.type === 'child') && out.target)) {
 				delete out.target;
 				delete out.target_id;
+			}
+			if (out.type !== 'child') {
+				delete out.inverse;
+				delete out.order;
 			}
 			if (out.help?.trim()) out.help = out.help.trim();
 			else delete out.help;

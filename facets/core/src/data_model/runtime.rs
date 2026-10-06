@@ -390,6 +390,11 @@ impl ModelSchema {
         }
     }
 
+    /// A field's default as text, for a field that has a text default (a select's).
+    pub fn default_text(&self, name: &str) -> Option<String> {
+        self.column(name).ok()?.def.default.as_ref()?.as_str().map(str::to_string)
+    }
+
     /// The child field called `name`.
     pub fn child(&self, name: &str) -> Option<&ChildField> {
         self.children.iter().find(|child| child.field == name)

@@ -31,7 +31,7 @@ fn add_note(input) {
 
 | Script | Same as the kernel command |
 |---|---|
-| `db::get(model, id)`, `db::find(model[, query])`, `db::create(model, data)`, `db::update(model, id, data)`, `db::delete(model, id)` | `db::*` (query: `filter`, `order` (`-field` for newest first), `limit`, `offset`) |
+| `db::get(model, id[, options])` (`options`: `expand: ["lines"]` puts a child field's rows in), `db::find(model[, query])` (`query` also takes `expand`), `db::transitions(model, id)` (the workflow moves the caller can make now), `db::create(model, data)`, `db::update(model, id, data)`, `db::delete(model, id)` | `db::*` (query: `filter`, `order` (`-field` for newest first), `limit`, `offset`) |
 | `db::transaction(ops)` | `db::transaction`: several writes, all or none |
 | `cache::get(key)`, `cache::set(key, value[, ttl_secs])`, `cache::invalidate(key)`, `cache::invalidate_prefix(prefix)`, `cache::clear()` | `cache::*` |
 | `storage::read(key)`, `storage::read_base64(key)`, `storage::write(key, text)`, `storage::write_base64(key, data)`, `storage::delete(key)`, `storage::list([prefix])` | `storage::*` |

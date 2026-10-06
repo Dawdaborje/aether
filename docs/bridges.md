@@ -13,6 +13,7 @@ Bridges are first-party integrations compiled into the kernel. A bridge's settin
 | Mayan EDMS | Document management |
 | Nextcloud | File storage |
 | Keycloak | Identity provider |
+| OpenSearch | Search and vector search; general purpose, also used by [deduplication](architecture/deduplication.md#opensearch-a-bridge-any-plugin-can-use) |
 | DHIS2 | Health data (Africa) |
 | OpenIMIS | Health insurance |
 

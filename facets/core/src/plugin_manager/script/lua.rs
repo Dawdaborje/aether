@@ -255,8 +255,9 @@ use Arg::{Body, Key, Merge};
 /// Every kernel command a script may call, bound under the module named like the command
 /// (`db.`, `cache.`, `storage.`, `http.`, ...). The same set as Rhai's.
 const COMMANDS: &[Command] = &[
-    command("db", "get", "db::get", &[Key("model"), Key("id")]),
+    command("db", "get", "db::get", &[Key("model"), Key("id"), Merge]),
     command("db", "find", "db::find", &[Key("model"), Merge]),
+    command("db", "transitions", "db::transitions", &[Key("model"), Key("id")]),
     command("db", "create", "db::create", &[Key("model"), Key("data")]),
     command("db", "update", "db::update", &[Key("model"), Key("id"), Key("data")]),
     command("db", "increment", "db::increment", &[Key("model"), Key("id"), Key("field"), Key("by")]),

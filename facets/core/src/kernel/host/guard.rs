@@ -135,6 +135,99 @@ pub async fn scope(ctx: &PluginHostContext, grant: &ModelGrant, op: Operation, p
     }
 }
 
+/// What the workflow of `grant`'s model allows the caller to do when a write sets the workflow
+/// field to `to`. `None`: no transition into `to` is open to them. An empty condition: nothing
+/// limits it (no workflow, or the caller is exempt). Otherwise the condition the record must meet
+/// before the write: already in `to`, or in a state a transition they may make leaves.
+pub async fn workflow_scope(ctx: &PluginHostContext, grant: &ModelGrant, to: &str, prefix: &str) -> Result<Option<Scope>, HostError> {
+    let free = || Ok(Some(Scope { sql: String::new(), binds: Vec::new() }));
+    let Some(rules) = &grant.rules else { return free() };
+    if rules.workflow.is_none() || exempt(ctx).await? {
+        return free();
+    }
+    let held = &held_roles(ctx).await?;
+    let mut values = HashMap::new();
+    for name in rules.workflow_variables(&ctx.plugin_name, held) {
+        let value = variable(ctx, &name).await?;
+        values.insert(name, value);
+    }
+    match rules.move_to(&ctx.plugin_name, to, held, &values)? {
+        Decision::Deny => Ok(None),
+        Decision::Open => free(),
+        Decision::Only(filter) => {
+            let Compiled { sql, binds } = match &grant.schema {
+                Some(schema) => compile_filter(&filter, schema.as_ref(), prefix)?,
+                None => compile_filter(&filter, &Unchecked, prefix)?,
+            };
+            Ok(Some(Scope { sql, binds }))
+        }
+    }
+}
+
+/// The workflow field of the model and the states a new record may start in, when the caller is
+/// held to the workflow. `None` when they are not.
+pub async fn workflow_initial(ctx: &PluginHostContext, grant: &ModelGrant) -> Result<Option<(String, Vec<String>)>, HostError> {
+    let Some(rules) = &grant.rules else { return Ok(None) };
+    let Some(workflow) = &rules.workflow else { return Ok(None) };
+    if exempt(ctx).await? {
+        return Ok(None);
+    }
+    let states = if workflow.initial.is_empty() {
+        grant.schema.as_ref().and_then(|schema| schema.default_text(&workflow.field)).into_iter().collect()
+    } else {
+        workflow.initial.clone()
+    };
+    Ok(Some((workflow.field.clone(), states)))
+}
+
+/// A move the caller may make, with the condition a record must meet (SurrealQL over the model's
+/// columns).
+pub struct Move {
+    pub name: String,
+    pub label: Option<String>,
+    pub from: Vec<String>,
+    pub to: String,
+    pub sql: String,
+    pub binds: Vec<(String, JsonValue)>,
+}
+
+/// The transitions of the model's workflow the caller may make. An exempt caller may make any
+/// from its states. Bind names start with `prefix`.
+pub async fn workflow_moves(ctx: &PluginHostContext, grant: &ModelGrant, prefix: &str) -> Result<Vec<Move>, HostError> {
+    let Some(rules) = &grant.rules else { return Ok(Vec::new()) };
+    let Some(workflow) = &rules.workflow else { return Ok(Vec::new()) };
+    let compile = |filter: &crate::data_model::Filter, prefix: &str| -> Result<Compiled, HostError> {
+        Ok(match &grant.schema {
+            Some(schema) => compile_filter(filter, schema.as_ref(), prefix)?,
+            None => compile_filter(filter, &Unchecked, prefix)?,
+        })
+    };
+    let mut out = Vec::new();
+    if exempt(ctx).await? {
+        for (index, transition) in workflow.transitions.iter().enumerate() {
+            let from = crate::data_model::Filter::Cmp {
+                field: workflow.field.clone(),
+                op: crate::data_model::query::Op::In,
+                value: JsonValue::Array(transition.from.iter().cloned().map(JsonValue::String).collect()),
+            };
+            let Compiled { sql, binds } = compile(&from, &format!("{prefix}{index}x"))?;
+            out.push(Move { name: transition.name.clone(), label: transition.label.clone(), from: transition.from.clone(), to: transition.to.clone(), sql, binds });
+        }
+        return Ok(out);
+    }
+    let held = &held_roles(ctx).await?;
+    let mut values = HashMap::new();
+    for name in rules.workflow_variables(&ctx.plugin_name, held) {
+        let value = variable(ctx, &name).await?;
+        values.insert(name, value);
+    }
+    for (index, (transition, filter)) in rules.available_moves(&ctx.plugin_name, held, &values)?.into_iter().enumerate() {
+        let Compiled { sql, binds } = compile(&filter, &format!("{prefix}{index}x"))?;
+        out.push(Move { name: transition.name.clone(), label: transition.label.clone(), from: transition.from.clone(), to: transition.to.clone(), sql, binds });
+    }
+    Ok(out)
+}
+
 /// The fields the caller may not read and may not set, by field name.
 pub async fn field_limits(ctx: &PluginHostContext, grant: &ModelGrant) -> Result<(HashSet<String>, HashSet<String>), HostError> {
     let Some(rules) = &grant.rules else { return Ok(Default::default()) };

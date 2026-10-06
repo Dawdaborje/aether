@@ -924,3 +924,283 @@ async fn calculated_fields_are_filled_exactly_on_every_write_and_cannot_be_writt
     assert!(written.is_err(), "{written:?}");
     Ok(())
 }
+
+fn invoice_with_lines() -> Result<Vec<ModelDef>, Box<dyn std::error::Error>> {
+    let mut invoice: ModelDef = serde_json::from_value(json!({
+        "name": "invoice",
+        "fields": [
+            { "name": "number", "type": "string", "sequence": { "pattern": "INV-{#####}" } },
+            { "name": "lines", "type": "child", "target": "invoice_line", "inverse": "invoice", "order": "position" },
+            { "name": "discount", "type": "decimal", "scale": 2 },
+            { "name": "subtotal", "type": "decimal", "scale": 2, "compute": "sum(lines.amount)" },
+            { "name": "total", "type": "decimal", "scale": 2, "compute": "subtotal - discount" },
+            { "name": "line_count", "type": "int", "compute": "count(lines)" }
+        ],
+        "checks": [ { "require": { "total": { "gte": "0" } }, "message": "the total cannot be negative" } ]
+    }))?;
+    let mut line: ModelDef = serde_json::from_value(json!({
+        "name": "invoice_line",
+        "fields": [
+            { "name": "invoice", "type": "link", "target": "invoice", "required": true },
+            { "name": "position", "type": "int" },
+            { "name": "item", "type": "string", "required": true },
+            { "name": "qty", "type": "int", "min": 1 },
+            { "name": "price", "type": "decimal", "scale": 2 },
+            { "name": "amount", "type": "decimal", "scale": 2, "compute": "qty * price" }
+        ]
+    }))?;
+    sync_ids(&mut invoice);
+    sync_ids(&mut line);
+    Ok(vec![invoice, line])
+}
+
+fn items(record: &Value) -> Vec<String> {
+    record["lines"]
+        .as_array()
+        .map(|rows| rows.iter().filter_map(|row| row["item"].as_str().map(str::to_string)).collect())
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+#[ignore = "needs SurrealDB (AETHER_TEST_DB)"]
+async fn child_rows_are_written_read_totalled_and_deleted_with_their_record() -> TestResult {
+    let Some(world) = World::new("children").await? else { return Ok(()) };
+    let models = invoice_with_lines()?;
+    for model in &models {
+        assert!(model.problems().is_empty(), "{:?}", model.problems());
+    }
+    aether_core::data_model::definition::validate_set(&models)?;
+    world.apply(&models).await?;
+    let ctx = world.ctx(&models);
+
+    // One call writes the record and its rows; the rows are numbered, the totals are worked out.
+    let created = kernel_command(&ctx, "db::create", json!({
+        "model": "invoice",
+        "data": { "discount": "5", "lines": [
+            { "item": "bolt", "qty": 10, "price": "1.50" },
+            { "item": "nut", "qty": 4, "price": "0.25" },
+            { "item": "washer", "qty": 2, "price": "10" }
+        ] }
+    })).await?;
+    let id = created["data"]["id"].clone();
+    assert_eq!(created["data"]["number"], "INV-00001");
+    assert_eq!(items(&created["data"]), ["bolt", "nut", "washer"]);
+    assert_eq!(created["data"]["lines"][1]["position"], 2);
+    assert_eq!(created["data"]["lines"][0]["amount"], "15.00");
+    assert_eq!(created["data"]["subtotal"], "36.00");
+    assert_eq!(created["data"]["total"], "31.00");
+    assert_eq!(created["data"]["line_count"], 3);
+    // Every row points back at its record.
+    assert_eq!(created["data"]["lines"][2]["invoice"], id);
+
+    // Reading: rows only come with `expand`, in order.
+    let plain = kernel_command(&ctx, "db::get", json!({ "model": "invoice", "id": id })).await?;
+    assert!(plain["data"].get("lines").is_none());
+    let expanded = kernel_command(&ctx, "db::get", json!({ "model": "invoice", "id": id, "expand": ["lines"] })).await?;
+    assert_eq!(items(&expanded["data"]), ["bolt", "nut", "washer"]);
+    let listed = kernel_command(&ctx, "db::find", json!({ "model": "invoice", "expand": ["lines"] })).await?;
+    assert_eq!(items(&listed["data"][0]), ["bolt", "nut", "washer"]);
+
+    // An update makes the rows the list: keep with an id, add without, drop by leaving out.
+    let lines = expanded["data"]["lines"].clone();
+    let updated = kernel_command(&ctx, "db::update", json!({
+        "model": "invoice", "id": id,
+        "data": { "lines": [
+            { "item": "gasket", "qty": 1, "price": "100" },
+            { "id": lines[2]["id"], "item": "washer", "qty": 3, "price": "10" },
+            { "id": lines[0]["id"], "item": "bolt", "qty": 10, "price": "1.50" }
+        ] }
+    })).await?;
+    assert_eq!(items(&updated["data"]), ["gasket", "washer", "bolt"]);
+    assert_eq!(updated["data"]["lines"][2]["position"], 3, "reordered");
+    assert_eq!(updated["data"]["subtotal"], "145.00");
+    assert_eq!(updated["data"]["line_count"], 3);
+    assert_eq!(world.raw(&models[1].model_id.clone().unwrap_or_default()).await?.len(), 3, "the omitted row is gone");
+
+    // A field left out of an update leaves the rows alone.
+    let untouched = kernel_command(&ctx, "db::update", json!({ "model": "invoice", "id": id, "data": { "discount": "10" } })).await?;
+    assert_eq!(untouched["data"]["total"], "135.00");
+    let again = kernel_command(&ctx, "db::get", json!({ "model": "invoice", "id": id, "expand": ["lines"] })).await?;
+    assert_eq!(again["data"]["lines"].as_array().map(Vec::len), Some(3));
+
+    // A row written on its own brings its record's totals up to date.
+    let first_row = again["data"]["lines"][0]["id"].clone();
+    kernel_command(&ctx, "db::update", json!({ "model": "invoice_line", "id": first_row, "data": { "qty": 2 } })).await?;
+    let after_edit = kernel_command(&ctx, "db::get", json!({ "model": "invoice", "id": id })).await?;
+    assert_eq!(after_edit["data"]["subtotal"], "245.00");
+    kernel_command(&ctx, "db::create", json!({ "model": "invoice_line", "data": { "invoice": id, "item": "extra", "qty": 1, "price": "5" } })).await?;
+    let after_add = kernel_command(&ctx, "db::get", json!({ "model": "invoice", "id": id })).await?;
+    assert_eq!(after_add["data"]["subtotal"], "250.00");
+    assert_eq!(after_add["data"]["line_count"], 4);
+    kernel_command(&ctx, "db::delete", json!({ "model": "invoice_line", "id": first_row })).await?;
+    let after_delete = kernel_command(&ctx, "db::get", json!({ "model": "invoice", "id": id })).await?;
+    assert_eq!(after_delete["data"]["line_count"], 3);
+
+    // Refusals leave nothing behind: a bad row, a row of another record, a check on the totals.
+    let bad_row = kernel_command(&ctx, "db::update", json!({ "model": "invoice", "id": id, "data": { "lines": [{ "item": "x", "qty": 0 }] } })).await;
+    assert!(matches!(&bad_row, Err(_)), "{bad_row:?}");
+    let other = kernel_command(&ctx, "db::create", json!({ "model": "invoice", "data": { "lines": [{ "item": "solo", "qty": 1, "price": "1" }] } })).await?;
+    let foreign = other["data"]["lines"][0]["id"].clone();
+    let stolen = kernel_command(&ctx, "db::update", json!({ "model": "invoice", "id": id, "data": { "lines": [{ "id": foreign, "item": "solo" }] } })).await;
+    assert!(matches!(&stolen, Err(HostError::InvalidPayload(m)) if m.contains("not a row of this record")), "{stolen:?}");
+    let negative = kernel_command(&ctx, "db::update", json!({ "model": "invoice", "id": id, "data": { "discount": "9999" } })).await;
+    assert!(matches!(&negative, Err(HostError::InvalidPayload(m)) if m.contains("cannot be negative")), "{negative:?}");
+    let unchanged = kernel_command(&ctx, "db::get", json!({ "model": "invoice", "id": id, "expand": ["lines"] })).await?;
+    assert_eq!(unchanged["data"]["lines"].as_array().map(Vec::len), Some(3), "a refused update changed no row");
+    assert_eq!(unchanged["data"]["discount"], "10.00");
+
+    // Deleting the record deletes its rows.
+    kernel_command(&ctx, "db::delete", json!({ "model": "invoice", "id": id })).await?;
+    let rows_left = world.raw(&models[1].model_id.clone().unwrap_or_default()).await?;
+    assert_eq!(rows_left.len(), 1, "only the other invoice's row is left");
+    assert!(kernel_command(&ctx, "db::get", json!({ "model": "invoice", "id": id })).await?["data"].is_null());
+    Ok(())
+}
+
+mod workflow_enforcement {
+    use std::sync::Arc;
+
+    use aether_core::data_model::RuleSet;
+
+    use super::*;
+
+    fn leave_model() -> Result<ModelDef, Box<dyn std::error::Error>> {
+        let mut model: ModelDef = serde_json::from_value(json!({
+            "name": "leave",
+            "chatter": { "enabled": true },
+            "fields": [
+                { "name": "employee", "type": "string", "required": true },
+                { "name": "state", "type": "select", "default": "draft", "track": true,
+                  "options": [{ "value": "draft" }, { "value": "submitted" }, { "value": "approved" }, { "value": "rejected" }] }
+            ]
+        }))?;
+        sync_ids(&mut model);
+        Ok(model)
+    }
+
+    fn rules() -> Result<RuleSet, serde_json::Error> {
+        RuleSet::parse(
+            &json!({
+                "model": "leave",
+                "access": [
+                    { "name": "own", "operations": ["read", "create", "write"], "when": { "employee": "$user" } },
+                    { "name": "approvers", "roles": ["approver"], "operations": ["read", "write"] }
+                ],
+                "workflow": {
+                    "field": "state",
+                    "transitions": [
+                        { "name": "submit", "label": "Submit", "from": ["draft"], "to": "submitted", "when": { "employee": "$user" } },
+                        { "name": "approve", "from": ["submitted"], "to": "approved", "roles": ["approver"], "when": { "employee": { "ne": "$user" } } },
+                        { "name": "reject", "from": ["submitted"], "to": "rejected", "roles": ["approver"] },
+                        { "name": "reopen", "from": ["rejected"], "to": "draft" }
+                    ]
+                }
+            })
+            .to_string(),
+        )
+    }
+
+    async fn as_user(world: &World, model: &ModelDef, user: &str, roles: &[&str]) -> Result<PluginHostContext, Box<dyn std::error::Error>> {
+        let mut give = String::new();
+        for role in roles {
+            give.push_str(&format!(
+                "UPSERT roles SET name = '{role}', label = '{role}' WHERE name = '{role}'; \
+                 LET $u = (SELECT VALUE id FROM org_users WHERE core_user_id = '{user}' LIMIT 1)[0]; \
+                 LET $r = (SELECT VALUE id FROM roles WHERE name = '{role}' LIMIT 1)[0]; \
+                 UPSERT org_user_roles SET org_user = $u, role = $r WHERE org_user = $u AND role = $r;"
+            ));
+        }
+        world
+            .session
+            .query(format!(
+                "UPSERT org_users SET core_user_id = '{user}', display_name = '{user}', is_active = true WHERE core_user_id = '{user}'; {give}"
+            ))
+            .await?
+            .check()?;
+        let rules = Arc::new(rules()?);
+        let grants: HashMap<String, ModelGrant> = schemas_of(std::slice::from_ref(model))
+            .into_iter()
+            .map(|(name, schema)| {
+                let mut grant = ModelGrant::from_access(&name, &["read".into(), "write".into()], Some(&schema.table));
+                grant.schema = Some(schema);
+                grant.rules = Some(rules.clone());
+                (name, grant)
+            })
+            .collect();
+        Ok(PluginHostContext::new(
+            "desk",
+            ["db::query".to_string(), "db::mutate".to_string()].into_iter().collect(),
+            grants,
+            Arc::new(world.session.clone()),
+            DbScope::new(NAMESPACE, &world.org),
+            NotificationHub::default(),
+            CallInfo::new(
+                AuditContext { actor: Actor::User(user.into()), request_id: "r".into(), ip: None, user_agent: None },
+                "f",
+            ),
+        ))
+    }
+
+    fn names(reply: &Value) -> Vec<String> {
+        reply["data"].as_array().map(|rows| rows.iter().filter_map(|r| r["name"].as_str().map(str::to_string)).collect()).unwrap_or_default()
+    }
+
+    async fn go(ctx: &PluginHostContext, id: &Value, to: &str) -> Result<Value, HostError> {
+        kernel_command(ctx, "db::update", json!({ "model": "leave", "id": id, "data": { "state": to } })).await
+    }
+
+    #[tokio::test]
+    #[ignore = "needs SurrealDB (AETHER_TEST_DB)"]
+    async fn records_move_only_along_transitions_the_caller_may_make() -> TestResult {
+        let Some(world) = World::new("workflow").await? else { return Ok(()) };
+        let model = leave_model()?;
+        let problems = rules()?.problems(&model);
+        assert!(problems.is_empty(), "{problems:?}");
+        world.apply(std::slice::from_ref(&model)).await?;
+        let ann = as_user(&world, &model, "users:ann", &[]).await?;
+        let carol = as_user(&world, &model, "users:carol", &["desk.approver"]).await?;
+        let root = as_user(&world, &model, "users:root", &["org_admin"]).await?;
+
+        // A new record starts as `draft`, whatever the caller asks for.
+        let refused = kernel_command(&ann, "db::create", json!({ "model": "leave", "data": { "employee": "users:ann", "state": "approved" } })).await;
+        assert!(matches!(&refused, Err(HostError::Denied(m)) if m.contains("starts as draft")), "{refused:?}");
+        let made = kernel_command(&ann, "db::create", json!({ "model": "leave", "data": { "employee": "users:ann" } })).await?;
+        let id = made["data"]["id"].clone();
+        assert_eq!(made["data"]["state"], "draft");
+
+        // The owner may submit, and sees exactly that button; nothing skips a step.
+        assert_eq!(names(&kernel_command(&ann, "db::transitions", json!({ "model": "leave", "id": id })).await?), ["submit"]);
+        let skipped = go(&ann, &id, "approved").await;
+        assert!(matches!(&skipped, Err(HostError::Denied(_))), "{skipped:?}");
+        assert_eq!(go(&ann, &id, "submitted").await?["data"]["state"], "submitted");
+        let back = go(&ann, &id, "draft").await;
+        assert!(matches!(&back, Err(HostError::Denied(m)) if m.contains("from its state now")), "{back:?}");
+        // Writing the state it already has is not a move.
+        assert_eq!(go(&ann, &id, "submitted").await?["data"]["state"], "submitted");
+        assert!(names(&kernel_command(&ann, "db::transitions", json!({ "model": "leave", "id": id })).await?).is_empty());
+
+        // An approver sees approve and reject, and approving is a move she may make.
+        assert_eq!(names(&kernel_command(&carol, "db::transitions", json!({ "model": "leave", "id": id })).await?), ["approve", "reject"]);
+        assert_eq!(go(&carol, &id, "approved").await?["data"]["state"], "approved");
+        let reopen = go(&carol, &id, "draft").await;
+        assert!(reopen.is_err(), "approved is final: {reopen:?}");
+
+        // The workflow's own condition: nobody approves their own request.
+        let mine = kernel_command(&carol, "db::create", json!({ "model": "leave", "data": { "employee": "users:carol" } })).await?;
+        let mine_id = mine["data"]["id"].clone();
+        go(&carol, &mine_id, "submitted").await?;
+        assert_eq!(names(&kernel_command(&carol, "db::transitions", json!({ "model": "leave", "id": mine_id })).await?), ["reject"]);
+        let own = go(&carol, &mine_id, "approved").await;
+        assert!(matches!(&own, Err(HostError::Denied(_))), "{own:?}");
+
+        // Rejected can be reopened by anyone who can change it; an administrator is not held to it.
+        assert_eq!(go(&carol, &mine_id, "rejected").await?["data"]["state"], "rejected");
+        assert_eq!(go(&carol, &mine_id, "draft").await?["data"]["state"], "draft");
+        assert_eq!(go(&root, &id, "draft").await?["data"]["state"], "draft");
+
+        // Every move was written in the record's history by the kernel.
+        let lines = world.raw("chatter_messages").await?;
+        assert!(lines.iter().filter(|line| line["kind"] == "change").count() >= 4, "{lines:?}");
+        Ok(())
+    }
+}
