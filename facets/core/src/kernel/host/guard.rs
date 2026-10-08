@@ -33,23 +33,43 @@ pub async fn roles(ctx: &PluginHostContext) -> Result<&Vec<String>, HostError> {
         .await
 }
 
-/// The caller's roles, plus a `via:<plugin>` for each other plugin whose function led to this call
-/// (and `via:*` when there is one): a rule may trust what another plugin's functions do for a caller.
-pub async fn held_roles(ctx: &PluginHostContext) -> Result<Vec<String>, HostError> {
-    let mut held = roles(ctx).await?.clone();
+/// The `via:` markers a call trail earns: `via:<plugin>` for each other plugin whose function led to this
+/// call (and `via:*` when there is one), and `via:self` when one of the plugin's own functions did. A direct
+/// call to the record API, with no function of the plugin in between, earns none of them.
+pub fn trail_markers(plugin_name: &str, trail: &[String]) -> Vec<String> {
+    let mut held: Vec<String> = Vec::new();
     let mut through_others = false;
-    for step in &ctx.call_trail {
+    for step in trail {
         let plugin = step.split('.').next().unwrap_or_default();
-        if plugin != ctx.plugin_name && !plugin.is_empty() {
+        if plugin.is_empty() {
+            continue;
+        }
+        let marker = if plugin == plugin_name {
+            "via:self".to_string()
+        } else {
             through_others = true;
-            let marker = format!("via:{plugin}");
-            if !held.contains(&marker) {
-                held.push(marker);
-            }
+            format!("via:{plugin}")
+        };
+        if !held.contains(&marker) {
+            held.push(marker);
         }
     }
     if through_others {
         held.push("via:*".to_string());
+    }
+    held
+}
+
+/// The caller's roles, plus the `via:` markers of the call trail: a rule may trust what another plugin's
+/// functions do for a caller (`via:<plugin>`, `via:*`), or insist that a field is only changed by the plugin's
+/// own functions (`via:self`), which is how a ledger keeps its counters and closed periods out of reach of
+/// the generic record API.
+pub async fn held_roles(ctx: &PluginHostContext) -> Result<Vec<String>, HostError> {
+    let mut held = roles(ctx).await?.clone();
+    for marker in trail_markers(&ctx.plugin_name, &ctx.call_trail) {
+        if !held.contains(&marker) {
+            held.push(marker);
+        }
     }
     Ok(held)
 }
@@ -273,4 +293,29 @@ pub fn strip(hidden: &HashSet<String>, mut record: JsonValue) -> JsonValue {
 
 pub fn denied(model: &str, what: &str) -> HostError {
     HostError::Denied(format!("you may not {what} `{model}` records here"))
+}
+
+#[cfg(test)]
+mod trail_tests {
+    use super::trail_markers;
+
+    fn trail(steps: &[&str]) -> Vec<String> {
+        steps.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_direct_call_earns_no_marker() {
+        assert!(trail_markers("gl", &[]).is_empty());
+    }
+
+    #[test]
+    fn the_plugins_own_function_earns_via_self_only() {
+        assert_eq!(trail_markers("gl", &trail(&["gl.post_entry"])), vec!["via:self"]);
+    }
+
+    #[test]
+    fn another_plugin_in_the_chain_earns_its_marker_and_the_wildcard() {
+        let held = trail_markers("hr", &trail(&["hr_onboarding.start", "hr.hire", "hr.hire"]));
+        assert_eq!(held, vec!["via:hr_onboarding", "via:self", "via:*"]);
+    }
 }

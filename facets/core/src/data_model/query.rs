@@ -16,7 +16,8 @@
 //!
 //! * `"field": value` is an equality test; `"field": { op: value, … }` takes one or more of
 //!   `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`, `nin` (also true for a record with no value), `like` (case-insensitive substring) and
-//!   `null` (`true`: the field is empty; `false`: it has a value).
+//!   `null` (`true`: the field is empty; `false`: it has a value) and `under` (a link to the model's own table, such as
+//!   `parent`: the record is somewhere below the given record, up to 12 levels).
 //! * `lt`, `lte`, `gt`, `gte`, `eq` and `ne` also take `{ "field": "other" }`: compare with another field
 //!   of the same record (`{ "end": { "gte": { "field": "start" } } }`). A record missing either field never matches an ordering.
 //! * Every key of one object must hold, so an object is an AND. `and` / `or` take a list of
@@ -38,6 +39,8 @@ const MAX_DEPTH: usize = 8;
 const MAX_TERMS: usize = 64;
 /// The most values in an `in` / `nin` list.
 const MAX_LIST: usize = 500;
+/// The most links `under` follows. A team tree deeper than this is a mistake in the data.
+pub const MAX_UNDER_DEPTH: usize = 12;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum QueryError {
@@ -63,6 +66,9 @@ pub enum Op {
     Nin,
     Like,
     Null,
+    /// A link field of a model that points at its own table (a parent, a manager): true when
+    /// walking the link up reaches the given record within [`MAX_UNDER_DEPTH`] steps.
+    Under,
 }
 
 impl Op {
@@ -78,6 +84,7 @@ impl Op {
             "nin" => Self::Nin,
             "like" => Self::Like,
             "null" => Self::Null,
+            "under" => Self::Under,
             _ => return None,
         })
     }
@@ -355,6 +362,23 @@ fn compile_cmp(
                 format!("{column} NOT IN {placeholder}")
             })
         }
+        Op::Under => {
+            // `{ "parent": { "under": "department:x" } }`: the record's `parent`, or its parent's `parent`, and so
+            // on, is that record. One test per level, so a rule on a whole tree needs no list of ids (and no
+            // 500-item cap). Records above the root are not matched: `under` is strictly below.
+            if !value.is_string() {
+                return Err(invalid(format!("`{field}`: `under` takes the id of a record")));
+            }
+            let checked = columns.value(field, value)?;
+            let placeholder = bind(binds, prefix, checked);
+            let mut chain = column.clone();
+            let mut tests = Vec::with_capacity(MAX_UNDER_DEPTH);
+            for _ in 0..MAX_UNDER_DEPTH {
+                tests.push(format!("{chain} = {placeholder}"));
+                chain = format!("{chain}.{column}");
+            }
+            Ok(format!("({})", tests.join(" OR ")))
+        }
         Op::Like => {
             let text = value
                 .as_str()
@@ -538,6 +562,17 @@ mod tests {
 
     fn sql(value: Value) -> Result<Compiled, QueryError> {
         compile_filter(&filter(value)?, &Unchecked, "f")
+    }
+
+    #[test]
+    fn under_walks_the_link_chain() -> Result<(), QueryError> {
+        let compiled = sql(json!({ "parent": { "under": "department:a" } }))?;
+        assert_eq!(compiled.binds.len(), 1, "the id is bound once, however deep the chain");
+        assert!(compiled.sql.contains("parent = $f0"));
+        assert!(compiled.sql.contains("parent.parent = $f0"));
+        assert_eq!(compiled.sql.matches(" OR ").count(), MAX_UNDER_DEPTH - 1);
+        assert!(sql(json!({ "parent": { "under": 3 } })).is_err());
+        Ok(())
     }
 
     #[test]

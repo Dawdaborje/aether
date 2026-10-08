@@ -10,9 +10,10 @@ in the model (and replaced by their stored ids); values are always bound, never 
   "not": { "manager": { "null": true } } }
 ```
 
-* `"field": value` is an equality; `"field": { op: value, … }` takes `eq ne gt gte lt lte in nin like null`.
+* `"field": value` is an equality; `"field": { op: value, … }` takes `eq ne gt gte lt lte in nin like null under`.
   `like` is a case-insensitive substring. `null: true` means the field is empty, `false` that it has a value.
   `nin` is also true for a record where the field is empty.
+* `under` is for a link field that points at its own model (a `parent`, a `manager`): `{ "parent": { "under": "department:x" } }` matches records whose parent, or parent's parent, and so on up to 12 levels, is that record. A rule can name a whole team tree without a list of ids. It is strictly below: combine with `{ "id": "department:x" }` in an `or` to include the root.
 * `eq ne gt gte lt lte` also take `{ "field": "other" }` to compare with another field of the same record
   (`{ "end": { "gte": { "field": "start" } } }`). Both fields must be the same kind of number; for an ordering,
   a record missing either field does not match.

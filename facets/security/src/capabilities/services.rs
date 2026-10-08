@@ -214,7 +214,8 @@ mod tests {
         assert!(catalog.contains("notify::public"));
         assert!(!catalog.contains("db::surql"), "raw SurQL no longer exists");
         assert!(!catalog.contains("db::write"));
-        assert!(!catalog.contains("fs::read"));
+        assert!(catalog.contains("fs::read"), "plugin folder access exists");
+        assert!(!catalog.contains("fs::exec"));
         Ok(())
     }
 

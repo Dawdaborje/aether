@@ -44,6 +44,7 @@ separate functions per rule and has to keep them in sync.
   A plugin lists `via:*` on a grant to trust the plugins that call it, which do their own checks of the
   person: `hr`'s hire holds are placed and released by recruitment and onboarding, whose users need
   not be HR staff.
+* **`via:self`** is held by a call that came through one of the plugin's own functions, and not by anything else. A `fields` rule with `"write_roles": ["via:self"]` keeps a counter, a closed period or a posted entry out of reach of every other path, while the plugin's functions, which do their own checks, can still write it (the general ledger's counters, periods and entries are locked this way).
 * **Not restricted:** `org_admin` (the organization's administrators), the kernel's own jobs, and the
   `rule_var_*` functions below.
 

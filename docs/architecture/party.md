@@ -113,8 +113,7 @@ contains a date, for the default company or one named: `{ start, end }`, both in
 * **Links are checked for existence.** Writing a `link` (create or update) is refused when the record it points
   to is not there, in the same transaction as the write. A link must also point into the right model's table.
   A record that is deleted later can still leave links dangling; parties are archived, never deleted.
-* **Merging duplicates** (repointing every reference from one party to another) is not built; `find_duplicates`
-  only reports.
+* **Merging duplicates** (`merge`, party 0.2) moves the party's own addresses, bank accounts, contacts and tags to the surviving party, fills the survivor's blank fields, archives the other one with a note, and announces `merged { from, into, kind }`. A plugin cannot touch another plugin's data, so each plugin that links to a party listens to `merged` and repoints its own links. Nothing is deleted, and running a merge again after a failure carries on.
 * **Personal data.** Access is audited like all data access. Parties are archived, never deleted, so a "right to
   be forgotten" request is an explicit action (blank the personal fields of the record), not a delete that would
   break invoices.
