@@ -85,7 +85,7 @@
 			<Dialog.Header>
 				<Dialog.Title>{created.organization.name} is ready</Dialog.Title>
 				<Dialog.Description>
-					Its database, files and first member are set up. Install apps into it from the Apps page.
+					Its database, files and first member are set up. Install apps into it from the desk.
 				</Dialog.Description>
 			</Dialog.Header>
 			<p class="text-xs text-muted-foreground">

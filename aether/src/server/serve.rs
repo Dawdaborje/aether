@@ -125,6 +125,10 @@ pub async fn run_server(
         .fallback(aether_core::error_pages::not_found)
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
+            aether_authentication::csrf::csrf_protect,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
             aether_core::request_log::log_requests,
         ))
         .with_state(state);

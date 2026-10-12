@@ -115,6 +115,7 @@ plugin cannot shape a query beyond what the structured commands allow.
 [server]
 trusted_proxies = ["10.0.0.1"]   # only these may set X-Forwarded-For
 request_timeout_secs = 30        # answer 504 after this long (default 30; 0 = no limit)
+# csrf_trusted_origins = ["http://localhost:5173"]  # Vite / other non-same-origin UIs
 
 [audit]
 ip = "full"                      # "full" | "truncated" | "hashed"
@@ -132,3 +133,23 @@ max_new_visitors_per_ip_per_minute = 30
   the server runs. `aether --purge-audit` does it once and exits.
 - Without `trusted_proxies`, the TCP peer is the client address, so the header
   cannot be used to forge audit entries.
+
+## CSRF protection
+
+Browser calls that can change state use cookie sessions, so mutating `/api`
+requests are gated:
+
+1. **Double-submit token** — a readable `aether_csrf` cookie must match the
+   `X-CSRF-Token` request header. The cookie is issued on `/api` responses when
+   missing, and rotated on login, logout, OAuth success, and organization switch.
+2. **Origin / Sec-Fetch-Site** — cross-site unsafe methods are rejected. The
+   allowlist is the request's own origin (from `Host`, or forwarded host/proto
+   only through `trusted_proxies`) plus `[server] csrf_trusted_origins` (needed
+   when Vite proxies `/api` from another port).
+3. **OAuth** — `GET /api/auth/oauth/{provider}/start` stores an HttpOnly
+   `aether_oauth_state` cookie; the callback must present the same `state` query
+   value or the session is not created.
+
+`GET` / `HEAD` / `OPTIONS` (including notification SSE streams) are not checked
+for the CSRF header. The session cookie `aether_session` is `HttpOnly`,
+`SameSite=Lax`, and `Secure` unless `is_development_mode`.

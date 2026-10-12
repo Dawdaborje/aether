@@ -17,7 +17,7 @@
 		{
 			name: 'Models',
 			description: 'Define the records of each plugin: fields, types and rules. Renaming a field keeps its data.',
-			href: '/studio/models'
+			href: '/desk/studio/models'
 		},
 		{ name: 'Plugins', description: 'Browse the catalog, versions and what each organization has installed.' },
 		{ name: 'Audit trail', description: 'Who visited which page and every record they touched.' },

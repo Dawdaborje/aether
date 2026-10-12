@@ -184,7 +184,7 @@ placeholder; the Aether SDK for __LANGUAGE__ will be added once it is ready.
 
 ```sh
 # register this package in the catalog (copies it into app_dir)
-aether --app-dir <APP_DIR> --load-plugin .
+aether --app-dir <APP_DIR> --load-plugins .
 
 # enable it for an organization
 aether --install-plugin __NAME__ --org <ORG_DB>
@@ -367,9 +367,10 @@ script `main.lua`, with nothing to compile.
 
 ```sh
 aether --sync-models .                  # give the models ids
-aether --load-plugin .                  # register the plugin in the catalog
+aether --load-plugins .                  # register the plugin in the catalog
 aether --install-plugin __NAME__ --org <org>   # install it for an organization
 aether --upgrade-plugin __NAME__ --org <org>   # move an organization to the version you just loaded
+aether --upgrade all --org <org>               # same for every installed plugin
 ```
 
 Loading reads the script and refuses one that does not compile. Add `-c path/to/aether.toml` when the configuration
@@ -426,9 +427,10 @@ with nothing to compile.
 
 ```sh
 aether --sync-models .                  # give the models ids
-aether --load-plugin .                  # register the plugin in the catalog
+aether --load-plugins .                  # register the plugin in the catalog
 aether --install-plugin __NAME__ --org <org>   # install it for an organization
 aether --upgrade-plugin __NAME__ --org <org>   # move an organization to the version you just loaded
+aether --upgrade all --org <org>               # same for every installed plugin
 ```
 
 Loading reads the script and refuses one that does not compile. Add `-c path/to/aether.toml` when the configuration

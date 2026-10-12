@@ -1,14 +1,32 @@
 import { apiFetch } from '$lib/api/client';
 
+export interface CatalogAuthor {
+	name: string;
+	email?: string | null;
+	github?: string | null;
+	website?: string | null;
+}
+
 /** One plugin version in the catalog (`aether --load-plugin`). */
 export interface CatalogPlugin {
 	name: string;
 	version: string;
 	label: string;
 	description: string | null;
+	long_description: string | null;
 	category: string | null;
 	kind: string | null;
 	is_app: boolean;
+	is_builtin: boolean;
+	/** Lucide icon name from `[app].icon`. */
+	icon: string | null;
+	/** `/api/ui/plugins/{name}/logo` when the revision ships a logo file. */
+	logo_url: string | null;
+	website: string | null;
+	authors: CatalogAuthor[];
+	dependencies: string[];
+	app_route: string | null;
+	app_description: string | null;
 	/** Database names of the organizations that have this version. */
 	installed_in: string[];
 }
@@ -28,7 +46,18 @@ async function failure(res: Response, fallback: string): Promise<Error> {
 export async function fetchCatalog(): Promise<CatalogPlugin[]> {
 	const res = await apiFetch('/api/ui/catalog');
 	if (!res.ok) throw await failure(res, 'Could not load the catalog');
-	return ((await res.json()) as { plugins: CatalogPlugin[] }).plugins;
+	const plugins = ((await res.json()) as { plugins: CatalogPlugin[] }).plugins;
+	return plugins.map((plugin) => ({
+		...plugin,
+		long_description: plugin.long_description ?? null,
+		is_builtin: plugin.is_builtin ?? false,
+		website: plugin.website ?? null,
+		authors: plugin.authors ?? [],
+		dependencies: plugin.dependencies ?? [],
+		app_route: plugin.app_route ?? null,
+		app_description: plugin.app_description ?? null,
+		installed_in: plugin.installed_in ?? []
+	}));
 }
 
 /** Install `plugins` (`name@version`) into each of `organizations` (database names). */

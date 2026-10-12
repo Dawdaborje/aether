@@ -48,8 +48,8 @@ After a choice the app reloads the theme and the current page.
 
 ## The Apps launcher
 
-The home screen of everyone who is not a developer is the **Apps** page (`/apps`),
-a grid of tiles, one per installed app. An app is an installed plugin that
+The home screen for every member is the **Apps** page (`/apps`), a grid of tiles,
+one per installed app (like Frappe's desk home). An app is an installed plugin that
 declares `[app]`:
 
 ```toml
@@ -68,16 +68,20 @@ description = "Team messaging"
 `route` must be one of the plugin's own pages and cannot contain `{param}`
 segments, so a tile always opens something; this is checked when the plugin is
 loaded. `GET /api/ui/apps` returns the apps installed (and enabled) in the
-caller's organization, for logged-in members only. An organization with no apps
-shows an empty state: administrators are told how to install one.
+caller's organization, for logged-in members only. Each tile includes `menus`:
+the plugin's main pages (literal routes, not `/new` or `{param}` patterns), so
+the top bar can show that app's name and menus when the active theme's `nav`
+does not already cover the path. An organization with no apps shows an empty
+state: administrators are told how to install one.
 
 Icons are a fixed set bundled with the app (`web/src/lib/components/apps/icons.ts`);
 an app naming another icon gets a coloured letter tile until it is added there.
 
 ## The desk is for developers
 
-Developers (superusers) land on the **desk** after login: the Organizations
-page, Settings and the developer tools, in a sidebar layout. Everything on the
-desk except the Apps launcher is developer-only, in the web app (other users are
-sent to `/apps`) and on the server (the settings API answers `403`). A theme that
-names the `desk` layout is ignored for users who are not developers.
+Developers (superusers) land on the **desk** after login (`/desk/…`): Organizations,
+installing apps (`/desk/apps`), Settings, Bridges and developer tools, in a sidebar
+layout. The member-facing app launcher stays at `/apps` for everyone. Desk routes
+are developer-only in the web app (other users are sent to `/apps`) and on the
+server (the settings API answers `403`). A theme that names the `desk` layout is
+ignored for users who are not developers.

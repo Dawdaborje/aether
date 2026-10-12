@@ -19,8 +19,16 @@ use thiserror::Error;
 use crate::app_dir::{AppDir, AppDirError};
 use super::models::plugin_db_def::{PluginDbAuthor, PluginDbCategory, PluginDbDefinition};
 use super::models::plugin_def::{ManifestError, PluginManifest};
+use super::components::{
+    ComponentDocument, ComponentError, ComponentRef, ComponentRegistry, collect_uses,
+    discover_components, expand_tree, registry_from_documents,
+};
 use super::pages::{PageDocument, PageError, discover_pages, write_view_files};
 use super::revisions;
+use super::shell_defs::{
+    ErrorSetDef, LayoutDef, ShellDefError, discover_error_sets, discover_layouts,
+    error_sets_by_name, is_builtin_error_set, is_builtin_layout, layouts_by_name,
+};
 use crate::data_model::{ModelDef, ModelFileError, apply as model_apply, read_models};
 use super::themes::{ThemeDocument, ThemeError, parse_theme};
 
@@ -58,11 +66,25 @@ pub enum CatalogError {
     #[error(transparent)]
     Page(#[from] PageError),
 
+    #[error(transparent)]
+    Component(#[from] ComponentError),
+
     #[error("i18n: {0}")]
     I18n(String),
 
     #[error(transparent)]
     Theme(#[from] ThemeError),
+
+    #[error(transparent)]
+    ShellDef(#[from] ShellDefError),
+
+    #[error("{path}: theme `{field}` is `{name}`, which is neither a built-in nor defined under `{folder}/`")]
+    UnknownShellDef {
+        path: PathBuf,
+        field: &'static str,
+        name: String,
+        folder: &'static str,
+    },
 
     #[error("{path}: `[app].route` is `{route}`, which is not a page of this plugin (pages: {pages})")]
     AppRouteNotAPage {
@@ -86,6 +108,25 @@ pub enum CatalogError {
 
     #[error("{page}: page uses model `{model}`, which the plugin does not declare")]
     UnknownPageModel { page: PathBuf, model: String },
+
+    #[error("{path}: uses model `{model}`, which the plugin does not declare")]
+    UnknownComponentModel { path: PathBuf, model: String },
+
+    #[error("{path}: `{reference}`: {reason}")]
+    BadComponentUse {
+        path: PathBuf,
+        reference: String,
+        reason: String,
+    },
+
+    #[error(
+        "upgrading `{plugin}` would remove component `{component}`, which `{consumer}` still uses"
+    )]
+    ComponentStillUsed {
+        plugin: String,
+        component: String,
+        consumer: String,
+    },
 
     #[error(
         "route `{route}` is already served by `{existing}`, so `{plugin}` cannot be installed in the same organization"
@@ -126,7 +167,7 @@ pub enum CatalogError {
     #[error("plugin `{plugin}` needs `{dependency}`, which this organization has not installed")]
     MissingDependency { plugin: String, dependency: String },
 
-    #[error("invalid plugin spec `{0}`; expected `name` or `name@version`")]
+    #[error("invalid plugin spec `{0}`; expected `name`, `name@version`, or `all`")]
     InvalidSpec(String),
 
     #[error("{path}: {source}; capabilities are listed in `capabilities/`")]
@@ -162,6 +203,16 @@ pub enum CatalogError {
 
     #[error("plugin `{0}` is not in the catalog")]
     PluginNotFound(String),
+
+    /// A dependency walked during install is not loaded (`aether --load-plugins`).
+    #[error(
+        "plugin `{dependency}` is not in the catalog (required by `{required_by}`); \
+         load it with `aether --load-plugins` first"
+    )]
+    DependencyNotInCatalog {
+        dependency: String,
+        required_by: String,
+    },
 
     #[error("plugin `{name}@{version}` is not an active catalog version")]
     VersionNotFound { name: String, version: String },
@@ -286,11 +337,32 @@ struct NewTheme {
     layout: String,
     error_pages: String,
     nav: Option<serde_json::Value>,
+    layout_def: Option<serde_json::Value>,
+    error_pages_def: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, SurrealValue)]
+struct NewLayoutRow {
+    name: String,
+    label: String,
+    chrome: String,
+    definition: serde_json::Value,
+    source_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, SurrealValue)]
+struct NewErrorSetRow {
+    name: String,
+    label: String,
+    variant: String,
+    definition: serde_json::Value,
+    source_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, SurrealValue)]
 struct NewUiPage {
     layout: Option<String>,
+    wrap: Option<String>,
     route: String,
     is_pattern: bool,
     route_shape: String,
@@ -298,6 +370,14 @@ struct NewUiPage {
     model: Option<String>,
     models: Vec<String>,
     is_public: bool,
+    component_tree: serde_json::Value,
+    source_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, SurrealValue)]
+struct NewUiComponent {
+    name: String,
+    full_name: String,
     component_tree: serde_json::Value,
     source_path: String,
 }
@@ -430,6 +510,98 @@ pub async fn load_plugin(
     app_dir: &Path,
     plugin_path: &Path,
 ) -> Result<LoadedPlugin, CatalogError> {
+    load_plugin_with_batch(
+        db,
+        namespace,
+        core_database,
+        app_dir,
+        plugin_path,
+        &HashMap::new(),
+    )
+    .await
+}
+
+/// Like [`load_plugin`], but foreign links may also resolve against `batch_models`
+/// (`plugin.model` → `model_id` for other packages in the same `--load-plugins` run).
+pub async fn load_plugin_with_batch(
+    db: &Surreal<Client>,
+    namespace: &str,
+    core_database: &str,
+    app_dir: &Path,
+    plugin_path: &Path,
+    batch_models: &HashMap<String, String>,
+) -> Result<LoadedPlugin, CatalogError> {
+    load_plugin_inner(
+        db,
+        namespace,
+        core_database,
+        app_dir,
+        plugin_path,
+        false,
+        batch_models,
+    )
+    .await
+}
+
+/// Parse and validate a plugin package without writing to the catalog or `app_dir`.
+///
+/// Runs the same checks as [`load_plugin`] (manifest, pages, models, foreign links, scripts,
+/// capabilities, and so on) and stops before storing files or catalog rows. Used by
+/// `aether --load-plugins --dry-run`.
+///
+/// `batch_models` maps `plugin.model` → `model_id` for other packages in the same dry-run,
+/// so a dependency that is only being checked (not yet catalogued) still satisfies foreign links.
+pub async fn check_plugin(
+    db: &Surreal<Client>,
+    namespace: &str,
+    core_database: &str,
+    app_dir: &Path,
+    plugin_path: &Path,
+    batch_models: &HashMap<String, String>,
+) -> Result<LoadedPlugin, CatalogError> {
+    load_plugin_inner(db, namespace, core_database, app_dir, plugin_path, true, batch_models).await
+}
+
+/// `plugin.model` → `model_id` for every package in `plugin_paths` that has models on disk.
+/// Used by `--dry-run` so foreign links can resolve against the batch, not only the catalog.
+pub fn batch_model_ids(plugin_paths: &[PathBuf]) -> Result<HashMap<String, String>, CatalogError> {
+    let mut found = HashMap::new();
+    for plugin_path in plugin_paths {
+        let manifest_path = if plugin_path.is_dir() {
+            plugin_path.join(MANIFEST_FILE)
+        } else {
+            plugin_path.to_path_buf()
+        };
+        let package_dir = manifest_path
+            .parent()
+            .ok_or_else(|| CatalogError::InvalidManifestPath(manifest_path.clone()))?;
+        let Ok(manifest_text) = std::fs::read_to_string(&manifest_path) else {
+            continue;
+        };
+        let Ok(manifest) = PluginManifest::parse(&manifest_text) else {
+            continue;
+        };
+        let Ok(model_files) = read_models(package_dir) else {
+            continue;
+        };
+        for (_, model) in model_files {
+            if let Some(id) = model.model_id {
+                found.insert(format!("{}.{}", manifest.plugin.name, model.name), id);
+            }
+        }
+    }
+    Ok(found)
+}
+
+async fn load_plugin_inner(
+    db: &Surreal<Client>,
+    namespace: &str,
+    core_database: &str,
+    app_dir: &Path,
+    plugin_path: &Path,
+    dry_run: bool,
+    batch_models: &HashMap<String, String>,
+) -> Result<LoadedPlugin, CatalogError> {
     let layout = AppDir::new(app_dir);
     layout.ensure().await?;
 
@@ -458,15 +630,24 @@ pub async fn load_plugin(
         return Err(CatalogError::IncompleteManifest(manifest_path));
     }
 
+    let components = discover_components(&package_dir).await?;
     let pages = discover_pages(&package_dir).await?;
+    let layouts = discover_layouts(&package_dir).await?;
+    let error_sets = discover_error_sets(&package_dir).await?;
     let model_files = read_models(&package_dir)?;
     let models: Vec<ModelDef> = model_files.iter().map(|(_, model)| model.clone()).collect();
-    check_foreign_links(db, namespace, core_database, &manifest.plugin, &models).await?;
+    check_foreign_links(db, namespace, core_database, &manifest.plugin, &models, batch_models).await?;
     validate_page_models(&manifest, &models, &pages)?;
+    validate_component_models(&models, &components)?;
+    validate_component_uses(db, namespace, core_database, &manifest, &components, &pages).await?;
     validate_granted_models(&manifest, &models, &manifest_path)?;
     validate_capabilities(&manifest, &manifest_path)?;
 
-    let theme = read_theme(&manifest, &manifest_path, &package_dir).await?;
+    let mut theme = read_theme(&manifest, &manifest_path, &package_dir).await?;
+    if let Some(theme) = theme.as_mut() {
+        bind_theme_shell_defs(theme, &layouts, &error_sets, &manifest_path)?;
+    }
+    validate_page_layouts(&pages, &layouts)?;
     let app = read_app(&manifest, &manifest_path, &pages)?;
     let rule_files = read_rule_files(&package_dir).await?;
     crate::data_model::rules::parse_all(
@@ -478,6 +659,9 @@ pub async fn load_plugin(
     let mut files = BTreeSet::from([PathBuf::from(MANIFEST_FILE)]);
     files.extend(rule_files.iter().map(|(path, _)| path.clone()));
     files.extend(pages.iter().map(|page| page.source.clone()));
+    files.extend(components.iter().map(|component| component.source.clone()));
+    files.extend(layouts.iter().map(|layout| layout.source.clone()));
+    files.extend(error_sets.iter().map(|set| set.source.clone()));
     for (path, _) in &model_files {
         if let Ok(relative) = path.strip_prefix(&package_dir) {
             files.insert(relative.to_path_buf());
@@ -485,6 +669,11 @@ pub async fn load_plugin(
     }
     for declared in declared_files(&manifest) {
         files.insert(resolve_package_file(&package_dir, declared).await?);
+    }
+    // Logos and other static files under `assets/` (and a top-level `icon_path`).
+    files.extend(collect_asset_files(&package_dir).await?);
+    if let Some(icon) = manifest.plugin.icon_path.as_deref().filter(|path| !path.is_empty()) {
+        files.insert(resolve_package_file(&package_dir, icon).await?);
     }
     let text_catalogs = super::i18n::read_catalogs(&package_dir, &manifest)
         .await
@@ -626,6 +815,10 @@ pub async fn load_plugin(
         }
     }
 
+    if dry_run {
+        return Ok(summary(definition.version.clone(), artifact_logical, false, None, 0, 0));
+    }
+
     // The same content again is not a new revision.
     if let Some(same) = known
         .iter()
@@ -758,6 +951,7 @@ pub async fn load_plugin(
         .iter()
         .map(|page| NewUiPage {
             layout: page.layout.clone(),
+            wrap: page.wrap.clone(),
             route: page.route.clone(),
             is_pattern: page.is_pattern,
             route_shape: page.shape.clone(),
@@ -767,6 +961,15 @@ pub async fn load_plugin(
             is_public: page.public,
             component_tree: page.tree.clone(),
             source_path: page.source.to_string_lossy().into_owned(),
+        })
+        .collect();
+    let component_rows: Vec<NewUiComponent> = components
+        .iter()
+        .map(|component| NewUiComponent {
+            name: component.name.clone(),
+            full_name: format!("{}.{}", definition.name, component.name),
+            component_tree: component.tree.clone(),
+            source_path: component.source.to_string_lossy().into_owned(),
         })
         .collect();
     db.query(
@@ -783,7 +986,29 @@ pub async fn load_plugin(
                 tokens: $theme.tokens,
                 layout: $theme.layout,
                 error_pages: $theme.error_pages,
-                nav: $theme.nav
+                nav: $theme.nav,
+                layout_def: $theme.layout_def,
+                error_pages_def: $theme.error_pages_def
+            };
+        };
+        FOR $layout IN $layouts {
+            CREATE plugin_layouts CONTENT {
+                plugin: $plugin,
+                name: $layout.name,
+                label: $layout.label,
+                chrome: $layout.chrome,
+                definition: $layout.definition,
+                source_path: $layout.source_path
+            };
+        };
+        FOR $error_set IN $error_sets {
+            CREATE plugin_error_sets CONTENT {
+                plugin: $plugin,
+                name: $error_set.name,
+                label: $error_set.label,
+                variant: $error_set.variant,
+                definition: $error_set.definition,
+                source_path: $error_set.source_path
             };
         };
         FOR $m IN $models {
@@ -801,6 +1026,7 @@ pub async fn load_plugin(
                 plugin: $plugin,
                 route: $page.route,
                 layout: $page.layout,
+                wrap: $page.wrap,
                 is_pattern: $page.is_pattern,
                 route_shape: $page.route_shape,
                 title: $page.title,
@@ -809,6 +1035,15 @@ pub async fn load_plugin(
                 is_public: $page.is_public,
                 component_tree: $page.component_tree,
                 source_path: $page.source_path
+            };
+        };
+        FOR $component IN $components {
+            CREATE plugin_components CONTENT {
+                plugin: $plugin,
+                name: $component.name,
+                full_name: $component.full_name,
+                component_tree: $component.component_tree,
+                source_path: $component.source_path
             };
         };
         COMMIT TRANSACTION;
@@ -824,8 +1059,25 @@ pub async fn load_plugin(
         layout: theme.layout,
         error_pages: theme.error_pages,
         nav: theme.nav,
+        layout_def: theme.layout_def,
+        error_pages_def: theme.error_pages_def,
     })))
     .bind(("pages", rows))
+    .bind(("components", component_rows))
+    .bind(("layouts", layouts.iter().map(|layout| NewLayoutRow {
+        name: layout.name.clone(),
+        label: layout.label.clone(),
+        chrome: layout.chrome.clone(),
+        definition: layout.definition.clone(),
+        source_path: layout.source.to_string_lossy().into_owned(),
+    }).collect::<Vec<_>>()))
+    .bind(("error_sets", error_sets.iter().map(|set| NewErrorSetRow {
+        name: set.name.clone(),
+        label: set.label.clone(),
+        variant: set.variant.clone(),
+        definition: set.definition.clone(),
+        source_path: set.source.to_string_lossy().into_owned(),
+    }).collect::<Vec<_>>()))
     .bind(("models", model_rows))
     .await?
     .check()?;
@@ -914,6 +1166,63 @@ async fn read_theme(
     Ok(Some(parse_theme(&text, &path, &theme.name, theme.label.as_deref())?))
 }
 
+/// A page's `layout=` must be a built-in name or one this package defines.
+fn validate_page_layouts(
+    pages: &[PageDocument],
+    layouts: &[LayoutDef],
+) -> Result<(), CatalogError> {
+    let known = layouts_by_name(layouts);
+    for page in pages {
+        let Some(layout) = page.layout.as_deref() else { continue };
+        if is_builtin_layout(layout) || known.contains_key(layout) {
+            continue;
+        }
+        return Err(CatalogError::UnknownShellDef {
+            path: page.source.clone(),
+            field: "layout",
+            name: layout.to_string(),
+            folder: "layouts",
+        });
+    }
+    Ok(())
+}
+
+/// Attach plugin layout / error-set definitions to a theme that names them.
+fn bind_theme_shell_defs(
+    theme: &mut ThemeDocument,
+    layouts: &[LayoutDef],
+    error_sets: &[ErrorSetDef],
+    manifest_path: &Path,
+) -> Result<(), CatalogError> {
+    let layouts = layouts_by_name(layouts);
+    let error_sets = error_sets_by_name(error_sets);
+    if is_builtin_layout(&theme.layout) {
+        theme.layout_def = None;
+    } else if let Some(def) = layouts.get(theme.layout.as_str()) {
+        theme.layout_def = Some(def.definition.clone());
+    } else {
+        return Err(CatalogError::UnknownShellDef {
+            path: manifest_path.to_path_buf(),
+            field: "layout",
+            name: theme.layout.clone(),
+            folder: "layouts",
+        });
+    }
+    if is_builtin_error_set(&theme.error_pages) {
+        theme.error_pages_def = None;
+    } else if let Some(def) = error_sets.get(theme.error_pages.as_str()) {
+        theme.error_pages_def = Some(def.definition.clone());
+    } else {
+        return Err(CatalogError::UnknownShellDef {
+            path: manifest_path.to_path_buf(),
+            field: "error_pages",
+            name: theme.error_pages.clone(),
+            folder: "errors",
+        });
+    }
+    Ok(())
+}
+
 /// Every model a page names must be one the plugin defines in `models/`. A page may write the
 /// model as `workspace.name`; only the part after the last `.` is the model name.
 fn validate_page_models(
@@ -932,6 +1241,198 @@ fn validate_page_models(
                 });
             }
         }
+    }
+    Ok(())
+}
+
+/// Every model a component names must be one the plugin defines in `models/`.
+fn validate_component_models(
+    models: &[ModelDef],
+    components: &[ComponentDocument],
+) -> Result<(), CatalogError> {
+    let declared: BTreeSet<&str> = models.iter().map(|model| model.name.as_str()).collect();
+    for component in components {
+        for model in &component.models {
+            if !declared.contains(model_name(model)) {
+                return Err(CatalogError::UnknownComponentModel {
+                    path: component.source.clone(),
+                    model: model.clone(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Every `<use component="…">` in pages and components must resolve: bare names
+/// against this package, qualified names against a declared dependency that is
+/// already in the catalog.
+async fn validate_component_uses(
+    db: &Surreal<Client>,
+    namespace: &str,
+    core_database: &str,
+    manifest: &PluginManifest,
+    components: &[ComponentDocument],
+    pages: &[PageDocument],
+) -> Result<(), CatalogError> {
+    let local: BTreeSet<&str> = components.iter().map(|component| component.name.as_str()).collect();
+    let plugin = &manifest.plugin;
+    let mut foreign: BTreeSet<(String, String)> = BTreeSet::new();
+
+    let mut check_tree = |path: &Path, tree: &serde_json::Value| -> Result<(), CatalogError> {
+        for (reference, raw) in collect_uses(tree) {
+            if reference.name.is_empty() {
+                return Err(CatalogError::BadComponentUse {
+                    path: path.to_path_buf(),
+                    reference: raw,
+                    reason: "invalid component name".into(),
+                });
+            }
+            match &reference.plugin {
+                None => {
+                    if !local.contains(reference.name.as_str()) {
+                        return Err(CatalogError::BadComponentUse {
+                            path: path.to_path_buf(),
+                            reference: raw,
+                            reason: format!(
+                                "this plugin has no component `{}`; define it under `components/`",
+                                reference.name
+                            ),
+                        });
+                    }
+                }
+                Some(other) if other == &plugin.name => {
+                    if !local.contains(reference.name.as_str()) {
+                        return Err(CatalogError::BadComponentUse {
+                            path: path.to_path_buf(),
+                            reference: raw,
+                            reason: format!(
+                                "this plugin has no component `{}`; define it under `components/`",
+                                reference.name
+                            ),
+                        });
+                    }
+                }
+                Some(other) => {
+                    if !plugin.dependencies.iter().any(|dependency| dependency == other) {
+                        return Err(CatalogError::BadComponentUse {
+                            path: path.to_path_buf(),
+                            reference: raw,
+                            reason: format!(
+                                "`{other}` must be listed under `dependencies` in plugin.toml"
+                            ),
+                        });
+                    }
+                    foreign.insert((other.clone(), reference.name.clone()));
+                }
+            }
+        }
+        Ok(())
+    };
+
+    for component in components {
+        check_tree(&component.source, &component.tree)?;
+    }
+    for page in pages {
+        check_tree(&page.source, &page.tree)?;
+    }
+    drop(check_tree);
+
+    for page in pages {
+        let Some(wrap) = page.wrap.as_deref() else {
+            continue;
+        };
+        let reference = ComponentRef::parse(wrap).map_err(|reason| CatalogError::BadComponentUse {
+            path: page.source.clone(),
+            reference: wrap.to_string(),
+            reason,
+        })?;
+        match &reference.plugin {
+            None => {
+                if !local.contains(reference.name.as_str()) {
+                    return Err(CatalogError::BadComponentUse {
+                        path: page.source.clone(),
+                        reference: wrap.to_string(),
+                        reason: format!(
+                            "wrap `{}`: this plugin has no component `{}`; define it under `components/`",
+                            wrap, reference.name
+                        ),
+                    });
+                }
+            }
+            Some(other) if other == &plugin.name => {
+                if !local.contains(reference.name.as_str()) {
+                    return Err(CatalogError::BadComponentUse {
+                        path: page.source.clone(),
+                        reference: wrap.to_string(),
+                        reason: format!(
+                            "wrap `{}`: this plugin has no component `{}`; define it under `components/`",
+                            wrap, reference.name
+                        ),
+                    });
+                }
+            }
+            Some(other) => {
+                if !plugin.dependencies.iter().any(|dependency| dependency == other) {
+                    return Err(CatalogError::BadComponentUse {
+                        path: page.source.clone(),
+                        reference: wrap.to_string(),
+                        reason: format!(
+                            "wrap `{wrap}`: `{other}` must be listed under `dependencies` in plugin.toml"
+                        ),
+                    });
+                }
+                foreign.insert((other.clone(), reference.name.clone()));
+            }
+        }
+    }
+
+    let mut registry: ComponentRegistry = registry_from_documents(&plugin.name, components);
+    if !foreign.is_empty() {
+        db.use_ns(namespace).await?;
+        db.use_db(core_database).await?;
+        for (other_plugin, name) in &foreign {
+            let mut response = db
+                .query(
+                    "SELECT full_name, component_tree FROM plugin_components WHERE name = $name \
+                     AND plugin IN (SELECT VALUE id FROM plugins WHERE name = $plugin AND is_active = true) LIMIT 1;",
+                )
+                .bind(("name", name.clone()))
+                .bind(("plugin", other_plugin.clone()))
+                .await?
+                .check()?;
+            let rows: Vec<ForeignComponentRow> = response.take(0)?;
+            let Some(row) = rows.into_iter().next() else {
+                return Err(CatalogError::BadComponentUse {
+                    path: PathBuf::from("plugin.toml"),
+                    reference: format!("{other_plugin}.{name}"),
+                    reason: format!(
+                        "the catalog has no such component: load `{other_plugin}` first (`aether --load-plugins`)"
+                    ),
+                });
+            };
+            registry.insert(row.full_name, row.component_tree);
+        }
+    }
+
+    // Expand once at load so cycles and missing nested uses fail before install.
+    for component in components {
+        expand_tree(&component.tree, &plugin.name, &registry).map_err(|error| {
+            CatalogError::BadComponentUse {
+                path: component.source.clone(),
+                reference: component.name.clone(),
+                reason: error.to_string(),
+            }
+        })?;
+    }
+    for page in pages {
+        expand_tree(&page.tree, &plugin.name, &registry).map_err(|error| {
+            CatalogError::BadComponentUse {
+                path: page.source.clone(),
+                reference: page.route.clone(),
+                reason: error.to_string(),
+            }
+        })?;
     }
     Ok(())
 }
@@ -970,6 +1471,39 @@ fn declared_files(manifest: &PluginManifest) -> Vec<&str> {
         .filter_map(|theme| theme.tokens_file.as_deref())
         .filter(|file| !file.is_empty())
         .collect()
+}
+
+/// Every regular file under the package's `assets/` directory, as paths relative
+/// to the package root. Missing `assets/` is fine — many plugins only use a
+/// Lucide `icon` name.
+async fn collect_asset_files(package_dir: &Path) -> Result<Vec<PathBuf>, CatalogError> {
+    let root = package_dir.join("assets");
+    let Ok(meta) = tokio::fs::metadata(&root).await else {
+        return Ok(Vec::new());
+    };
+    if !meta.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut found = Vec::new();
+    let mut pending = vec![root];
+    while let Some(current) = pending.pop() {
+        let mut entries = tokio::fs::read_dir(&current).await.map_err(io_error(&current))?;
+        while let Some(entry) = entries.next_entry().await.map_err(io_error(&current))? {
+            let path = entry.path();
+            let file_type = entry.file_type().await.map_err(io_error(&path))?;
+            if file_type.is_dir() {
+                pending.push(path);
+            } else if file_type.is_file() {
+                let relative = path
+                    .strip_prefix(package_dir)
+                    .unwrap_or(&path)
+                    .to_path_buf();
+                found.push(relative);
+            }
+        }
+    }
+    found.sort();
+    Ok(found)
 }
 
 /// Resolve a manifest-declared file to a path relative to `package_dir`,
@@ -1022,6 +1556,8 @@ struct PlannedTheme {
     layout: String,
     error_pages: String,
     nav: Option<serde_json::Value>,
+    layout_def: Option<serde_json::Value>,
+    error_pages_def: Option<serde_json::Value>,
 }
 
 /// Result of [`install_plugins`], in installation order.
@@ -1141,6 +1677,8 @@ pub async fn install_plugins(
                     layout: $theme.layout,
                     error_pages: $theme.error_pages,
                     nav: $theme.nav,
+                    layout_def: $theme.layout_def,
+                    error_pages_def: $theme.error_pages_def,
                     plugin_name: $name,
                     plugin_version: $version
                 };
@@ -1189,8 +1727,9 @@ pub struct UpgradeReport {
 }
 
 /// Move an organization to another catalog version of plugins it has installed: the newest
-/// loaded one, or the one named (`name@version`). Nothing is copied: catalog versions are
-/// already on disk, as revisions that share their unchanged files.
+/// loaded one, or the one named (`name@version`). Pass a single spec named `all` (no version)
+/// to upgrade every installed plugin, dependencies first. Nothing is copied: catalog versions
+/// are already on disk, as revisions that share their unchanged files.
 ///
 /// The target's dependencies must already be installed, and its pages must not take over a
 /// route another installed plugin serves. A theme the plugin ships is updated in place and
@@ -1223,8 +1762,11 @@ pub async fn upgrade_plugins(
     let mut installed: HashMap<String, String> =
         rows.into_iter().map(|row| (row.plugin_name, row.version)).collect();
 
+    db.use_db(core_database).await?;
+    let resolved = resolve_upgrade_specs(db, &installed, specs).await?;
+
     let mut report = UpgradeReport::default();
-    for spec in specs {
+    for spec in &resolved {
         let Some(from) = installed.get(&spec.name).cloned() else {
             return Err(CatalogError::NotInstalled(spec.name.clone()));
         };
@@ -1249,6 +1791,7 @@ pub async fn upgrade_plugins(
             .map(|(name, version)| (name.clone(), version.clone()))
             .collect();
         check_route_conflicts(db, &others, std::slice::from_ref(&target)).await?;
+        check_component_consumers(db, &others, &spec.name, &target).await?;
         let theme = fetch_planned_themes(db, std::slice::from_ref(&target))
             .await?
             .into_iter()
@@ -1275,6 +1818,8 @@ pub async fn upgrade_plugins(
                     layout: $theme.layout,
                     error_pages: $theme.error_pages,
                     nav: $theme.nav,
+                    layout_def: $theme.layout_def,
+                    error_pages_def: $theme.error_pages_def,
                     plugin_name: $name,
                     plugin_version: $version
                 };
@@ -1306,6 +1851,7 @@ async fn check_foreign_links(
     core_database: &str,
     plugin: &super::models::plugin_def::PluginDefinition,
     models: &[ModelDef],
+    batch_models: &HashMap<String, String>,
 ) -> Result<(), CatalogError> {
     let mut wanted: Vec<(String, String, String, String)> = Vec::new();
     for model in models {
@@ -1332,6 +1878,28 @@ async fn check_foreign_links(
     db.use_ns(namespace).await?;
     db.use_db(core_database).await?;
     for (field, other_plugin, other_model, id) in wanted {
+        // Links inside this package: the target is not in the catalog yet while we load.
+        if other_plugin == plugin.name {
+            let Some(own) = models.iter().find(|model| model.name == other_model) else {
+                return Err(CatalogError::ForeignLink(format!(
+                    "{field} links to `{other_plugin}.{other_model}`, but this package has no such model"
+                )));
+            };
+            match own.model_id.as_deref() {
+                Some(own_id) if own_id == id => continue,
+                Some(own_id) => {
+                    return Err(CatalogError::ForeignLink(format!(
+                        "{field}: `target_id` `{id}` is not the id of `{other_plugin}.{other_model}` (package has `{own_id}`); run `aether --sync-models` again"
+                    )));
+                }
+                None => {
+                    return Err(CatalogError::ForeignLink(format!(
+                        "{field} links to `{other_plugin}.{other_model}`, which has no `model_id`; run `aether --sync-models`"
+                    )));
+                }
+            }
+        }
+
         let mut response = db
             .query(
                 "SELECT VALUE model_id FROM plugin_models WHERE name = $model \
@@ -1342,12 +1910,20 @@ async fn check_foreign_links(
             .await?
             .check()?;
         let ids: Vec<Option<String>> = response.take(0)?;
-        if ids.is_empty() {
-            return Err(CatalogError::ForeignLink(format!(
-                "{field} links to `{other_plugin}.{other_model}`, but the catalog has no such model: load `{other_plugin}` first (`aether --load-plugin`)"
-            )));
-        }
-        if !ids.iter().flatten().any(|known| known == &id) {
+        let key = format!("{other_plugin}.{other_model}");
+        let known: Vec<&str> = if ids.is_empty() {
+            match batch_models.get(&key).map(String::as_str) {
+                Some(batch_id) => vec![batch_id],
+                None => {
+                    return Err(CatalogError::ForeignLink(format!(
+                        "{field} links to `{other_plugin}.{other_model}`, but the catalog has no such model: load `{other_plugin}` first (`aether --load-plugins`)"
+                    )));
+                }
+            }
+        } else {
+            ids.iter().flatten().map(String::as_str).collect()
+        };
+        if !known.iter().any(|known_id| *known_id == id) {
             return Err(CatalogError::ForeignLink(format!(
                 "{field}: `target_id` `{id}` is not the id of `{other_plugin}.{other_model}`; run `aether --sync-models` again"
             )));
@@ -1449,7 +2025,8 @@ async fn fetch_planned_themes(
     let ids: Vec<_> = order.iter().map(|record| record.id.clone()).collect();
     let mut response = db
         .query(
-            "SELECT plugin, name, label, is_system, color_mode, tokens, layout, error_pages, nav \
+            "SELECT plugin, name, label, is_system, color_mode, tokens, layout, error_pages, nav, \
+                    layout_def, error_pages_def \
              FROM plugin_themes WHERE plugin IN $ids;",
         )
         .bind(("ids", ids))
@@ -1504,6 +2081,79 @@ struct ClaimedRoute {
     route_shape: String,
     plugin_name: String,
     plugin_version: String,
+}
+
+#[derive(Debug, Deserialize, SurrealValue)]
+struct TreeOwnerRow {
+    component_tree: serde_json::Value,
+    plugin_name: String,
+    plugin_version: String,
+}
+
+#[derive(Debug, Deserialize, SurrealValue)]
+struct ForeignComponentRow {
+    full_name: String,
+    component_tree: serde_json::Value,
+}
+
+/// Fail when upgrading `plugin` would drop a component that another installed
+/// plugin still references. Caller must be on the core database.
+async fn check_component_consumers(
+    db: &Surreal<Client>,
+    others: &HashMap<String, String>,
+    plugin: &str,
+    target: &PluginDbDefinition,
+) -> Result<(), CatalogError> {
+    if others.is_empty() {
+        return Ok(());
+    }
+    let mut response = db
+        .query("SELECT VALUE name FROM plugin_components WHERE plugin = $plugin;")
+        .bind(("plugin", target.id.clone()))
+        .await?
+        .check()?;
+    let provided: HashSet<String> = response.take::<Vec<String>>(0)?.into_iter().collect();
+
+    let mut response = db
+        .query(
+            "SELECT component_tree, plugin.name AS plugin_name, plugin.version AS plugin_version \
+             FROM plugin_ui_pages; \
+             SELECT component_tree, plugin.name AS plugin_name, plugin.version AS plugin_version \
+             FROM plugin_components;",
+        )
+        .await?
+        .check()?;
+    let mut trees: Vec<TreeOwnerRow> = response.take(0)?;
+    let more: Vec<TreeOwnerRow> = response.take(1)?;
+    trees.extend(more);
+
+    let prefix = format!("{plugin}.");
+    for row in trees {
+        let serves = others
+            .get(&row.plugin_name)
+            .is_some_and(|version| *version == row.plugin_version);
+        if !serves {
+            continue;
+        }
+        for (reference, raw) in collect_uses(&row.component_tree) {
+            let owner = reference.plugin.as_deref().unwrap_or(row.plugin_name.as_str());
+            if owner != plugin {
+                continue;
+            }
+            if !provided.contains(&reference.name) {
+                return Err(CatalogError::ComponentStillUsed {
+                    plugin: plugin.to_string(),
+                    component: if raw.starts_with(&prefix) {
+                        raw
+                    } else {
+                        format!("{plugin}.{}", reference.name)
+                    },
+                    consumer: row.plugin_name,
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Fail when a page route of a plugin about to be installed would match the
@@ -1622,12 +2272,23 @@ impl Plan<'_> {
                 .push((spec.name.clone(), installed_version.clone()));
         } else {
             let record = select_catalog_version(db, spec).await?;
+            let required_by = record.name.clone();
             for dependency in record.dependencies.clone().unwrap_or_default() {
                 let dependency = PluginSpec {
                     name: dependency,
                     version: None,
                 };
-                Box::pin(self.visit(db, &dependency, false)).await?;
+                if let Err(error) = Box::pin(self.visit(db, &dependency, false)).await {
+                    return Err(match error {
+                        CatalogError::PluginNotFound(missing) => {
+                            CatalogError::DependencyNotInCatalog {
+                                dependency: missing,
+                                required_by: required_by.clone(),
+                            }
+                        }
+                        other => other,
+                    });
+                }
             }
             self.order.push(record);
         }
@@ -1636,6 +2297,85 @@ impl Plan<'_> {
         self.visited.insert(spec.name.clone());
         Ok(())
     }
+}
+
+/// Whether `specs` asks to upgrade every installed plugin (`all` alone, no `@version`).
+fn upgrade_all_requested(specs: &[PluginSpec]) -> Result<bool, CatalogError> {
+    if !specs.iter().any(|spec| spec.name == "all") {
+        return Ok(false);
+    }
+    if specs.len() == 1 && specs[0].version.is_none() {
+        return Ok(true);
+    }
+    Err(CatalogError::InvalidSpec(
+        "all (use alone, without @version)".to_string(),
+    ))
+}
+
+/// Expand CLI upgrade specs. `all` alone means every installed plugin (newest catalog
+/// version each), ordered so dependencies precede dependents.
+async fn resolve_upgrade_specs(
+    db: &Surreal<Client>,
+    installed: &HashMap<String, String>,
+    specs: &[PluginSpec],
+) -> Result<Vec<PluginSpec>, CatalogError> {
+    if !upgrade_all_requested(specs)? {
+        return Ok(specs.to_vec());
+    }
+
+    let mut order = Vec::new();
+    let mut visiting = HashSet::new();
+    let mut visited = HashSet::new();
+    let mut names: Vec<&String> = installed.keys().collect();
+    names.sort();
+    for name in names {
+        visit_upgrade_all(db, name, installed, &mut visiting, &mut visited, &mut order).await?;
+    }
+    Ok(order)
+}
+
+async fn visit_upgrade_all(
+    db: &Surreal<Client>,
+    name: &str,
+    installed: &HashMap<String, String>,
+    visiting: &mut HashSet<String>,
+    visited: &mut HashSet<String>,
+    order: &mut Vec<PluginSpec>,
+) -> Result<(), CatalogError> {
+    if visited.contains(name) {
+        return Ok(());
+    }
+    if !visiting.insert(name.to_string()) {
+        return Err(CatalogError::DependencyCycle(name.to_string()));
+    }
+    let target = select_catalog_version(
+        db,
+        &PluginSpec {
+            name: name.to_string(),
+            version: None,
+        },
+    )
+    .await?;
+    for dependency in target.dependencies.clone().unwrap_or_default() {
+        if installed.contains_key(&dependency) {
+            Box::pin(visit_upgrade_all(
+                db,
+                &dependency,
+                installed,
+                visiting,
+                visited,
+                order,
+            ))
+            .await?;
+        }
+    }
+    visiting.remove(name);
+    visited.insert(name.to_string());
+    order.push(PluginSpec {
+        name: name.to_string(),
+        version: None,
+    });
+    Ok(())
 }
 
 /// Pick the active catalog row for `spec`. Without an explicit version, the one loaded
@@ -1689,6 +2429,21 @@ mod tests {
                 "`{raw}` should be rejected"
             );
         }
+    }
+
+    #[test]
+    fn upgrade_all_must_stand_alone() -> Result<(), CatalogError> {
+        assert!(!upgrade_all_requested(&["notes".parse()?])?);
+        assert!(upgrade_all_requested(&["all".parse()?])?);
+        assert!(matches!(
+            upgrade_all_requested(&["all@0.1.0".parse()?]),
+            Err(CatalogError::InvalidSpec(_))
+        ));
+        assert!(matches!(
+            upgrade_all_requested(&["all".parse()?, "notes".parse()?]),
+            Err(CatalogError::InvalidSpec(_))
+        ));
+        Ok(())
     }
 
     #[test]

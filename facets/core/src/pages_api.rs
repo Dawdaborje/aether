@@ -20,6 +20,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use surrealdb::types::SurrealValue;
 
+use crate::plugin_manager::components::{
+    CatalogComponentRow, collect_uses, expand_tree, registry_for_versions, wrap_page_tree,
+};
 use crate::plugin_manager::pages::RoutePattern;
 use crate::access::{
     audit::{Actor, PageVisit, record_page_visit},
@@ -54,6 +57,9 @@ struct PageRow {
     is_public: bool,
     /// The layout the page asks for, overriding the theme's.
     layout: Option<String>,
+    /// Content layout component; expanded into the page body before serve.
+    #[serde(default)]
+    wrap: Option<String>,
     component_tree: Value,
     plugin_name: String,
     plugin_version: String,
@@ -162,6 +168,10 @@ async fn serve_page_inner(
     let jar = with_visitor_cookie(&state, &identity, jar);
     match outcome {
         Ok(mut found) => {
+            if let Err(error) = expand_page_components(&state, &identity, &mut found.page).await {
+                log::error!("page component expand: {error}");
+                return failure(jar, StatusCode::INTERNAL_SERVER_ERROR, "page could not be built");
+            }
             let language = localize(&state, &identity, &headers, &mut found.page).await;
             (
             jar,
@@ -184,6 +194,57 @@ async fn serve_page_inner(
         }
         Err(refusal) => failure(jar, refusal.status, refusal.message),
     }
+}
+
+/// Resolve page `wrap=` and `<use>` nodes against the components of plugins
+/// installed in this organization, so the browser only sees built-in widget tags.
+async fn expand_page_components(
+    state: &AppState,
+    identity: &Identity,
+    page: &mut PageRow,
+) -> Result<(), String> {
+    let wrap = page
+        .wrap
+        .as_deref()
+        .filter(|name| !name.is_empty())
+        .map(str::to_string);
+    let has_uses = !collect_uses(&page.component_tree).is_empty();
+    if wrap.is_none() && !has_uses {
+        return Ok(());
+    }
+    let org = state
+        .org(&identity.org_db)
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut response = org
+        .query("SELECT plugin_name, version FROM installed_plugins WHERE is_enabled = true;")
+        .await
+        .and_then(|response| response.check())
+        .map_err(|error| error.to_string())?;
+    let installed: Vec<InstalledRow> = response.take(0).map_err(|error| error.to_string())?;
+    let installed: Vec<(String, String)> = installed
+        .into_iter()
+        .map(|row| (row.plugin_name, row.version))
+        .collect();
+
+    let core = state.core().await.map_err(|error| error.to_string())?;
+    let mut response = core
+        .query(
+            "SELECT full_name, component_tree, plugin.name AS plugin_name, plugin.version AS plugin_version \
+             FROM plugin_components;",
+        )
+        .await
+        .and_then(|response| response.check())
+        .map_err(|error| error.to_string())?;
+    let rows: Vec<CatalogComponentRow> = response.take(0).map_err(|error| error.to_string())?;
+    let registry = registry_for_versions(rows, &installed);
+    if let Some(wrap) = wrap.as_deref() {
+        page.component_tree = wrap_page_tree(&page.component_tree, wrap, &page.title)
+            .map_err(|error| error.to_string())?;
+    }
+    page.component_tree = expand_tree(&page.component_tree, &page.plugin_name, &registry)
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 /// The language a page was served in.
@@ -251,7 +312,10 @@ pub(crate) async fn localize_model_text(
 pub(crate) async fn translator(state: &AppState, identity: &Identity) -> Result<aether_localization::Translator, surrealdb::Error> {
     let org = state.org(&identity.org_db).await?;
     let mut response = org
-        .query("SELECT plugin_name, version FROM installed_plugins WHERE is_enabled = true ORDER BY installed_at;")
+        .query(
+            "SELECT plugin_name, version, installed_at FROM installed_plugins \
+             WHERE is_enabled = true ORDER BY installed_at;",
+        )
         .await?
         .check()?;
     let installed: Vec<InstalledRow> = response.take(0)?;
@@ -295,7 +359,7 @@ fn internal(context: &str, error: impl std::fmt::Display) -> Refusal {
     Refusal::new(StatusCode::INTERNAL_SERVER_ERROR, "database error")
 }
 
-const PAGE_COLUMNS: &str = "route, title, is_public, layout, component_tree, \
+const PAGE_COLUMNS: &str = "route, title, is_public, layout, wrap, component_tree, \
      plugin.name AS plugin_name, plugin.version AS plugin_version";
 
 /// Find the page for `path` among the installed plugins' pages: an exact route
@@ -456,6 +520,7 @@ mod tests {
             title: route.to_string(),
             is_public: true,
             layout: None,
+            wrap: None,
             component_tree: Value::Null,
             plugin_name: plugin.to_string(),
             plugin_version: "1".to_string(),

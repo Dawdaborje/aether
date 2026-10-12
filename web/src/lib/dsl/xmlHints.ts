@@ -2,6 +2,12 @@
  * XML tag → JSON `type` mapping for plugin page authors.
  * Pages are authored as `.xml` files and compiled to this JSON shape.
  */
+/**
+ * Authoring-only tags expanded by the kernel before a page reaches the browser.
+ * If one appears in a served tree, `buildPage` will warn (unknown type).
+ */
+export const reservedXmlTags = ['component', 'use', 'slot', 'set'] as const;
+
 export const xmlTagMap = {
 	page: 'page',
 	header: 'header',
@@ -47,6 +53,9 @@ export const xmlTagMap = {
 	loading: 'loading',
 	skeleton: 'skeleton',
 	progress: 'progress',
+	progressbar: 'progressbar',
+	card: 'card',
+	templates: 'templates',
 	empty: 'empty',
 	alert: 'alert',
 	banner: 'banner',

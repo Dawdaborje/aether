@@ -70,6 +70,10 @@ pub struct ThemeDocument {
     pub nav: Option<Value>,
     /// Which set of error pages (404, 403, error cards, …) the app shows.
     pub error_pages: String,
+    /// Plugin-defined layout body when `layout` is not a built-in name.
+    pub layout_def: Option<Value>,
+    /// Plugin-defined error-set body when `error_pages` is not a built-in name.
+    pub error_pages_def: Option<Value>,
 }
 
 /// Parse a theme's JSON file. `path` is only used in error messages.
@@ -147,6 +151,8 @@ pub fn parse_theme(
         layout,
         nav,
         error_pages,
+        layout_def: None,
+        error_pages_def: None,
     })
 }
 

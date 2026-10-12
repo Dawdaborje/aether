@@ -7,9 +7,9 @@ import DeskLayout from './desk/deskLayout.svelte';
 type LayoutComponent = Component<{ children: Snippet }>;
 
 /**
- * Layouts a theme (`"layout": "…"` in its theme.json) or a page
- * (`<page layout="…">`) can choose by name. To add one, create the component
- * and list it here.
+ * Built-in layouts a theme (`"layout": "…"`) or page (`<page layout="…">`) can
+ * choose by name. Plugin-shipped layouts use `layouts/<name>.json` +
+ * `ConfiguredLayout` instead (see `theme.layoutDef`).
  */
 export const layoutRegistry: Record<string, LayoutComponent> = {
 	default: DefaultLayout as LayoutComponent,

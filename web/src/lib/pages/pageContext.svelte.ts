@@ -102,6 +102,19 @@ export function rowsOf(data: unknown): Record<string, unknown>[] {
 	);
 }
 
+/** Total row count when the function answered with `{ total }` or `{ count }`; otherwise `undefined`. */
+export function totalOf(data: unknown): number | undefined {
+	if (!data || typeof data !== 'object' || Array.isArray(data)) return undefined;
+	const object = data as Record<string, unknown>;
+	for (const key of ['total', 'count'] as const) {
+		const value = object[key];
+		if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+			return Math.floor(value);
+		}
+	}
+	return undefined;
+}
+
 /** `notes_note:abc` is the record `abc` of its table; routes and functions take the key. */
 export function keyOf(id: unknown): string {
 	const text = String(id ?? '');

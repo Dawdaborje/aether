@@ -15,7 +15,7 @@ to SurrealDB, which closes when the process exits.
 
 The account `--init` creates is the **developer**: it bypasses permission
 checks, lands on the desk (the Organizations page) after login, and is the only
-account that sees the desk and the developer tools (`/studio`, more to come); see
+account that sees the desk and the developer tools (`/desk/studio`, more to come); see
 [organizations.md](organizations.md). It is stored as a superuser
 (`is_super_user`); the API reports it as `is_developer` too.
 
@@ -23,7 +23,7 @@ account that sees the desk and the developer tools (`/studio`, more to come); se
 
 `aether --serve --watch` reloads plugins when their source changes, so you edit and try without loading
 and upgrading by hand. The catalog remembers the folder each plugin was loaded from (`aether
---load-plugin <folder>`); the server listens to those folders and, half a second after a change settles
+--load-plugins <folder>`); the server listens to those folders and, half a second after a change settles
 (an editor or a build writes several files), does what you would do yourself: loads the folder again
 (identical content is recognized and ignored; changed content becomes a new revision of the same version,
 such as `0.1.0+20261005T161642Z`) and moves every organization that has the plugin installed to it. The next

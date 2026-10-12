@@ -39,6 +39,8 @@ struct ActiveTheme {
     layout: Option<String>,
     error_pages: Option<String>,
     nav: Option<Value>,
+    layout_def: Option<Value>,
+    error_pages_def: Option<Value>,
 }
 
 #[derive(Debug, Deserialize, SurrealValue)]
@@ -112,7 +114,9 @@ async fn get_theme(
                     active_theme.name AS name, active_theme.label AS label, \
                     active_theme.tokens AS tokens, active_theme.layout AS layout, \
                     active_theme.error_pages AS error_pages, \
-                    active_theme.nav AS nav \
+                    active_theme.nav AS nav, \
+                    active_theme.layout_def AS layout_def, \
+                    active_theme.error_pages_def AS error_pages_def \
              FROM ui_theme_config LIMIT 1;",
         )
         .await
@@ -142,6 +146,8 @@ async fn get_theme(
         layout,
         error_pages,
         nav,
+        layout_def,
+        error_pages_def,
     }) = rows.into_iter().next()
     else {
         log::debug!(
@@ -166,6 +172,8 @@ async fn get_theme(
         "layout": layout.unwrap_or_else(|| "default".to_string()),
         "error_pages": error_pages.unwrap_or_else(|| "default".to_string()),
         "nav": nav,
+        "layout_def": layout_def,
+        "error_pages_def": error_pages_def,
     }))
     .into_response()
 }

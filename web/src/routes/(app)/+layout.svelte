@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { page } from '$app/state';
+	import { navigating, page } from '$app/state';
 	import AppShell from '$lib/components/layout/AppShell.svelte';
 	import OrgSwitcherModal from '$lib/components/layout/OrgSwitcherModal.svelte';
 	import { authSession } from '$lib/auth/session.svelte';
@@ -23,6 +23,22 @@
 	/** The server is up but cannot answer (usually its database is down); we keep retrying. */
 	let unavailable = $state(false);
 	const RETRY_MS = 3000;
+	/** Avoid a flash on instant navigations; page loads often take seconds. */
+	const NAV_BANNER_DELAY_MS = 120;
+	// `$app/state`'s `navigating` is always an object; idle is `to === null`.
+	const isNavigating = $derived(navigating.to !== null);
+	let showNavBanner = $state(false);
+
+	$effect(() => {
+		if (!isNavigating) {
+			showNavBanner = false;
+			return;
+		}
+		const timer = setTimeout(() => {
+			showNavBanner = true;
+		}, NAV_BANNER_DELAY_MS);
+		return () => clearTimeout(timer);
+	});
 
 	onDestroy(() => notificationsStore.stop());
 
@@ -88,6 +104,18 @@
 			{/if}
 		</div>
 	{:else}
+		{#if showNavBanner}
+			<div
+				class="pointer-events-none fixed inset-x-0 top-0 z-50 h-1 w-full overflow-hidden bg-primary/10"
+				role="progressbar"
+				aria-busy="true"
+				aria-label="Loading page"
+			>
+				<div
+					class="h-full w-1/3 animate-[loading_1.1s_ease-in-out_infinite] rounded-full bg-primary/60"
+				></div>
+			</div>
+		{/if}
 		<AppShell>
 			{@render children()}
 		</AppShell>

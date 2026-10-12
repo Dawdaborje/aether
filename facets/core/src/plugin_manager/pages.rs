@@ -15,12 +15,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use quick_xml::{Reader, events::Event};
-use serde_json::{Map, Value};
+use serde_json::Value;
 use thiserror::Error;
 
 use crate::app_dir::{AppDir, AppDirError};
 use crate::plugin_manager::catalog::sha256_hex;
+use crate::plugin_manager::components::ComponentRef;
+use crate::plugin_manager::xml_tree::{XmlError, compile_xml};
 
 /// Folder, relative to a plugin package, that holds page XML.
 pub const PAGES_DIR: &str = "pages";
@@ -36,8 +37,8 @@ pub enum PageError {
         source: std::io::Error,
     },
 
-    #[error("{path}: invalid XML: {message}")]
-    Xml { path: PathBuf, message: String },
+    #[error(transparent)]
+    Xml(#[from] XmlError),
 
     #[error("{0}: the root element must be <page>")]
     NotAPage(PathBuf),
@@ -61,6 +62,13 @@ pub enum PageError {
 
     #[error("{path}: invalid layout `{layout}`: use lowercase letters, digits, `-` and `_`, starting with a letter")]
     InvalidLayout { path: PathBuf, layout: String },
+
+    #[error("{path}: invalid wrap `{wrap}`: {reason}")]
+    InvalidWrap {
+        path: PathBuf,
+        wrap: String,
+        reason: String,
+    },
 
     #[error("route `{route}` is declared by both {first} and {second} (routes that differ only in parameter names match the same URLs)")]
     DuplicateRoute {
@@ -94,6 +102,9 @@ pub struct PageDocument {
     /// The layout this page asks for (`layout="bare"`), overriding the
     /// theme's; `None` uses the theme's layout.
     pub layout: Option<String>,
+    /// Content layout component (`wrap="hr_section"` or `wrap="notes.shell"`).
+    /// Expanded into the component's default `<slot />` when the page is served.
+    pub wrap: Option<String>,
     /// Whether anonymous visitors may open the page.
     pub public: bool,
     /// The root `model` attribute, if any.
@@ -104,65 +115,6 @@ pub struct PageDocument {
     pub tree: Value,
     /// Path of the XML file relative to the plugin package.
     pub source: PathBuf,
-}
-
-#[derive(Debug)]
-struct Node {
-    tag: String,
-    attributes: Vec<(String, String)>,
-    children: Vec<Node>,
-    text: Option<String>,
-}
-
-impl Node {
-    fn attribute(&self, name: &str) -> Option<&str> {
-        self.attributes
-            .iter()
-            .find(|(key, _)| key == name)
-            .map(|(_, value)| value.as_str())
-    }
-
-    fn collect_models(&self, models: &mut BTreeSet<String>) {
-        if let Some(model) = self.attribute("model").filter(|model| !model.is_empty()) {
-            models.insert(model.to_string());
-        }
-        for child in &self.children {
-            child.collect_models(models);
-        }
-    }
-
-    /// `{ "type": <tag>, <attributes…>, "children": […], "text": … }`.
-    ///
-    /// The renderer reads the element name from `type`, so an XML `type`
-    /// attribute (as on `<view type="list">`) becomes `viewType`. The literals
-    /// `true` and `false` become JSON booleans.
-    fn into_json(self) -> Value {
-        let mut object = Map::new();
-        for (key, value) in self.attributes {
-            let key = if key == "type" {
-                "viewType".to_string()
-            } else {
-                key
-            };
-            let value = match value.as_str() {
-                "true" => Value::Bool(true),
-                "false" => Value::Bool(false),
-                _ => Value::String(value),
-            };
-            object.insert(key, value);
-        }
-        object.insert("type".into(), Value::String(self.tag));
-        if !self.children.is_empty() {
-            object.insert(
-                "children".into(),
-                Value::Array(self.children.into_iter().map(Node::into_json).collect()),
-            );
-        }
-        if let Some(text) = self.text {
-            object.insert("text".into(), Value::String(text));
-        }
-        Value::Object(object)
-    }
 }
 
 /// Parse one page file. `source` is only used in messages and stored on the result.
@@ -204,6 +156,19 @@ pub fn parse_page(xml: &str, source: &Path) -> Result<PageDocument, PageError> {
             });
         }
     };
+    let wrap = match root.attribute("wrap") {
+        None | Some("") => None,
+        Some(wrap) => match ComponentRef::parse(wrap) {
+            Ok(_) => Some(wrap.to_string()),
+            Err(reason) => {
+                return Err(PageError::InvalidWrap {
+                    path: source.to_path_buf(),
+                    wrap: wrap.to_string(),
+                    reason,
+                });
+            }
+        },
+    };
     let title = root
         .attribute("title")
         .filter(|title| !title.is_empty())
@@ -223,6 +188,7 @@ pub fn parse_page(xml: &str, source: &Path) -> Result<PageDocument, PageError> {
         title,
         public,
         layout,
+        wrap,
         model,
         models,
         tree: root.into_json(),
@@ -331,6 +297,7 @@ pub async fn write_view_files(
             "title": page.title,
             "public": page.public,
             "layout": page.layout,
+            "wrap": page.wrap,
             "model": page.model,
             "models": page.models,
             "source": page.source,
@@ -481,125 +448,6 @@ impl RoutePattern {
     }
 }
 
-fn compile_xml(xml: &str, source: &Path) -> Result<Node, PageError> {
-    let xml_error = |message: String| PageError::Xml {
-        path: source.to_path_buf(),
-        message,
-    };
-    let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
-    let mut stack: Vec<Node> = Vec::new();
-    let mut root: Option<Node> = None;
-
-    let read_attributes = |element: &quick_xml::events::BytesStart<'_>,
-                           decoder: quick_xml::encoding::Decoder|
-     -> Result<Vec<(String, String)>, PageError> {
-        let mut attributes = Vec::new();
-        for attribute in element.attributes() {
-            let attribute = attribute.map_err(|error| xml_error(error.to_string()))?;
-            let key = String::from_utf8_lossy(attribute.key.as_ref()).into_owned();
-            let value = attribute
-                .decode_and_unescape_value(decoder)
-                .map_err(|error| xml_error(error.to_string()))?
-                .into_owned();
-            attributes.push((key, value));
-        }
-        Ok(attributes)
-    };
-    let append = |stack: &mut Vec<Node>, root: &mut Option<Node>, node: Node| {
-        if let Some(parent) = stack.last_mut() {
-            parent.children.push(node);
-            Ok(())
-        } else if root.replace(node).is_some() {
-            Err(xml_error("a page must have exactly one root element".into()))
-        } else {
-            Ok(())
-        }
-    };
-
-    loop {
-        match reader.read_event() {
-            Ok(Event::Start(element)) => {
-                let attributes = read_attributes(&element, reader.decoder())?;
-                stack.push(Node {
-                    tag: String::from_utf8_lossy(element.name().as_ref()).into_owned(),
-                    attributes,
-                    children: Vec::new(),
-                    text: None,
-                });
-            }
-            Ok(Event::Empty(element)) => {
-                let attributes = read_attributes(&element, reader.decoder())?;
-                let node = Node {
-                    tag: String::from_utf8_lossy(element.name().as_ref()).into_owned(),
-                    attributes,
-                    children: Vec::new(),
-                    text: None,
-                };
-                append(&mut stack, &mut root, node)?;
-            }
-            Ok(Event::End(_)) => {
-                let node = stack
-                    .pop()
-                    .ok_or_else(|| xml_error("unexpected closing element".into()))?;
-                append(&mut stack, &mut root, node)?;
-            }
-            Ok(Event::Text(text)) => {
-                let text = text.decode().map_err(|error| xml_error(error.to_string()))?;
-                if let Some(node) = stack.last_mut()
-                    && !text.trim().is_empty()
-                {
-                    node.text
-                        .get_or_insert_with(String::new)
-                        .push_str(text.as_ref());
-                }
-            }
-            Ok(Event::CData(text)) => {
-                let text = text.decode().map_err(|error| xml_error(error.to_string()))?;
-                if let Some(node) = stack.last_mut() {
-                    node.text
-                        .get_or_insert_with(String::new)
-                        .push_str(text.as_ref());
-                }
-            }
-            Ok(Event::GeneralRef(reference)) => {
-                let resolved = resolve_general_ref(&reference).map_err(xml_error)?;
-                if let Some(node) = stack.last_mut() {
-                    node.text.get_or_insert_with(String::new).push(resolved);
-                }
-            }
-            Ok(Event::Eof) => break,
-            Ok(Event::Decl(_) | Event::Comment(_) | Event::DocType(_) | Event::PI(_)) => {}
-            Err(error) => return Err(xml_error(error.to_string())),
-        }
-    }
-
-    if !stack.is_empty() {
-        return Err(xml_error("unclosed elements remain".into()));
-    }
-    root.ok_or_else(|| xml_error("the file has no root element".into()))
-}
-
-/// Resolve a character reference (`&#38;`) or one of the five predefined XML
-/// entities.
-fn resolve_general_ref(reference: &quick_xml::events::BytesRef<'_>) -> Result<char, String> {
-    if let Some(character) = reference
-        .resolve_char_ref()
-        .map_err(|error| error.to_string())?
-    {
-        return Ok(character);
-    }
-    let name = reference.decode().map_err(|error| error.to_string())?;
-    match name.as_ref() {
-        "lt" => Ok('<'),
-        "gt" => Ok('>'),
-        "amp" => Ok('&'),
-        "apos" => Ok('\''),
-        "quot" => Ok('"'),
-        other => Err(format!("unknown XML entity `&{other};`")),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -639,6 +487,36 @@ mod tests {
         let column = &view["children"][0];
         assert_eq!(column["sortable"], true);
         assert_eq!(column["label"], "A & B");
+        Ok(())
+    }
+
+    #[test]
+    fn compiles_kanban_with_card_and_progressbar() -> Result<(), PageError> {
+        let page = parse(
+            r#"<page route="/board" title="Board" model="ticket">
+  <view type="kanban" source="list_tickets" group_by="stage" open="/tickets/{id}" move="move_ticket" create="create_ticket">
+    <progressbar field="priority" colors="{&quot;high&quot;:&quot;danger&quot;}" sum_field="amount"/>
+    <card>
+      <field name="title"/>
+      <footer><field name="user" fieldType="avatar"/></footer>
+    </card>
+    <actions><action name="archive" function="archive_ticket"/></actions>
+  </view>
+</page>"#,
+        )?;
+        let view = &page.tree["children"][0];
+        assert_eq!(view["viewType"], "kanban");
+        assert_eq!(view["group_by"], "stage");
+        assert_eq!(view["move"], "move_ticket");
+        let types: Vec<&str> = view["children"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|c| c["type"].as_str())
+            .collect();
+        assert!(types.contains(&"progressbar"));
+        assert!(types.contains(&"card"));
+        assert!(types.contains(&"actions"));
         Ok(())
     }
 
@@ -695,6 +573,24 @@ mod tests {
     }
 
     #[test]
+    fn a_page_may_name_its_wrap() -> Result<(), PageError> {
+        assert_eq!(
+            parse(r#"<page route="/" wrap="notes_shell" />"#)?.wrap.as_deref(),
+            Some("notes_shell")
+        );
+        assert_eq!(
+            parse(r#"<page route="/" wrap="notes.shell" />"#)?.wrap.as_deref(),
+            Some("notes.shell")
+        );
+        assert_eq!(parse(r#"<page route="/" />"#)?.wrap, None);
+        assert!(matches!(
+            parse(r#"<page route="/" wrap="NotValid" />"#),
+            Err(PageError::InvalidWrap { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn root_route_is_allowed() -> Result<(), PageError> {
         assert_eq!(parse(r#"<page route="/" />"#)?.route, "/");
         Ok(())
@@ -720,10 +616,10 @@ mod tests {
                 "{value:?}"
             );
         }
-        assert!(matches!(parse("<page route=\"/x\">"), Err(PageError::Xml { .. })));
+        assert!(matches!(parse("<page route=\"/x\">"), Err(PageError::Xml(_))));
         assert!(matches!(
             parse("<page route=\"/x\" /><page route=\"/y\" />"),
-            Err(PageError::Xml { .. })
+            Err(PageError::Xml(_))
         ));
     }
 

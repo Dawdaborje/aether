@@ -3,9 +3,10 @@ use time::Duration;
 
 pub const SESSION_COOKIE: &str = "aether_session";
 
-pub fn set_session_cookie(jar: CookieJar, raw_token: &str) -> CookieJar {
+pub fn set_session_cookie(jar: CookieJar, raw_token: &str, secure: bool) -> CookieJar {
     let cookie = Cookie::build((SESSION_COOKIE, raw_token.to_string()))
         .http_only(true)
+        .secure(secure)
         .path("/")
         .same_site(SameSite::Lax)
         .max_age(Duration::days(1))
@@ -13,9 +14,10 @@ pub fn set_session_cookie(jar: CookieJar, raw_token: &str) -> CookieJar {
     jar.add(cookie)
 }
 
-pub fn clear_session_cookie(jar: CookieJar) -> CookieJar {
+pub fn clear_session_cookie(jar: CookieJar, secure: bool) -> CookieJar {
     let cookie = Cookie::build((SESSION_COOKIE, ""))
         .http_only(true)
+        .secure(secure)
         .path("/")
         .same_site(SameSite::Lax)
         .max_age(Duration::seconds(0))

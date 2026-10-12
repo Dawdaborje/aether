@@ -24,7 +24,7 @@
 
 	async function leaveOrganization() {
 		await orgStore.leave();
-		if (!orgStore.error) await goto(resolve('/organizations'));
+		if (!orgStore.error) await goto(resolve('/desk/organizations'));
 	}
 
 	async function signOut() {
@@ -43,7 +43,7 @@
 					aria-label="Account menu"
 					class="flex size-9 cursor-pointer items-center justify-center rounded-full text-xs font-semibold outline-none {tone ===
 					'on-primary'
-						? 'bg-white/20 text-white hover:bg-white/30'
+						? 'bg-sidebar-accent text-sidebar-accent-foreground hover:bg-sidebar-primary/20'
 						: 'bg-primary text-primary-foreground hover:opacity-90'}"
 				>
 					{initials}

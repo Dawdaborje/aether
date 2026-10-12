@@ -4,6 +4,7 @@
 	import FormViewWidget from './FormViewWidget.svelte';
 	import KanbanViewWidget from './KanbanViewWidget.svelte';
 	import DashboardViewWidget from './DashboardViewWidget.svelte';
+	import CalendarViewWidget from './CalendarViewWidget.svelte';
 	import FallbackWidget from './FallbackWidget.svelte';
 
 	let { node }: { node: PageNode } = $props();
@@ -25,6 +26,8 @@
 	<KanbanViewWidget {node} />
 {:else if viewType === 'dashboard'}
 	<DashboardViewWidget {node} />
+{:else if viewType === 'calendar'}
+	<CalendarViewWidget {node} />
 {:else}
 	<FallbackWidget {node} />
 {/if}

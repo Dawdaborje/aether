@@ -6,7 +6,7 @@
 	import { authSession } from '$lib/auth/session.svelte';
 	import { orgStore } from '$lib/org/orgStore.svelte';
 	import type { ThemeNav } from '$lib/theme/types';
-	import { activeApp, isActive, navHref } from '../nav';
+	import { activeApp, activeInstalledApp, isActive, navHref } from '../nav';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { appsStore } from '$lib/apps/appsStore.svelte';
@@ -17,18 +17,37 @@
 
 	let { nav }: { nav: ThemeNav } = $props();
 
-	const onApps = $derived(page.url.pathname.replace(/\/$/, '').endsWith('/apps'));
-	// The current app names the bar and its children are the menus, as in Odoo. On the
-	// Apps page the children are the installed apps; on an app without children of its
-	// own, the other apps stand beside it so you can move between them.
-	const app = $derived(activeApp(nav, page.url.pathname));
-	const brand = $derived(onApps ? 'Apps' : (app?.label ?? nav.header ?? 'Aether'));
+	// The member launcher at `/apps` — not `/desk/apps`.
+	const onApps = $derived(page.route.id?.startsWith('/(app)/(system)/apps') ?? false);
+	const pagePlugin = $derived(
+		typeof page.data?.body?.plugin === 'string' ? (page.data.body.plugin as string) : null
+	);
+	// Theme nav wins when it matches; otherwise the installed `[app]` for this path
+	// (Countries, etc.) names the bar and supplies menus from its pages.
+	const themeApp = $derived(activeApp(nav, page.url.pathname));
+	const installedApp = $derived(
+		themeApp ? null : activeInstalledApp(appsStore.apps, page.url.pathname, pagePlugin)
+	);
+	const brand = $derived(
+		onApps ? 'Apps' : (themeApp?.label ?? installedApp?.label ?? nav.header ?? 'Aether')
+	);
 	const menus: NavItem[] = $derived.by(() => {
 		if (onApps) {
-			return (appsStore.apps ?? []).map((a) => ({ label: a.label, href: a.route, icon: a.icon ?? undefined }));
+			return (appsStore.apps ?? []).map((a) => ({
+				label: a.label,
+				href: a.route,
+				icon: a.icon ?? undefined
+			}));
 		}
-		if (app?.children?.length) return app.children;
-		return app && nav.items.length > 1 ? nav.items : [];
+		if (themeApp?.children?.length) return themeApp.children;
+		if (installedApp?.menus?.length) {
+			return installedApp.menus.map((item) => ({
+				label: item.label,
+				href: item.href,
+				icon: item.icon ?? undefined
+			}));
+		}
+		return themeApp && nav.items.length > 1 ? nav.items : [];
 	});
 	// The home menu lists the installed apps, so make sure they are loaded on every page.
 	$effect(() => {
@@ -36,11 +55,11 @@
 	});
 	async function leaveOrganization() {
 		await orgStore.leave();
-		if (!orgStore.error) await goto(resolve('/organizations'));
+		if (!orgStore.error) await goto(resolve('/desk/organizations'));
 	}
 
 	const trigger =
-		'flex h-8 items-center gap-1 rounded-md px-2.5 text-[13px] font-medium text-sidebar-foreground/80 outline-none transition hover:bg-white/10 hover:text-white data-[state=open]:bg-white/10 data-[state=open]:text-white';
+		'flex h-8 items-center gap-1 rounded-md px-2.5 text-[13px] font-medium text-sidebar-foreground/80 outline-none transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground';
 </script>
 
 {#snippet link(entry: NavItem)}
@@ -67,11 +86,11 @@
 	the home menu), the current app's name, that app's menus, and the systray on the right.
 -->
 <header
-	class="sticky top-0 z-30 flex h-12 shrink-0 items-center gap-1 border-b border-black/30 bg-sidebar px-2 text-sidebar-foreground shadow-[0_1px_0_0_rgb(255_255_255/0.04)_inset,0_6px_16px_-10px_rgb(0_0_0/0.6)]"
+	class="sticky top-0 z-30 flex h-12 shrink-0 items-center gap-1 border-b border-sidebar-border bg-sidebar px-2 text-sidebar-foreground"
 >
 	<HomeMenu {nav} />
 
-		<span class="mx-1.5 text-[15px] font-semibold tracking-tight text-white">{brand}</span>
+		<span class="mx-1.5 text-[15px] font-semibold tracking-tight text-sidebar-foreground">{brand}</span>
 		<nav class="flex items-center gap-0.5" aria-label="Menu">
 			{#each menus as item (item.label)}
 				{#if item.children?.length}
@@ -106,7 +125,7 @@
 					<a
 						href={navHref(item.href)}
 						aria-current={isActive(item, page.url.pathname) ? 'page' : undefined}
-						class="{trigger} aria-[current=page]:bg-white/10 aria-[current=page]:text-white aria-[current=page]:shadow-[inset_0_-2px_0_0_var(--highlight)]"
+						class="{trigger} aria-[current=page]:bg-sidebar-accent aria-[current=page]:text-sidebar-accent-foreground aria-[current=page]:shadow-[inset_0_-2px_0_0_var(--sidebar-primary)]"
 					>
 						{item.label}
 					</a>
@@ -120,7 +139,7 @@
 	<div class="flex items-center gap-2 pr-1">
 		{#if authSession.isDeveloper}
 			<span
-				class="hidden rounded-full bg-highlight/15 px-2.5 py-0.5 text-[10px] font-semibold tracking-[0.14em] text-highlight uppercase ring-1 ring-highlight/30 ring-inset sm:inline"
+				class="hidden rounded-full bg-sidebar-primary/15 px-2.5 py-0.5 text-[10px] font-semibold tracking-[0.14em] text-sidebar-primary uppercase ring-1 ring-sidebar-primary/30 ring-inset sm:inline"
 				>Developer</span
 			>
 		{/if}
@@ -132,9 +151,9 @@
 				<DropdownMenu.Trigger
 					disabled={!orgStore.canSwitch && !orgStore.canLeave}
 					aria-label="Organization"
-					class="flex h-8 items-center gap-1.5 rounded-md px-2.5 text-[13px] text-sidebar-foreground/85 outline-none transition enabled:cursor-pointer enabled:hover:bg-white/10 enabled:hover:text-white disabled:cursor-default data-[state=open]:bg-white/10"
+					class="flex h-8 items-center gap-1.5 rounded-md px-2.5 text-[13px] text-sidebar-foreground/85 outline-none transition enabled:cursor-pointer enabled:hover:bg-sidebar-accent enabled:hover:text-sidebar-accent-foreground disabled:cursor-default data-[state=open]:bg-sidebar-accent"
 				>
-					<span class="size-1.5 rounded-full bg-highlight"></span>
+					<span class="size-1.5 rounded-full bg-sidebar-primary"></span>
 					{orgStore.currentName}
 					{#if orgStore.canSwitch || orgStore.canLeave}<ChevronDownIcon class="size-3 opacity-60" />{/if}
 				</DropdownMenu.Trigger>

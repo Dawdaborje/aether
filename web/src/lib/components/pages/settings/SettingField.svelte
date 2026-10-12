@@ -1,5 +1,6 @@
 <script lang="ts">
 	import CheckIcon from '@lucide/svelte/icons/check';
+	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Textarea } from '$lib/components/ui/textarea';
@@ -99,14 +100,9 @@
 	<div class="min-w-0 space-y-1.5">
 		<div class="flex flex-wrap items-center gap-2">
 			<h3 class="text-sm font-semibold tracking-tight">{item.label}</h3>
-			<span
-				class="rounded-sm px-1.5 py-0.5 text-[10px] font-semibold tracking-wider uppercase {item.source ===
-				'org'
-					? 'bg-primary/10 text-primary'
-					: 'bg-muted text-muted-foreground'}"
-			>
+			<Badge variant={item.source === 'org' ? 'default' : 'secondary'}>
 				{item.source === 'org' ? 'Organization' : 'Default'}
-			</span>
+			</Badge>
 		</div>
 		{#if item.description}
 			<p class="text-sm text-muted-foreground">{item.description}</p>
@@ -137,14 +133,13 @@
 		{:else if item.value_type === 'json'}
 			<Textarea
 				rows={6}
-				class="rounded-sm border border-input bg-card px-3 py-2 font-mono text-xs shadow-xs focus-visible:border-ring"
+				class="font-mono text-xs"
 				aria-label={item.label}
 				value={String(draft)}
 				oninput={(event) => (draft = event.currentTarget.value)}
 			/>
 		{:else if isSecret}
 			<Input
-				class="rounded-sm border-input bg-card px-3 shadow-xs focus-visible:border-ring"
 				aria-label={item.label}
 				type="password"
 				autocomplete="new-password"
@@ -157,7 +152,6 @@
 			</p>
 		{:else}
 			<Input
-				class="rounded-sm border-input bg-card px-3 shadow-xs focus-visible:border-ring"
 				aria-label={item.label}
 				type={item.value_type === 'number' ? 'number' : 'text'}
 				placeholder={item.value_type === 'list' ? 'one, two, three' : ''}
@@ -167,7 +161,9 @@
 			{#if listPreview.length > 0}
 				<ul class="flex flex-wrap gap-1.5" aria-label="Values">
 					{#each listPreview as value (value)}
-						<li class="rounded-sm bg-muted px-2 py-0.5 text-xs">{value}</li>
+						<li>
+							<Badge variant="secondary">{value}</Badge>
+						</li>
 					{/each}
 				</ul>
 			{/if}

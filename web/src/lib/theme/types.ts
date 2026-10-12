@@ -25,6 +25,33 @@ export interface ThemeNav {
 	items: NavItem[];
 }
 
+/** Plugin-shipped layout definition (`layouts/<name>.json`). */
+export interface LayoutDef {
+	name: string;
+	label?: string;
+	/** `top` | `sidebar` | `custom` | `bare` */
+	chrome: string;
+}
+
+/** Optional copy override for one error surface. */
+export interface ErrorCopyOverride {
+	title?: string;
+	message?: string;
+}
+
+/** Plugin-shipped error-page set (`errors/<name>.json`). */
+export interface ErrorSetDef {
+	name: string;
+	label?: string;
+	/** `default` | `custom` — first-party look to base on. */
+	variant: string;
+	not_found?: ErrorCopyOverride;
+	forbidden?: ErrorCopyOverride;
+	too_many_requests?: ErrorCopyOverride;
+	server_error?: ErrorCopyOverride;
+	card?: ErrorCopyOverride;
+}
+
 export interface ThemeConfig {
 	name: string;
 	label: string;
@@ -38,6 +65,10 @@ export interface ThemeConfig {
 	errorPages: string;
 	/** Navigation from the theme, or null to use the layout's own. */
 	nav: ThemeNav | null;
+	/** Present when `layout` is a plugin-defined shell. */
+	layoutDef: LayoutDef | null;
+	/** Present when `error_pages` is a plugin-defined set. */
+	errorPagesDef: ErrorSetDef | null;
 }
 
 export interface ThemeApiResponse {
@@ -54,4 +85,6 @@ export interface ThemeApiResponse {
 	layout?: string;
 	error_pages?: string;
 	nav?: ThemeNav | null;
+	layout_def?: LayoutDef | null;
+	error_pages_def?: ErrorSetDef | null;
 }

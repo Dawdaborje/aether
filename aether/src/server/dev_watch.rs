@@ -2,7 +2,7 @@
 //!
 //! The catalog remembers where each plugin was loaded from (`plugins.source_path`). With `--watch`
 //! the server listens to those folders and, when something in one changes and then stays quiet for a
-//! moment, does what you would do by hand: `--load-plugin` the folder again (identical content is
+//! moment, does what you would do by hand: `--load-plugins` the folder again (identical content is
 //! recognized and ignored; changed content becomes a new revision of the same version) and
 //! `--upgrade-plugin` every organization that has the plugin installed to it. The next call to the
 //! plugin runs the new code; its models, pages, schedules and watches follow.

@@ -10,7 +10,9 @@
 	// Open the first group; with none, fall through to Appearance.
 	$effect(() => {
 		const first = ctx?.groups?.[0]?.slug;
-		void goto(resolve(first ? `/settings/${first}` : '/settings/appearance'), { replaceState: true });
+		void goto(resolve(first ? `/desk/settings/${first}` : '/desk/settings/appearance'), {
+			replaceState: true
+		});
 	});
 </script>
 

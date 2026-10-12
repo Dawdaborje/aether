@@ -4,19 +4,27 @@ use tokio::fs;
 
 const DEFAULT_CONFIG_TEMPLATE: &str = r#"app_dir = "app_dir"
 
+# Packages and workspaces for `aether --load-plugins` (no arguments on the
+# command line). Relative paths are resolved against this file's directory.
+# A workspace path or name expands to every member, dependencies first.
+# plugin_paths = ["plugins/base"]
+# plugin_paths = ["base"]
+
 [core]
 instance_name = "Aether Test"
 
 [server]
 host = "0.0.0.0"
 port = 7890
-addon_paths = []
 # Reverse proxies whose X-Forwarded-For header is believed. Leave empty unless
 # a proxy sits in front of Aether; otherwise audit rows record the proxy's address.
 # trusted_proxies = ["10.0.0.1"]
 # Seconds a request may take before the server answers 504 instead of leaving
 # the browser loading (e.g. when the database is down). 0 disables the limit.
 # request_timeout_secs = 30
+# Extra browser origins for CSRF checks when the UI is not same-origin with the
+# API (Vite in development). Clear this list for production same-origin serving.
+csrf_trusted_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
 [security]
 # Encrypts secret settings (API keys, passwords) stored in the database. Leave it out and the
@@ -163,6 +171,16 @@ mod tests {
         assert_eq!(config.audit.retention_days, None);
         assert_eq!(config.public.max_new_visitors_per_ip_per_minute, 30);
         assert_eq!(config.public.max_requests_per_ip_per_minute, 300);
+        assert_eq!(
+            config.server.as_ref().map(|s| s.csrf_trusted_origins.as_slice()),
+            Some(
+                [
+                    "http://localhost:5173".to_string(),
+                    "http://127.0.0.1:5173".to_string()
+                ]
+                .as_slice()
+            )
+        );
         assert_eq!(
             config.media.local.map(|local| local.base_path),
             Some(directory.path().join("app_dir").join("media"))

@@ -13,8 +13,10 @@ currency  ──►  country  ──►  party  ──►  company
 (currencies)   (countries)   (people and organizations)   (legal entities)
 ```
 
-Load them in that order (`aether --load-plugin plugins/base/currency plugins/base/country …`); installing
-`company` in an organization installs the other three first.
+Load the whole workspace with `aether --load-plugins base` (or `plugins/base`, or put
+`plugin_paths = ["base"]` in `aether.toml` and run `aether -c aether.toml --load-plugins`);
+members load in dependency order. Installing `company` in an organization installs the
+other three first.
 
 ## Why a plugin, not the kernel
 

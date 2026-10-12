@@ -50,7 +50,7 @@
 		!atRoot
 			? undefined
 			: authSession.isDeveloper
-				? { label: 'Go to organizations', href: resolve('/organizations') }
+				? { label: 'Go to organizations', href: resolve('/desk/organizations') }
 				: authSession.isUser
 					? { label: 'Open my apps', href: resolve('/apps') }
 					: { label: 'Log in', href: resolve('/login') }

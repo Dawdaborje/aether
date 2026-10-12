@@ -77,11 +77,30 @@
 				<option value={option}>{option}</option>
 			{/each}
 		</NativeSelect>
-	{:else if fieldType === 'badge'}
-		<Badge>{label}</Badge>
+	{:else if fieldType === 'badge' || node.type === 'badge'}
+		<Badge>{String(value.current || label)}</Badge>
+	{:else if fieldType === 'avatar' || node.type === 'avatar'}
+		{@const text = String(value.current || label || '?')}
+		{@const initials = text
+			.trim()
+			.split(/\s+/)
+			.slice(0, 2)
+			.map((p) => p[0]?.toUpperCase() ?? '')
+			.join('') || '?'}
+		<span
+			class="inline-flex size-8 items-center justify-center rounded-full bg-muted text-xs font-medium text-muted-foreground"
+			title={text}
+		>
+			{initials}
+		</span>
 	{:else if fieldType === 'progress'}
-		<div class="h-2 w-full overflow-hidden rounded-full bg-muted">
-			<div class="h-full w-2/3 bg-primary"></div>
+		{@const raw = value.current}
+		{@const pct = Math.max(
+			0,
+			Math.min(100, typeof raw === 'number' ? raw : Number(raw) || 0)
+		)}
+		<div class="h-2 w-full overflow-hidden rounded-full bg-muted" title="{pct}%">
+			<div class="h-full bg-primary transition-[width]" style="width: {pct}%"></div>
 		</div>
 	{:else}
 		{@const numeric = fieldType === 'integer' || fieldType === 'float' || fieldType === 'currency'}

@@ -77,7 +77,7 @@ chain.
 
 ## Limits
 
-A script is compiled when the plugin is loaded (`--load-plugin` refuses one that does not compile) and runs with:
+A script is compiled when the plugin is loaded (`--load-plugins` refuses one that does not compile) and runs with:
 2 million operations (function calls and loop turns), 10 seconds, 64 MB of memory, and a 512 KB source. There is no
 `io`, `package`, `require`, `loadstring`, `getfenv` or `setfenv`; the standard libraries are read-only, and what a script
 defines lives only in that call's interpreter. The kernel commands above are the only way out.

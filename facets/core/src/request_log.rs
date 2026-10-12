@@ -38,6 +38,7 @@ const REDACTED_HEADERS: &[&str] = &[
     "proxy-authorization",
     "x-api-key",
     "x-auth-token",
+    "x-csrf-token",
 ];
 
 const REDACTED_QUERY_KEYS: &[&str] = &[

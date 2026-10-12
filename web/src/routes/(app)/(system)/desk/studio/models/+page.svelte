@@ -78,7 +78,7 @@
 </script>
 
 {#if authSession.isDeveloper}
-	<ControlPanel crumbs={[{ label: 'Developer tools', href: '/studio' }, { label: 'Models' }]} />
+	<ControlPanel crumbs={[{ label: 'Developer tools', href: '/desk/studio' }, { label: 'Models' }]} />
 	<div class="flex w-full flex-1 gap-6 px-4 py-4 md:px-6">
 		<aside class="hidden w-64 shrink-0 md:block" aria-label="Plugins and models">
 			{#if plugins === null}

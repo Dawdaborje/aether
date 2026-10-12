@@ -25,7 +25,9 @@ function fromApi(payload: ThemeApiResponse): ThemeConfig {
 		},
 		layout: payload.layout || 'default',
 		errorPages: payload.error_pages || 'default',
-		nav: payload.nav ?? null
+		nav: payload.nav ?? null,
+		layoutDef: payload.layout_def ?? null,
+		errorPagesDef: payload.error_pages_def ?? null
 	};
 }
 

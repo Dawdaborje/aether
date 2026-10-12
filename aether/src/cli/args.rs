@@ -89,13 +89,33 @@ pub struct Args {
     /// Do not run the job scheduler inside `--serve` (another process, `--start-scheduler`, runs the jobs)
     pub scheduling: bool,
 
-    #[arg(short = 'u', long, value_name = "NAME[@VERSION]", num_args = 1.., requires = "org")]
-    /// Move an organization's installed plugins to the newest loaded version, or the one named (e.g. `--upgrade-plugin notes --org acme`)
+    #[arg(
+        short = 'u',
+        long,
+        visible_alias = "upgrade",
+        value_name = "NAME[@VERSION]|all",
+        num_args = 1..,
+        requires = "org"
+    )]
+    /// Move an organization's installed plugins to the newest loaded version, or the one named
+    /// (e.g. `--upgrade-plugin notes --org acme`). Use `all` to upgrade every installed plugin
+    /// (`aether --upgrade all --org acme`).
     pub upgrade_plugin: Option<Vec<PluginSpec>>,
 
-    #[arg(long, value_name = "PATH", num_args = 1..)]
-    /// Register plugin packages in the core catalog (e.g. `--load-plugin app_dir/plugins/partner`)
-    pub load_plugin: Option<Vec<PathBuf>>,
+    #[arg(long, value_name = "PATH|WORKSPACE", num_args = 0..)]
+    /// Register plugin packages in the core catalog. Each argument may be a
+    /// package directory, a workspace directory, or a workspace name such as
+    /// `base` (looked up as `./base` or `./plugins/base`). Workspace members
+    /// load in dependency order. With no arguments (`aether -c aether.toml
+    /// --load-plugins`): every entry of top-level `plugin_paths` in the config.
+    /// With `--dry-run`, every package is checked and all errors are reported
+    /// without writing to the catalog.
+    pub load_plugins: Option<Vec<PathBuf>>,
+
+    #[arg(long, action = clap::ArgAction::SetTrue, requires = "load_plugins")]
+    /// With `--load-plugins`: validate every package and print every error, without
+    /// registering anything in the catalog
+    pub dry_run: bool,
 
     #[arg(short = 'r', long, value_name = "NAME[@VERSION]", num_args = 1.., requires = "org")]
     /// Install catalog plugins for an organization (e.g. `--install-plugin partner crm@0.2.0 --org acme`)

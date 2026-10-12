@@ -88,10 +88,27 @@ fn absolute_from_cwd(raw: &str, flag: &str) -> Result<PathBuf, String> {
         .map_err(|err| format!("Failed to resolve {flag}: {err}"))
 }
 
+/// Directories used to resolve bare workspace names for `--load-plugins`
+/// (the current directory, and the config file's directory when there is one).
+pub fn load_search_roots(args: &Args) -> Result<Vec<PathBuf>, String> {
+    let cwd =
+        env::current_dir().map_err(|err| format!("Failed to get current directory: {err}"))?;
+    let mut roots = vec![cwd.clone()];
+    if let Some(config_file) = resolve_config_file(args)?
+        && let Some(parent) = PathBuf::from(config_file).parent()
+    {
+        let parent = parent.to_path_buf();
+        if parent != cwd {
+            roots.push(parent);
+        }
+    }
+    Ok(roots)
+}
+
 /// The config file to use: `--config-file`, else `./aether.toml` when it exists.
 /// `None` means there is no file, which the loader reports unless flags cover
 /// every required setting.
-fn resolve_config_file(args: &Args) -> Result<Option<String>, String> {
+pub(crate) fn resolve_config_file(args: &Args) -> Result<Option<String>, String> {
     let current_dir =
         env::current_dir().map_err(|err| format!("Failed to get current directory: {err}"))?;
     let configured_path = args.config_file.as_ref().map(PathBuf::from);

@@ -81,6 +81,14 @@ struct PageCopy {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
+struct ComponentCopy {
+    name: String,
+    full_name: String,
+    component_tree: Value,
+    source_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 struct ThemeCopy {
     name: String,
     label: String,
@@ -90,6 +98,8 @@ struct ThemeCopy {
     layout: String,
     error_pages: String,
     nav: Option<Value>,
+    layout_def: Option<Value>,
+    error_pages_def: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
@@ -269,8 +279,11 @@ pub async fn publish_models(
         .query(
             "SELECT layout, route, is_pattern, route_shape, title, model, models, is_public, component_tree, source_path \
              FROM plugin_ui_pages WHERE plugin.name = $name AND plugin.version = $version; \
-             SELECT name, label, is_system, color_mode, tokens, layout, error_pages, nav \
-             FROM plugin_themes WHERE plugin.name = $name AND plugin.version = $version;",
+             SELECT name, label, is_system, color_mode, tokens, layout, error_pages, nav, \
+                    layout_def, error_pages_def \
+             FROM plugin_themes WHERE plugin.name = $name AND plugin.version = $version; \
+             SELECT name, full_name, component_tree, source_path \
+             FROM plugin_components WHERE plugin.name = $name AND plugin.version = $version;",
         )
         .bind(("name", plugin.to_string()))
         .bind(("version", base.version.clone()))
@@ -278,6 +291,7 @@ pub async fn publish_models(
         .check()?;
     let pages: Vec<PageCopy> = response.take(0)?;
     let themes: Vec<ThemeCopy> = response.take(1)?;
+    let components: Vec<ComponentCopy> = response.take(2)?;
     let model_rows: Vec<ModelCopy> = merged
         .iter()
         .map(|model| ModelCopy {
@@ -296,7 +310,8 @@ pub async fn publish_models(
             CREATE plugin_themes CONTENT {
                 plugin: $plugin, name: $t.name, label: $t.label, is_system: $t.is_system,
                 color_mode: $t.color_mode, tokens: $t.tokens, layout: $t.layout,
-                error_pages: $t.error_pages, nav: $t.nav
+                error_pages: $t.error_pages, nav: $t.nav,
+                layout_def: $t.layout_def, error_pages_def: $t.error_pages_def
             };
         };
         FOR $m IN $models {
@@ -314,6 +329,12 @@ pub async fn publish_models(
                 source_path: $page.source_path
             };
         };
+        FOR $component IN $components {
+            CREATE plugin_components CONTENT {
+                plugin: $plugin, name: $component.name, full_name: $component.full_name,
+                component_tree: $component.component_tree, source_path: $component.source_path
+            };
+        };
         COMMIT TRANSACTION;
         "#,
     )
@@ -321,6 +342,7 @@ pub async fn publish_models(
     .bind(("themes", themes))
     .bind(("models", model_rows))
     .bind(("pages", pages))
+    .bind(("components", components))
     .await?
     .check()?;
 

@@ -1,22 +1,23 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import ChevronLeftIcon from '@lucide/svelte/icons/chevron-left';
 	import PackageOpenIcon from '@lucide/svelte/icons/package-open';
 	import SearchXIcon from '@lucide/svelte/icons/search-x';
-	import { Empty } from '$lib/components/ui/empty';
 	import SearchIcon from '@lucide/svelte/icons/search';
+	import { Empty } from '$lib/components/ui/empty';
 	import AppTile from '$lib/components/apps/AppTile.svelte';
-	import InstallAppsModal from '$lib/components/apps/InstallAppsModal.svelte';
+	import CategoryFolderTile from '$lib/components/apps/CategoryFolderTile.svelte';
 	import type { AppTileData } from '$lib/components/apps/types';
 	import { Button } from '$lib/components/ui/button';
+	import { Input } from '$lib/components/ui/input';
+	import { Skeleton } from '$lib/components/ui/skeleton';
 	import { appsStore } from '$lib/apps/appsStore.svelte';
 	import { authSession } from '$lib/auth/session.svelte';
 	import { categoryLabel } from '$lib/apps/categories';
 	import { orgStore } from '$lib/org/orgStore.svelte';
-	import { currentSystemNavParent } from '$lib/systemStore';
+	import { resolve } from '$app/paths';
 
 	let query = $state('');
-	let category = $state<string | null>(null);
-	let installing = $state(false);
+	let openCategory = $state<string | null>(null);
 
 	type Entry = AppTileData & { group: string };
 
@@ -27,118 +28,126 @@
 	const categories = $derived.by(() => {
 		const counts = new Map<string, number>();
 		for (const entry of entries) counts.set(entry.group, (counts.get(entry.group) ?? 0) + 1);
-		return [...counts].sort(([a], [b]) => a.localeCompare(b));
+		return [...counts]
+			.sort(([a], [b]) => a.localeCompare(b))
+			.map(([label, count]) => ({ label, count }));
 	});
 
-	// A category that no longer exists (an organization switch) falls back to all.
-	const selected = $derived(categories.some(([name]) => name === category) ? category : null);
-
-	const shown = $derived(
-		entries.filter(
-			(entry) =>
-				(selected === null || entry.group === selected) &&
-				`${entry.label} ${entry.description ?? ''}`
-					.toLowerCase()
-					.includes(query.trim().toLowerCase())
-		)
+	// A category that no longer exists (an organization switch) falls back to folders.
+	const folder = $derived(
+		categories.some((category) => category.label === openCategory) ? openCategory : null
 	);
 
-	onMount(() => {
-		currentSystemNavParent.set('apps');
-	});
+	const searching = $derived(query.trim().length > 0);
+
+	const shown = $derived(
+		entries.filter((entry) => {
+			if (folder && entry.group !== folder) return false;
+			if (!searching) return Boolean(folder);
+			return `${entry.label} ${entry.description ?? ''} ${entry.group}`
+				.toLowerCase()
+				.includes(query.trim().toLowerCase());
+		})
+	);
+
+	const showFolders = $derived(!folder && !searching && categories.length > 0);
 
 	// Reload whenever the organization changes.
 	$effect(() => {
 		void orgStore.current;
 		void appsStore.load();
+		openCategory = null;
+		query = '';
 	});
+
+	function openFolder(label: string) {
+		openCategory = label;
+		query = '';
+	}
+
+	function closeFolder() {
+		openCategory = null;
+	}
 </script>
 
-<div class="mx-auto flex w-full max-w-[90rem] flex-1 flex-col gap-4 px-4 py-4 md:px-6">
+<div class="flex w-full flex-1 flex-col gap-4 px-4 py-4 md:px-8">
 	<header class="flex flex-wrap items-center gap-3">
-		<div class="min-w-0">
-			<h1 class="text-lg font-semibold tracking-tight">Apps</h1>
-			{#if orgStore.currentName}
-				<p class="text-xs text-muted-foreground">{orgStore.currentName}</p>
-			{/if}
-		</div>
+		{#if folder}
+			<div class="flex min-w-0 items-center gap-1">
+				<Button type="button" size="sm" variant="ghost" class="-ml-2 gap-1" onclick={closeFolder}>
+					<ChevronLeftIcon class="size-4" />
+					Apps
+				</Button>
+				<span class="text-muted-foreground" aria-hidden="true">/</span>
+				<h1 class="truncate text-lg font-semibold tracking-tight">{folder}</h1>
+			</div>
+		{:else if searching}
+			<h1 class="text-lg font-semibold tracking-tight">Search</h1>
+		{/if}
 		<div class="relative ml-auto w-full max-w-xs">
 			<SearchIcon
 				class="pointer-events-none absolute top-1/2 left-3 z-10 size-4 -translate-y-1/2 text-muted-foreground"
 			/>
-			<input
+			<Input
 				bind:value={query}
 				type="search"
 				placeholder="Search apps…"
 				aria-label="Search apps"
-				class="h-9 w-full rounded-md border border-border bg-card pr-3 pl-9 text-sm outline-none placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/20"
+				class="pl-9"
 			/>
 		</div>
 		{#if authSession.isDeveloper}
-			<Button onclick={() => (installing = true)}>Install apps</Button>
+			<Button size="sm" variant="outline" href={resolve('/desk/apps')}>Manage apps</Button>
 		{/if}
 	</header>
 
-	{#if categories.length > 0}
-		<nav class="flex gap-1.5 overflow-x-auto md:hidden" aria-label="Categories">
-			{#each [null, ...categories.map(([name]) => name)] as name (name ?? 'all')}
-				<button
-					type="button"
-					onclick={() => (category = name)}
-					aria-current={selected === name ? 'true' : undefined}
-					class="shrink-0 rounded-full border border-border px-3 py-1 text-xs aria-[current=true]:bg-accent aria-[current=true]:font-medium"
-				>
-					{name ?? 'All'}
-				</button>
-			{/each}
-		</nav>
-	{/if}
-
-	<div class="flex min-h-0 flex-1 gap-6">
-		{#if categories.length > 0}
-			<aside class="hidden w-52 shrink-0 md:block" aria-label="Categories">
-				<nav class="sticky top-16 space-y-0.5">
-					{#each [null, ...categories.map(([name]) => name)] as name (name ?? 'all')}
-						<button
-							type="button"
-							onclick={() => (category = name)}
-							aria-current={selected === name ? 'true' : undefined}
-							class="flex w-full items-center rounded-md px-3 py-1.5 text-left text-sm transition hover:bg-accent aria-[current=true]:bg-accent aria-[current=true]:font-medium aria-[current=true]:text-accent-foreground"
-						>
-							<span class="truncate">{name ?? 'All'}</span>
-						</button>
-					{/each}
-				</nav>
-			</aside>
+	<main class="min-w-0 flex-1">
+		{#if appsStore.apps === null}
+			<div class="grid grid-cols-[repeat(auto-fill,minmax(8.5rem,1fr))] gap-2">
+				{#each Array(8) as _, i (i)}
+					<Skeleton class="h-36 w-full" />
+				{/each}
+			</div>
+		{:else if appsStore.problem === 'failed'}
+			<p class="text-sm text-destructive" role="alert">The apps could not be loaded.</p>
+		{:else if entries.length === 0}
+			<Empty
+				icon={PackageOpenIcon}
+				title="No apps yet"
+				description={authSession.isDeveloper
+					? 'Install apps for this organization from the desk.'
+					: 'Ask an administrator to install apps for this organization.'}
+			>
+				{#if authSession.isDeveloper}
+					<Button size="sm" href={resolve('/desk/apps')}>Manage apps</Button>
+				{/if}
+			</Empty>
+		{:else if showFolders}
+			<ul class="grid grid-cols-[repeat(auto-fill,minmax(8.5rem,1fr))] gap-2">
+				{#each categories as category (category.label)}
+					<li>
+						<CategoryFolderTile
+							label={category.label}
+							count={category.count}
+							onclick={() => openFolder(category.label)}
+						/>
+					</li>
+				{/each}
+			</ul>
+		{:else if shown.length === 0}
+			<Empty
+				icon={SearchXIcon}
+				title="No matching apps"
+				description={searching
+					? 'Try a different search.'
+					: 'This category has no apps.'}
+			/>
+		{:else}
+			<ul class="grid grid-cols-[repeat(auto-fill,minmax(8.5rem,1fr))] gap-2">
+				{#each shown as app (app.plugin)}
+					<li><AppTile {app} /></li>
+				{/each}
+			</ul>
 		{/if}
-
-		<main class="min-w-0 flex-1">
-			{#if appsStore.apps === null}
-				<p class="text-sm text-muted-foreground">Loading apps…</p>
-			{:else if appsStore.problem === 'failed'}
-				<p class="text-sm text-destructive" role="alert">The apps could not be loaded.</p>
-			{:else if entries.length === 0}
-				<Empty
-					icon={PackageOpenIcon}
-					title="No apps loaded in"
-					description="Loaded apps will show up here."
-				/>
-			{:else if shown.length === 0}
-				<Empty
-					icon={SearchXIcon}
-					title="No matching apps"
-					description="Try a different search or category."
-				/>
-			{:else}
-				<ul class="grid grid-cols-[repeat(auto-fill,minmax(8.5rem,1fr))] gap-2">
-					{#each shown as app (app.plugin)}
-						<li><AppTile {app} /></li>
-					{/each}
-				</ul>
-			{/if}
-		</main>
-
-	</div>
+	</main>
 </div>
-
-<InstallAppsModal bind:open={installing} />

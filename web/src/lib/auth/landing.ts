@@ -4,11 +4,11 @@
 export type LandingUser = { is_developer: boolean };
 
 /**
- * A developer lands in the system area; everyone else on the list of apps
- * (which is empty until plugins are installed).
+ * A developer lands on the desk; everyone else on the app launcher
+ * (empty until plugins are installed for their organization).
  */
-export function landingPath(user: LandingUser | null | undefined): '/organizations' | '/apps' {
-	return user?.is_developer ? '/organizations' : '/apps';
+export function landingPath(user: LandingUser | null | undefined): '/desk/organizations' | '/apps' {
+	return user?.is_developer ? '/desk/organizations' : '/apps';
 }
 
 /**

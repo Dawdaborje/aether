@@ -18,6 +18,10 @@ use surrealdb::types::{RecordId, SurrealValue};
 
 use super::login::{methods_as_strings, org_from_headers};
 use crate::bridges::{default_registry, resolve_bridge};
+use crate::csrf::{
+    clear_oauth_state_cookie, cookies_secure, new_token, read_oauth_state, rotate_csrf_cookie,
+    set_oauth_state_cookie, tokens_equal,
+};
 use crate::session_cookie::set_session_cookie;
 
 fn registry() -> &'static HashMap<&'static str, Arc<dyn AuthBridge>> {
@@ -34,6 +38,7 @@ pub async fn oauth_start(
     State(state): State<AppState>,
     Path(provider): Path<String>,
     Query(query): Query<OAuthStartQuery>,
+    jar: CookieJar,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<JsonValue>)> {
     let org = org_from_headers(&state, &headers, None);
@@ -58,10 +63,11 @@ pub async fn oauth_start(
     let redirect_uri = query.redirect_uri.unwrap_or_else(|| {
         default_callback_uri(&headers, &provider)
     });
-    let oauth_state = format!("aether_{}", rand_hex(16));
+    let oauth_state = new_token();
+    let jar = set_oauth_state_cookie(jar, &oauth_state, cookies_secure(&state));
 
     match bridge.authorize_url(&oauth_state, &redirect_uri).await {
-        Ok(url) => Ok(Redirect::temporary(url.as_str())),
+        Ok(url) => Ok((jar, Redirect::temporary(url.as_str()))),
         Err(BridgeError::NotConfigured(name)) => Err((
             StatusCode::NOT_IMPLEMENTED,
             Json(json!({ "error": format!("provider `{name}` is not configured") })),
@@ -88,6 +94,8 @@ pub async fn oauth_callback(
     jar: CookieJar,
     headers: HeaderMap,
 ) -> Result<(CookieJar, Json<JsonValue>), (StatusCode, Json<JsonValue>)> {
+    let secure = cookies_secure(&state);
+
     if let Some(err) = query.error {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -100,6 +108,17 @@ pub async fn oauth_callback(
             Json(json!({ "error": "missing code" })),
         )
     })?;
+    let query_state = query.state.as_deref().unwrap_or("");
+    let cookie_state = read_oauth_state(&jar).unwrap_or_default();
+    if query_state.is_empty()
+        || cookie_state.is_empty()
+        || !tokens_equal(query_state, &cookie_state)
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid oauth state" })),
+        ));
+    }
 
     let org = org_from_headers(&state, &headers, None);
     ensure_method_enabled(&state, &provider, org.as_ref()).await?;
@@ -152,14 +171,15 @@ pub async fn oauth_callback(
             )
         })?;
 
-    let jar = set_session_cookie(jar, &session.raw_token);
+    let jar = clear_oauth_state_cookie(jar, secure);
+    let jar = set_session_cookie(jar, &session.raw_token, secure);
+    let jar = rotate_csrf_cookie(jar, secure);
 
     Ok((
         jar,
         Json(json!({
             "ok": true,
             "provider": provider,
-            "state": query.state,
         })),
     ))
 }
@@ -196,13 +216,6 @@ fn default_callback_uri(headers: &HeaderMap, provider: &str) -> String {
         "https"
     };
     format!("{scheme}://{host}/api/auth/oauth/{provider}/callback")
-}
-
-fn rand_hex(n: usize) -> String {
-    use rand::RngExt;
-    let mut bytes = vec![0u8; n];
-    rand::rng().fill(&mut bytes);
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 #[derive(Debug, Deserialize, SurrealValue)]

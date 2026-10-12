@@ -28,13 +28,13 @@
 	const links = $derived([
 		...groups.map((g) => ({
 			label: g.label.replace(/ Settings$/i, ''),
-			href: `${base}/settings/${g.slug}`,
+			href: `${base}/desk/settings/${g.slug}`,
 			slug: g.slug,
 			icon: iconFor(g.slug)
 		})),
 		{
 			label: 'Appearance',
-			href: `${base}/settings/appearance`,
+			href: `${base}/desk/settings/appearance`,
 			slug: 'appearance',
 			icon: PaletteIcon
 		}
@@ -47,7 +47,7 @@
 	<Navigation.Content>
 		<Navigation.Group>
 			<Navigation.Menu>
-				<Navigation.TriggerAnchor href={`${base}/settings`}>
+				<Navigation.TriggerAnchor href={`${base}/desk/settings`}>
 					<CogIcon class="size-4" />
 					<Navigation.TriggerText>Settings</Navigation.TriggerText>
 				</Navigation.TriggerAnchor>

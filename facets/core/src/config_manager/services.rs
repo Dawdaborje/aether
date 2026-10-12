@@ -189,6 +189,39 @@ fn build_server_conf(server_value: &Value) -> Result<ServerConfig, ConfigError> 
             })
             .collect::<Result<_, _>>()?;
     }
+    if let Some(timeout) = optional_u64(server_value, "request_timeout_secs")? {
+        config.request_timeout_secs = timeout;
+    }
+    if let Some(origins) = server_value.get("csrf_trusted_origins") {
+        let invalid = || ConfigError::InvalidType {
+            field: "server.csrf_trusted_origins".to_string(),
+            expected: "array of origin strings (e.g. \"http://localhost:5173\")".to_string(),
+        };
+        config.csrf_trusted_origins = origins
+            .as_array()
+            .ok_or_else(invalid)?
+            .iter()
+            .map(|item| {
+                let raw = item.as_str().ok_or_else(invalid)?;
+                let trimmed = raw.trim();
+                let url = url::Url::parse(trimmed).map_err(|_| invalid())?;
+                if url.scheme() != "http" && url.scheme() != "https" {
+                    return Err(invalid());
+                }
+                if url.host_str().is_none()
+                    || !url.username().is_empty()
+                    || url.password().is_some()
+                    || url.path() != "/"
+                    || url.query().is_some()
+                    || url.fragment().is_some()
+                {
+                    return Err(invalid());
+                }
+                // Canonical form without a trailing slash.
+                Ok(url.origin().ascii_serialization())
+            })
+            .collect::<Result<_, _>>()?;
+    }
     Ok(config)
 }
 
@@ -225,27 +258,25 @@ fn build_tenancy_conf(tenancy_value: &Value) -> Result<TenancyConfig, ConfigErro
 fn build_plugin_paths_conf(
     plugin_paths_value: Option<&Value>,
     config_directory: &std::path::Path,
-) -> Result<Vec<String>, ConfigError> {
+) -> Result<Vec<std::path::PathBuf>, ConfigError> {
     let Some(plugin_paths_value) = plugin_paths_value else {
         return Ok(Vec::new());
     };
     if !plugin_paths_value.is_array() {
         return Err(ConfigError::InvalidType {
             field: "plugin_paths".to_string(),
-            expected: "array".to_string(),
+            expected: "array of path strings".to_string(),
         });
     }
     let mut paths = Vec::new();
     for item in plugin_paths_value.as_array().unwrap_or(&Vec::new()) {
-        if let Some(path) = item.as_str() {
-            let path = std::path::Path::new(path);
-            let resolved = if path.is_absolute() {
-                path.to_path_buf()
-            } else {
-                config_directory.join(path)
-            };
-            paths.push(resolved.to_string_lossy().into_owned());
-        }
+        let Some(raw) = item.as_str() else {
+            return Err(ConfigError::InvalidType {
+                field: "plugin_paths".to_string(),
+                expected: "array of path strings".to_string(),
+            });
+        };
+        paths.push(resolve_against(std::path::Path::new(raw), config_directory));
     }
     Ok(paths)
 }
@@ -512,6 +543,7 @@ pub fn load_config(
         None => TenancyConfig::default(),
     };
     let plugins: Vec<PluginDefinition> = Vec::new();
+    let plugin_paths = build_plugin_paths_conf(value.get("plugin_paths"), &config_directory)?;
 
     Ok(AetherConfig {
         app_dir,
@@ -533,6 +565,7 @@ pub fn load_config(
         cache,
         tenancy,
         plugins: Some(plugins),
+        plugin_paths,
         media,
         audit,
         public,
@@ -661,7 +694,32 @@ mod tests {
         assert_eq!(config.public.max_new_visitors_per_ip_per_minute, 30);
         assert_eq!(config.public.max_requests_per_ip_per_minute, 300);
         assert!(config.server.map(|s| s.trusted_proxies.is_empty()).unwrap_or(true));
+        assert!(config.plugin_paths.is_empty());
         Ok(())
+    }
+
+    #[test]
+    fn plugin_paths_are_resolved_against_the_config_file() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("aether.toml");
+        std::fs::write(
+            &path,
+            format!("{BASE}plugin_paths = [\"plugins/base/currency\", \"/abs/partner\"]\n"),
+        )?;
+        let config = load_config(Some(&path.to_string_lossy()), &ConfigOverrides::default())?;
+        assert_eq!(
+            config.plugin_paths,
+            [
+                directory.path().join("plugins/base/currency"),
+                std::path::PathBuf::from("/abs/partner"),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_a_non_array_plugin_paths() {
+        assert!(load(&format!("{BASE}plugin_paths = \"plugins/base\"\n")).is_err());
     }
 
     #[test]
@@ -686,6 +744,26 @@ mod tests {
         assert!(load(&format!("{BASE}[public]\nmax_requests_per_ip_per_minute = 0\n")).is_err());
         assert!(load(&format!("{BASE}[audit]\nip = \"nonsense\"\n")).is_err());
         assert!(load(&format!("{BASE}[server]\ntrusted_proxies = [\"not an ip\"]\n")).is_err());
+    }
+
+    #[test]
+    fn parses_csrf_trusted_origins() -> Result<(), Box<dyn std::error::Error>> {
+        let config = load(&format!(
+            "{BASE}[server]\ncsrf_trusted_origins = [\"http://localhost:5173\", \"http://127.0.0.1:5173\"]\n"
+        ))?;
+        assert_eq!(
+            config.server.map(|s| s.csrf_trusted_origins),
+            Some(vec![
+                "http://localhost:5173".into(),
+                "http://127.0.0.1:5173".into()
+            ])
+        );
+        assert!(load(&format!(
+            "{BASE}[server]\ncsrf_trusted_origins = [\"http://localhost:5173/path\"]\n"
+        ))
+        .is_err());
+        assert!(load(&format!("{BASE}[server]\ncsrf_trusted_origins = [\"ftp://x\"]\n")).is_err());
+        Ok(())
     }
 
     fn missing_keys(error: ConfigError) -> Vec<&'static str> {

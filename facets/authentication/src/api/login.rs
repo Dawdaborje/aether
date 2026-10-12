@@ -11,6 +11,7 @@ use axum_extra::extract::CookieJar;
 use serde::Deserialize;
 use serde_json::{Value as JsonValue, json};
 
+use crate::csrf::{cookies_secure, rotate_csrf_cookie};
 use crate::session_cookie::set_session_cookie;
 
 #[derive(Debug, Deserialize)]
@@ -89,7 +90,9 @@ pub async fn login(
         body.username,
         org_db_for_log(&session.record.org_database_id)
     );
-    let jar = set_session_cookie(jar, &session.raw_token);
+    let secure = cookies_secure(&state);
+    let jar = set_session_cookie(jar, &session.raw_token, secure);
+    let jar = rotate_csrf_cookie(jar, secure);
 
     Ok((
         jar,

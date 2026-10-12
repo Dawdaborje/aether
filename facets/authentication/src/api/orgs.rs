@@ -8,10 +8,12 @@ use axum::{
     extract::State,
     http::{HeaderMap, StatusCode, Uri},
 };
+use axum_extra::extract::CookieJar;
 use serde::Deserialize;
 use serde_json::{Value as JsonValue, json};
 
 use crate::authz::AuthSession;
+use crate::csrf::{cookies_secure, rotate_csrf_cookie};
 
 type ApiError = (StatusCode, Json<JsonValue>);
 
@@ -52,8 +54,9 @@ pub struct SwitchOrg {
 pub async fn switch_org(
     State(state): State<AppState>,
     AuthSession(session): AuthSession,
+    jar: CookieJar,
     Json(body): Json<SwitchOrg>,
-) -> Result<Json<JsonValue>, ApiError> {
+) -> Result<(CookieJar, Json<JsonValue>), ApiError> {
     if SelectionMode::of(&state.config.tenancy.org_resolution) == SelectionMode::Address {
         return Err((
             StatusCode::CONFLICT,
@@ -82,7 +85,11 @@ pub async fn switch_org(
         .await
         .map_err(|error| database_error("saving the organization", error))?;
     log::info!("organization switched to `{}`", chosen.db_name);
-    Ok(Json(json!({ "ok": true, "org": chosen.db_name, "name": chosen.name })))
+    let jar = rotate_csrf_cookie(jar, cookies_secure(&state));
+    Ok((
+        jar,
+        Json(json!({ "ok": true, "org": chosen.db_name, "name": chosen.name })),
+    ))
 }
 
 /// `DELETE /api/auth/org`: leave the organization you are in, back to the Organizations

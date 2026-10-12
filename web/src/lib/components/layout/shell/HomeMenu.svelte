@@ -27,12 +27,12 @@
 	aria-label="Home menu"
 	aria-expanded={open}
 	title="Home menu"
-	class="group flex size-9 items-center justify-center rounded-md outline-none transition hover:bg-white/10 aria-expanded:bg-white/10"
+	class="group flex size-9 items-center justify-center rounded-md outline-none transition hover:bg-sidebar-accent aria-expanded:bg-sidebar-accent"
 >
 	<span class="grid grid-cols-3 gap-[3px]" aria-hidden="true">
 		{#each Array(9) as _, i (i)}
 			<span
-				class="size-[5px] rounded-[1.5px] bg-sidebar-foreground/85 transition group-hover:bg-white"
+				class="size-[5px] rounded-[1.5px] bg-sidebar-foreground/85 transition group-hover:bg-sidebar-accent-foreground"
 			></span>
 		{/each}
 	</span>
@@ -45,13 +45,13 @@
 		tabindex="-1"
 		aria-label="Close home menu"
 		onclick={() => (open = false)}
-		class="fixed inset-x-0 top-12 bottom-0 z-40 cursor-default bg-black/40"
+		class="fixed inset-x-0 top-12 bottom-0 z-40 cursor-default bg-background/60 backdrop-blur-sm"
 	></button>
 
 	<div
 		role="presentation"
 		onclick={(e) => (e.target as HTMLElement).closest('a') && (open = false)}
-		class="fixed top-12 bottom-0 left-0 z-50 w-full max-w-4xl overflow-y-auto border-r border-border bg-background text-foreground shadow-2xl"
+		class="fixed top-12 bottom-0 left-0 z-50 w-full max-w-4xl overflow-y-auto border-r border-border bg-card text-card-foreground shadow-lg"
 	>
 		<div class="flex w-full flex-col gap-6 px-6 py-6 md:flex-row md:gap-8">
 			<div class="w-full shrink-0 space-y-5 md:w-64">
@@ -101,13 +101,18 @@
 			</div>
 
 			<section class="min-w-0 flex-1">
-				<h2 class="px-3 pb-2 text-xs font-medium tracking-wide text-muted-foreground uppercase">
-					Apps
-				</h2>
+				<div class="flex items-center justify-between gap-2 px-3 pb-2">
+					<h2 class="text-xs font-medium tracking-wide text-muted-foreground uppercase">Apps</h2>
+					<!-- eslint-disable svelte/no-navigation-without-resolve -- navHref() applies the base path -->
+					<a href={navHref('/apps')} class="text-xs text-muted-foreground hover:text-foreground">
+						Open launcher
+					</a>
+					<!-- eslint-enable svelte/no-navigation-without-resolve -->
+				</div>
 				{#if appsStore.apps === null}
 					<p class="px-3 text-sm text-muted-foreground">Loading apps…</p>
 				{:else if appsStore.apps.length === 0}
-					<p class="px-3 text-sm text-muted-foreground">No apps loaded in.</p>
+					<p class="px-3 text-sm text-muted-foreground">No apps installed yet.</p>
 				{:else}
 					<ul class="grid grid-cols-[repeat(auto-fill,minmax(9.5rem,1fr))] gap-2">
 						{#each appsStore.apps as app (app.plugin)}

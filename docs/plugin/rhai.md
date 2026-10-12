@@ -58,7 +58,7 @@ uncaught it is internal: logged, and the caller sees "plugin invocation failed".
 
 ## Limits
 
-A script is checked when the plugin is loaded (`--load-plugin` refuses one that does not compile) and
+A script is checked when the plugin is loaded (`--load-plugins` refuses one that does not compile) and
 runs with: 2 million operations, 10 seconds, 32 call levels, strings up to 1 MB, collections up to
 100 000 items, and a 512 KB source. There is no file, network or process access of the script's own (the kernel commands above are the only way out), no `eval`, and no
 `import`: a plugin is one file. Models, grants and chatter work exactly as they do for WASM plugins,

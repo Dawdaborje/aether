@@ -1,7 +1,7 @@
 //! The plugin catalog for developers: what can be installed, and installing it.
 //!
 //! `GET /api/ui/catalog` lists every plugin version loaded into the core database
-//! (`aether --load-plugin`) with the organizations that have it. `POST
+//! (`aether --load-plugins`) with the organizations that have it. `POST
 //! /api/ui/catalog/install` installs chosen plugins into chosen organizations, the same
 //! operation as `aether --install-plugin <plugin> --org <org>`. Both are developer-only.
 
@@ -16,8 +16,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use surrealdb::types::SurrealValue;
 
+use crate::app_dir::AppDir;
 use crate::application::settings_api::require_session;
+use crate::plugin_assets;
 use crate::plugin_manager::catalog::{PluginSpec, install_plugins};
+use crate::plugin_manager::revisions;
 use crate::state::AppState;
 
 /// Most plugins or organizations one install request may name.
@@ -30,15 +33,36 @@ pub fn routes() -> Router<AppState> {
         .route("/api/ui/plugins/runtime", get(runtime_stats))
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, SurrealValue)]
+struct AuthorRow {
+    name: String,
+    #[serde(default)]
+    email: String,
+    #[serde(default)]
+    github: Option<String>,
+    #[serde(default)]
+    website: Option<String>,
+}
+
 #[derive(Debug, Deserialize, SurrealValue)]
 struct CatalogRow {
     name: String,
     version: String,
     label: String,
     description: Option<String>,
+    long_description: Option<String>,
     workspace: Option<String>,
     kind: Option<String>,
     is_app: bool,
+    is_builtin: bool,
+    icon: Option<String>,
+    icon_path: Option<String>,
+    revision: Option<String>,
+    website: Option<String>,
+    authors: Option<Vec<AuthorRow>>,
+    dependencies: Option<Vec<String>>,
+    app_route: Option<String>,
+    app_description: Option<String>,
 }
 
 #[derive(Debug, Deserialize, SurrealValue)]
@@ -59,9 +83,21 @@ struct CatalogEntry {
     version: String,
     label: String,
     description: Option<String>,
+    long_description: Option<String>,
     category: Option<String>,
     kind: Option<String>,
     is_app: bool,
+    is_builtin: bool,
+    /// Lucide icon name from `[app].icon`, when the plugin is an app.
+    icon: Option<String>,
+    /// `/api/ui/plugins/{name}/logo` when the revision ships a logo file.
+    logo_url: Option<String>,
+    website: Option<String>,
+    authors: Vec<AuthorRow>,
+    dependencies: Vec<String>,
+    /// Launcher route from `[app].route`, when present.
+    app_route: Option<String>,
+    app_description: Option<String>,
     /// Database names of the organizations that have this exact version.
     installed_in: Vec<String>,
 }
@@ -89,8 +125,11 @@ async fn build_catalog(state: &AppState) -> Result<Vec<CatalogEntry>, surrealdb:
     let core = state.core().await?;
     let mut response = core
         .query(
-            "SELECT name, version, label, description, workspace, kind, app != NONE AS is_app \
-             FROM plugins WHERE is_active = true ORDER BY name, version;",
+            "SELECT name, version, label, description, long_description, workspace, kind, \
+             is_builtin, app != NONE AS is_app, app.icon AS icon, app.route AS app_route, \
+             app.description AS app_description, icon_path, revision, website, authors, \
+             dependencies \
+             FROM plugins WHERE is_active = true ORDER BY label, name, version;",
         )
         .query("SELECT name, db_name FROM organizations;")
         .await?
@@ -98,19 +137,30 @@ async fn build_catalog(state: &AppState) -> Result<Vec<CatalogEntry>, surrealdb:
     let rows: Vec<CatalogRow> = response.take(0)?;
     let organizations: Vec<OrgRow> = response.take(1)?;
 
-    let mut entries: Vec<CatalogEntry> = rows
-        .into_iter()
-        .map(|row| CatalogEntry {
+    let layout = AppDir::new(&state.config.app_dir);
+    let mut entries: Vec<CatalogEntry> = Vec::with_capacity(rows.len());
+    for row in rows {
+        let logo_url = resolve_logo_url(&layout, &row).await;
+        entries.push(CatalogEntry {
             name: row.name,
             version: row.version,
             label: row.label,
             description: row.description,
+            long_description: row.long_description,
             category: row.workspace,
             kind: row.kind,
             is_app: row.is_app,
+            is_builtin: row.is_builtin,
+            icon: row.icon,
+            logo_url,
+            website: row.website,
+            authors: row.authors.unwrap_or_default(),
+            dependencies: row.dependencies.unwrap_or_default(),
+            app_route: row.app_route,
+            app_description: row.app_description,
             installed_in: Vec::new(),
-        })
-        .collect();
+        });
+    }
 
     for organization in organizations {
         let org_db = state.org(&organization.db_name).await?;
@@ -129,6 +179,19 @@ async fn build_catalog(state: &AppState) -> Result<Vec<CatalogEntry>, surrealdb:
         }
     }
     Ok(entries)
+}
+
+async fn resolve_logo_url(layout: &AppDir, row: &CatalogRow) -> Option<String> {
+    let folder = row.revision.as_deref().unwrap_or(row.version.as_str());
+    let index = match revisions::read_index(layout, &row.name, folder).await {
+        Ok(Some(index)) => index,
+        Ok(None) => return None,
+        Err(error) => {
+            log::warn!("catalog logo index `{}`: {error}", row.name);
+            return None;
+        }
+    };
+    plugin_assets::logo_url(&row.name, &index, row.icon_path.as_deref())
 }
 
 #[derive(Debug, Deserialize)]

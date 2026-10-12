@@ -25,10 +25,10 @@
 	const links = $derived([
 		...groups.map((group) => ({
 			label: group.label.replace(/ Settings$/i, ''),
-			href: `${base}/settings/${group.slug}`,
+			href: `${base}/desk/settings/${group.slug}`,
 			icon: iconFor(group.slug)
 		})),
-		{ label: 'Appearance', href: `${base}/settings/appearance`, icon: PaletteIcon }
+		{ label: 'Appearance', href: `${base}/desk/settings/appearance`, icon: PaletteIcon }
 	]);
 </script>
 

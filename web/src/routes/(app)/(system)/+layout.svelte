@@ -6,11 +6,19 @@
 
 	let { children } = $props();
 
-	// The desk (organizations, settings, developer tools) is for developers.
-	// Everyone logged in may open the Apps launcher, which is their home.
-	const allowed = $derived(
-		authSession.isDeveloper || (page.route.id?.startsWith('/(app)/(system)/apps') ?? false)
+	const routeId = $derived(page.route.id ?? '');
+
+	// `/apps` is the home launcher for every logged-in member.
+	// Everything under `/desk` is for developers only.
+	// Legacy desk URLs (`/organizations`, …) stay reachable so they can 308 to `/desk/…`.
+	const onApps = $derived(routeId.startsWith('/(app)/(system)/apps'));
+	const onDesk = $derived(routeId.startsWith('/(app)/(system)/desk'));
+	const onLegacyDesk = $derived(
+		['/(app)/(system)/organizations', '/(app)/(system)/bridges', '/(app)/(system)/settings', '/(app)/(system)/studio'].some(
+			(prefix) => routeId === prefix || routeId.startsWith(`${prefix}/`)
+		)
 	);
+	const allowed = $derived(onApps || (authSession.isDeveloper && (onDesk || onLegacyDesk)));
 
 	$effect(() => {
 		if (!allowed) void goto(resolve('/apps'));

@@ -51,6 +51,9 @@ Business Source License 1.1 `LICENSE` (only outside a workspace, whose own licen
 
 Pages are XML files under `pages/`; see [Visitors, public pages and the audit
 trail](../architecture/access.md) and [Pages and data](pages.md) for showing a plugin's data.
+Reusable UI fragments live under `components/`; see [UI components](components.md).
+Theme plugins may also ship `layouts/<name>.json` and `errors/<name>.json`; see
+[Themes, layouts and navigation](../architecture/themes.md).
 
 What a plugin may ask the kernel to do (database, cache, files, web APIs, other plugins) is
 described in [Kernel commands](commands.md); small script plugins in [Rhai plugins](rhai.md) and [Lua plugins](lua.md).
@@ -67,8 +70,9 @@ it may listen to) and `bridges` (integrations it may call with `bridge::call`, s
 
 A plugin becomes a tile on the Apps launcher by declaring `[app]`; see
 [Organizations, switching, and the Apps launcher](../architecture/organizations.md).
-A page can name its layout with `layout="bare"` on `<page>`, and a plugin can be
-a theme that decides the app's colours, layout and navigation; see
+A page can name shell chrome with `layout="bare"` and a content wrapper with
+`wrap="component_name"` on `<page>` (see [Pages](pages.md) and [Components](components.md)).
+A plugin can also be a theme that decides the app's colours, layout and navigation; see
 [Themes, layouts and navigation](../architecture/themes.md).
 
 When an ancestor directory holds a `workspace.toml`, the plugin is also added to
@@ -89,8 +93,17 @@ keeps everything a plugin needs on disk:
 └── conf/                       other per-plugin configuration
 ```
 
-`aether --load-plugin <package-dir>` reads the package's `plugin.toml`, checks that every
-capability it asks for exists (`capabilities/`), and registers it in the core catalog.
+`aether --load-plugins <package-or-workspace>…` registers packages in the core catalog.
+Each argument may be a package directory, a workspace directory (`workspace.toml`), or a
+workspace name such as `base` (resolved as `./base` or `./plugins/base` relative to the
+current directory and the config file). A workspace expands to every member under
+`[workspace.plugins]`, loaded in `dependencies` order from each `plugin.toml`. With no
+arguments (`aether -c aether.toml --load-plugins`), it uses top-level `plugin_paths` in the
+config file (paths relative to that file; workspace names work the same way).
+`aether --load-plugins --dry-run` runs the same checks for every package and prints every
+error, without writing to the catalog or `app_dir`. Foreign links may resolve against other
+packages in the same run (their on-disk model ids), so a dependency does not need to be
+catalogued already for the check to pass.
 
 Files are stored as **revisions**. Each file is compared by SHA-256 with the plugin's latest
 revision; only the files that differ are written, into a new folder named after the date and
@@ -104,9 +117,11 @@ Relative paths in `aether.toml` are resolved against the config file.
 
 `aether --install-plugin <name[@version]> --org <org_db>` then enables a catalogued plugin for
 one organization (without a version: the one loaded most recently). An organization keeps the
-version it has until `aether --upgrade-plugin <name[@version]> --org <org_db>` moves it to the
-newest loaded one, or the one named, which is also how to go back. An upgrade needs the
-new version's dependencies installed and refuses page routes another installed plugin serves.
+version it has until `aether --upgrade-plugin <name[@version]> --org <org_db>` (alias
+`--upgrade`) moves it to the newest loaded one, or the one named, which is also how to go
+back. `aether --upgrade all --org <org_db>` upgrades every installed plugin (dependencies
+first). An upgrade needs the new version's dependencies installed and refuses page routes
+another installed plugin serves.
 
 ## WASM Runtime
 

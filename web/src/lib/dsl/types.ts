@@ -11,6 +11,7 @@ export type FieldType =
 	| 'many2one'
 	| 'many2many'
 	| 'badge'
+	| 'avatar'
 	| 'currency'
 	| 'binary'
 	| 'image'

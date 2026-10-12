@@ -5,7 +5,18 @@ use aether_core::plugin_manager::catalog::{
 };
 use surrealdb::{Surreal, engine::remote::ws::Client};
 
+/// Outcome of [`check_plugins`]: packages that passed and those that failed.
+#[derive(Debug, Default)]
+pub struct CheckPluginsReport {
+    pub ok: Vec<LoadedPlugin>,
+    pub errors: Vec<(PathBuf, CatalogError)>,
+}
+
 /// Register each plugin package in the core catalog, stopping at the first failure.
+///
+/// Foreign links may resolve against other packages in `plugin_paths` (their on-disk
+/// `model_id`s), the same as `--dry-run`, so a dependency that is loaded later in the
+/// same run still satisfies links. Same-package links resolve against the package itself.
 pub async fn load_plugins(
     db: &Surreal<Client>,
     namespace: &str,
@@ -13,12 +24,67 @@ pub async fn load_plugins(
     app_dir: &Path,
     plugin_paths: &[PathBuf],
 ) -> Result<Vec<LoadedPlugin>, CatalogError> {
+    let batch_models = catalog::batch_model_ids(plugin_paths)?;
     let mut loaded = Vec::with_capacity(plugin_paths.len());
     for plugin_path in plugin_paths {
-        loaded
-            .push(catalog::load_plugin(db, namespace, core_database, app_dir, plugin_path).await?);
+        loaded.push(
+            catalog::load_plugin_with_batch(
+                db,
+                namespace,
+                core_database,
+                app_dir,
+                plugin_path,
+                &batch_models,
+            )
+            .await?,
+        );
     }
     Ok(loaded)
+}
+
+/// Validate every plugin package without writing to the catalog; collect every failure.
+///
+/// Foreign links may resolve against other packages in `plugin_paths` (their on-disk
+/// `model_id`s), not only against models already in the catalog.
+pub async fn check_plugins(
+    db: &Surreal<Client>,
+    namespace: &str,
+    core_database: &str,
+    app_dir: &Path,
+    plugin_paths: &[PathBuf],
+) -> Result<CheckPluginsReport, CatalogError> {
+    let batch_models = catalog::batch_model_ids(plugin_paths)?;
+    let mut report = CheckPluginsReport::default();
+    for plugin_path in plugin_paths {
+        match catalog::check_plugin(db, namespace, core_database, app_dir, plugin_path, &batch_models)
+            .await
+        {
+            Ok(plugin) => report.ok.push(plugin),
+            Err(error) => report.errors.push((plugin_path.clone(), error)),
+        }
+    }
+    Ok(report)
+}
+
+pub fn print_check_summary(report: &CheckPluginsReport) {
+    for plugin in &report.ok {
+        println!(
+            "ok: {}@{} ({} page(s){})",
+            plugin.name,
+            plugin.version,
+            plugin.pages,
+            plugin
+                .app
+                .as_ref()
+                .map_or(String::new(), |(label, route)| format!("; app '{label}' → {route}"))
+        );
+    }
+    for (path, error) in &report.errors {
+        eprintln!("error: {}: {error}", path.display());
+    }
+    let failed = report.errors.len();
+    let passed = report.ok.len();
+    println!("{passed} ok, {failed} failed ({})", passed + failed);
 }
 
 /// Install catalog plugins (with their dependencies) for one organization.

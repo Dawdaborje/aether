@@ -11,7 +11,7 @@ use crate::server::serve::run_server;
 
 use super::{
     args::Args,
-    db::get_prerequisites,
+    db::{get_prerequisites, load_search_roots},
     generation::{generate_default_config_template, generate_plugin_workspace},
     initialization::{initialize_system, print_bootstrap_summary},
     organization::{
@@ -19,7 +19,8 @@ use super::{
         provision_existing_organization,
     },
     plugin_manager::{
-        activate_theme, install_plugins, load_plugins, print_install_summary, print_load_summary,
+        activate_theme, check_plugins, install_plugins, load_plugins, print_check_summary,
+        print_install_summary, print_load_summary,
         print_upgrade_summary, upgrade_plugins,
     },
     scaffold::{self, Language, create_plugin},
@@ -67,7 +68,7 @@ fn report_plugin(created: &scaffold::CreatedPlugin) {
         println!("Registered it in workspace '{workspace}' under [workspace.plugins].");
     }
     if !created.language.is_wasm() {
-        println!("Nothing to compile: edit {}, then run `aether --load-plugin .` in {} (and `aether --install-plugin {} --org <org>`).", created.language.script_file().unwrap_or("the script"), created.directory.display(), created.name);
+        println!("Nothing to compile: edit {}, then run `aether --load-plugins .` in {} (and `aether --install-plugin {} --org <org>`).", created.language.script_file().unwrap_or("the script"), created.directory.display(), created.name);
     }
 }
 
@@ -94,17 +95,52 @@ async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    if let Some(plugin_paths) = &args.load_plugin {
+    if let Some(cli_paths) = &args.load_plugins {
         let ctx = get_db_context(&args).await;
-        let loaded = load_plugins(
-            ctx.db,
-            &ctx.namespace,
-            &ctx.database,
-            &ctx.config.app_dir,
-            plugin_paths,
-        )
-        .await?;
-        print_load_summary(&loaded);
+        let entries = if cli_paths.is_empty() {
+            ctx.config.plugin_paths.clone()
+        } else {
+            cli_paths.clone()
+        };
+        if entries.is_empty() {
+            return Err(
+                "--load-plugins needs package paths, workspace paths or workspace names on the command line, or a non-empty `plugin_paths` list in the config file"
+                    .into(),
+            );
+        }
+        let search_roots = load_search_roots(&args)?;
+        let plugin_paths =
+            aether_core::plugin_manager::load_paths::resolve_load_paths(&entries, &search_roots)
+                .await?;
+        if args.dry_run {
+            let report = check_plugins(
+                ctx.db,
+                &ctx.namespace,
+                &ctx.database,
+                &ctx.config.app_dir,
+                &plugin_paths,
+            )
+            .await?;
+            print_check_summary(&report);
+            if !report.errors.is_empty() {
+                return Err(format!(
+                    "--load-plugins --dry-run: {} of {} package(s) failed validation",
+                    report.errors.len(),
+                    plugin_paths.len()
+                )
+                .into());
+            }
+        } else {
+            let loaded = load_plugins(
+                ctx.db,
+                &ctx.namespace,
+                &ctx.database,
+                &ctx.config.app_dir,
+                &plugin_paths,
+            )
+            .await?;
+            print_load_summary(&loaded);
+        }
     }
 
     if let Some(specs) = &args.install_plugin {

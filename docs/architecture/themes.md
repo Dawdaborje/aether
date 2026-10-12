@@ -30,7 +30,7 @@ tokens_file = "./theme.json"
   "nav": {
     "header": "Sea Corp",
     "items": [
-      { "label": "Apps", "href": "/apps" },
+      { "label": "Apps", "href": "/desk/apps" },
       { "label": "Sales", "children": [
           { "label": "Orders", "href": "/sales/orders" },
           { "label": "Customers", "href": "/sales/customers" } ] },
@@ -67,9 +67,15 @@ grouped navigation, and a top bar with the page title, organization switcher and
 account menu. Whenever the server answers `source: "fallback"`, the app uses this
 theme and ignores any tokens that came with the response.
 
+When that fallback (or any theme) has no `nav` item for the current path, the
+top bar still names the **installed app** whose `[app].route` matches (for
+example Countries) and shows that app's page menus from `GET /api/ui/apps`. A
+theme that already nests the path under `nav.items` keeps control of the brand
+and menus.
+
 ## From plugin to screen
 
-1. `aether --load-plugin <dir>` validates the theme (a bad layout name, nav or
+1. `aether --load-plugins <dir>` validates the theme (a bad layout name, nav or
    colours fails the load) and stores it in the core catalog.
 2. `aether --install-plugin theme_sea --org acme` copies it into the
    organization's `ui_themes`. **The first theme an organization installs becomes
@@ -83,8 +89,7 @@ theme and ignores any tokens that came with the response.
 
 ## Layouts
 
-The web app keeps a registry of layouts in
-`web/src/lib/components/layout/registry.ts`:
+Built-in layouts live in `web/src/lib/components/layout/registry.ts`:
 
 | Name | What it is |
 |---|---|
@@ -93,9 +98,16 @@ The web app keeps a registry of layouts in
 | `desk` | sidebar workspace |
 | `bare` | no application chrome |
 
-An unknown name falls back to `default` (with a console warning). To add a
-layout, create the component and list it in the registry; any theme can then
-name it.
+A theme plugin may also ship its own layout under `layouts/<name>.json` and name
+it with `"layout": "<name>"`:
+
+```json
+{ "name": "sea", "label": "Sea shell", "chrome": "sidebar" }
+```
+
+`chrome` is one of `top`, `sidebar`, `custom`, or `bare` (which first-party shell
+to use). The definition is stored on the theme and returned by `GET /api/ui/theme`
+as `layout_def`. An unknown built-in name falls back to `default`.
 
 Logged-in users get the theme's layout. Visitors on public pages get `bare`.
 
@@ -124,11 +136,23 @@ inline card:
 | `serverError` | 5xx and anything unexpected |
 | `card` | a failure inside a page, such as a widget that cannot render |
 
-Two sets ship: `default` (a neutral card) and `custom` (a bold variant drawn in
-the theme's colours). The words for each status are shared
-(`errors/copy.ts`), so a set only decides how things look. To add a set, create
-its components and list it in the registry; any theme can then name it. An
-unknown name falls back to `default`.
+Two built-in sets ship: `default` (a neutral card) and `custom` (a bold variant
+drawn in the theme's colours). A theme plugin may also ship `errors/<name>.json`
+and name it with `"error_pages": "<name>"`:
+
+```json
+{
+  "name": "sea",
+  "variant": "custom",
+  "not_found": { "title": "Lost at sea", "message": "That page drifted away." }
+}
+```
+
+`variant` chooses the built-in look (`default` or `custom`); optional
+`not_found`, `forbidden`, `too_many_requests`, `server_error`, and `card` objects
+override the shared copy (`errors/copy.ts`). The definition is returned as
+`error_pages_def` on the theme API. An unknown built-in name falls back to
+`default`.
 
 Error pages render inside the themed layout, so the navigation stays available.
 `ErrorPage.svelte` shows a page for a status and `ErrorCard.svelte` an inline

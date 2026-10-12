@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { interpolate, keyOf, rowsOf, text } from './pageContext.svelte';
+import { interpolate, keyOf, rowsOf, text, totalOf } from './pageContext.svelte';
 
 describe('rowsOf', () => {
 	it('takes a list, or one held under rows, items or data', () => {
@@ -13,6 +13,15 @@ describe('rowsOf', () => {
 		expect(rowsOf('text')).toEqual([]);
 		expect(rowsOf({ nothing: [] })).toEqual([]);
 		expect(rowsOf([1, null, { a: 1 }])).toEqual([{ a: 1 }]);
+	});
+});
+
+describe('totalOf', () => {
+	it('reads total or count from an object answer', () => {
+		expect(totalOf({ rows: [], total: 12 })).toBe(12);
+		expect(totalOf({ rows: [], count: 3 })).toBe(3);
+		expect(totalOf([{ a: 1 }])).toBeUndefined();
+		expect(totalOf({ rows: [] })).toBeUndefined();
 	});
 });
 

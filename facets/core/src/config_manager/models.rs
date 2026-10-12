@@ -50,6 +50,11 @@ pub struct ServerConfig {
     /// response head counts. `0` turns the limit off.
     #[serde(default = "default_request_timeout_secs")]
     pub request_timeout_secs: u64,
+    /// Extra browser origins allowed for CSRF Origin checks (e.g. Vite
+    /// `http://localhost:5173` when the API is on another port). Same-origin
+    /// requests that match the request `Host` do not need an entry here.
+    #[serde(default)]
+    pub csrf_trusted_origins: Vec<String>,
 }
 
 fn default_request_timeout_secs() -> u64 {
@@ -71,6 +76,7 @@ impl Default for ServerConfig {
             port: default_port(),
             trusted_proxies: Vec::new(),
             request_timeout_secs: default_request_timeout_secs(),
+            csrf_trusted_origins: Vec::new(),
         }
     }
 }
@@ -528,6 +534,12 @@ pub struct AetherConfig {
     pub database: Option<DatabaseConfig>,
     pub server: Option<ServerConfig>,
     pub plugins: Option<Vec<PluginDefinition>>,
+    /// Packages, workspace directories, or workspace names from top-level
+    /// `plugin_paths` in `aether.toml`. Relative paths are resolved against the
+    /// config file's directory. Used by `aether --load-plugins` when no arguments
+    /// are given on the command line; workspaces expand to their members.
+    #[serde(default)]
+    pub plugin_paths: Vec<PathBuf>,
     /// Bounded Extism `CompiledPlugin` cache. New catalog versions compile on
     /// first use; LRU eviction keeps RAM from growing with every installed plugin.
     #[serde(default)]
@@ -671,6 +683,7 @@ impl Default for AetherConfig {
             database: Some(DatabaseConfig::default()),
             server: Some(ServerConfig::default()),
             plugins: Some(vec![]),
+            plugin_paths: Vec::new(),
             plugin_runtime: PluginRuntimeConfig::default(),
             cache: Some(CacheConfig::default()),
             tenancy: TenancyConfig::default(),

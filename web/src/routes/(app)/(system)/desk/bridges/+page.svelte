@@ -3,7 +3,12 @@
 	import PlugIcon from '@lucide/svelte/icons/plug';
 	import SearchIcon from '@lucide/svelte/icons/search';
 	import ControlPanel from '$lib/components/layout/shell/ControlPanel.svelte';
+	import { Badge } from '$lib/components/ui/badge';
+	import { Button } from '$lib/components/ui/button';
+	import * as Card from '$lib/components/ui/card/index.js';
 	import { Empty } from '$lib/components/ui/empty';
+	import { Input } from '$lib/components/ui/input';
+	import { Skeleton } from '$lib/components/ui/skeleton';
 	import { categoryLabel } from '$lib/apps/categories';
 	import { fetchBridges, type Bridge } from '$lib/bridges/api';
 
@@ -57,19 +62,23 @@
 				<SearchIcon
 					class="pointer-events-none absolute top-1/2 left-3 z-10 size-4 -translate-y-1/2 text-muted-foreground"
 				/>
-				<input
+				<Input
 					bind:value={query}
 					type="search"
 					placeholder="Search bridges…"
 					aria-label="Search bridges"
-					class="h-9 w-full rounded-md border border-border bg-card pr-3 pl-9 text-sm outline-none placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/20"
+					class="pl-9"
 				/>
 			</div>
 		{/if}
 	</div>
 
 	{#if bridges === null}
-		<p class="text-sm text-muted-foreground">Loading bridges…</p>
+		<div class="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+			{#each Array(6) as _, i (i)}
+				<Skeleton class="h-24 w-full" />
+			{/each}
+		</div>
 	{:else if failed}
 		<p class="text-sm text-destructive" role="alert">{failed}</p>
 	{:else if bridges.length === 0}
@@ -86,31 +95,33 @@
 						<h2 class="text-sm font-semibold">{categoryLabel(group)}</h2>
 						<ul class="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
 							{#each items as bridge (bridge.feature_key)}
-								<li class="flex items-start gap-3 rounded-lg border border-border bg-card p-3">
-									<span
-										class="flex size-9 shrink-0 items-center justify-center rounded-lg border border-primary/15 bg-primary/10 text-sm font-semibold text-primary"
-										aria-hidden="true">{bridge.label.charAt(0).toUpperCase()}</span
-									>
-									<div class="min-w-0 flex-1">
-										<div class="flex items-center gap-2">
-											<p class="truncate text-sm font-medium">{bridge.label}</p>
+								<li>
+									<Card.Root size="sm" class="h-full">
+										<Card.Content class="flex items-start gap-3 px-(--card-spacing) pt-(--card-spacing)">
 											<span
-												class="rounded-full px-2 py-0.5 text-[11px] font-medium {bridge.enabled_globally
-													? 'bg-primary/10 text-primary'
-													: 'bg-muted text-muted-foreground'}"
+												class="flex size-9 shrink-0 items-center justify-center bg-primary/10 text-sm font-semibold text-primary ring-1 ring-primary/15"
+												aria-hidden="true">{bridge.label.charAt(0).toUpperCase()}</span
 											>
-												{bridge.enabled_globally ? 'Enabled' : 'Not enabled'}
-											</span>
-										</div>
-										{#if bridge.description && bridge.description !== bridge.label}
-											<p class="line-clamp-2 text-xs text-muted-foreground">{bridge.description}</p>
-										{/if}
-										<p class="mt-1 font-mono text-[11px] text-muted-foreground">
-											{bridge.feature_key}{bridge.is_builtin ? ' · built-in' : ''}{bridge.version
-												? ` · v${bridge.version}`
-												: ''}
-										</p>
-									</div>
+											<div class="min-w-0 flex-1 space-y-1">
+												<div class="flex flex-wrap items-center gap-2">
+													<Card.Title class="truncate text-sm font-medium">{bridge.label}</Card.Title>
+													<Badge variant={bridge.enabled_globally ? 'default' : 'secondary'}>
+														{bridge.enabled_globally ? 'Enabled' : 'Not enabled'}
+													</Badge>
+												</div>
+												{#if bridge.description && bridge.description !== bridge.label}
+													<Card.Description class="line-clamp-2 text-xs">
+														{bridge.description}
+													</Card.Description>
+												{/if}
+												<p class="font-mono text-[11px] text-muted-foreground">
+													{bridge.feature_key}{bridge.is_builtin ? ' · built-in' : ''}{bridge.version
+														? ` · v${bridge.version}`
+														: ''}
+												</p>
+											</div>
+										</Card.Content>
+									</Card.Root>
 								</li>
 							{/each}
 						</ul>
@@ -121,18 +132,20 @@
 			</main>
 
 			<aside class="hidden w-56 shrink-0 md:block" aria-label="Categories">
-				<nav class="sticky top-16 space-y-0.5">
+				<nav class="sticky top-16 flex flex-col gap-0.5">
 					<h2 class="px-3 pb-1 text-xs font-medium text-muted-foreground">Categories</h2>
 					{#each [[null, bridges.length] as const, ...categories] as [name, count] (name ?? 'all')}
-						<button
+						<Button
 							type="button"
+							variant={category === name ? 'secondary' : 'ghost'}
+							size="sm"
 							onclick={() => (category = name)}
 							aria-current={category === name ? 'true' : undefined}
-							class="flex w-full items-center justify-between rounded-md px-3 py-1.5 text-left text-sm transition hover:bg-accent aria-[current=true]:bg-accent aria-[current=true]:font-medium aria-[current=true]:text-accent-foreground"
+							class="w-full justify-between"
 						>
 							<span class="truncate">{name === null ? 'All bridges' : categoryLabel(name)}</span>
 							<span class="text-xs text-muted-foreground">{count}</span>
-						</button>
+						</Button>
 					{/each}
 				</nav>
 			</aside>
