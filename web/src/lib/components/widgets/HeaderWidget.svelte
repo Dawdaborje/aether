@@ -5,7 +5,7 @@
 	let { node }: { node: PageNode } = $props();
 </script>
 
-<header class="flex flex-wrap items-center justify-between gap-3">
+<header class="flex flex-wrap items-center justify-between gap-3" data-part="page.header">
 	{#if node.title}
 		<h2 class="text-lg font-medium text-foreground">{node.title}</h2>
 	{/if}

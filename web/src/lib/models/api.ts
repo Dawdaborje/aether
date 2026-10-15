@@ -13,7 +13,9 @@ export type FieldType =
 	| 'link'
 	| 'many2many'
 	| 'child'
-	| 'json';
+	| 'json'
+	| 'image'
+	| 'file';
 
 export const FIELD_TYPES: { value: FieldType; label: string }[] = [
 	{ value: 'string', label: 'Text (short)' },
@@ -27,6 +29,8 @@ export const FIELD_TYPES: { value: FieldType; label: string }[] = [
 	{ value: 'select', label: 'Choice' },
 	{ value: 'link', label: 'Link to a record' },
 	{ value: 'many2many', label: 'Links to several records' },
+	{ value: 'image', label: 'Picture' },
+	{ value: 'file', label: 'File' },
 	{ value: 'json', label: 'JSON' }
 ];
 
@@ -56,6 +60,8 @@ export interface FieldDef {
 	track?: boolean;
 	/** Properties the editor has no control for are kept as they are when a model is saved. */
 	scale?: number;
+	/** For a picture or file field: it holds a list of files. */
+	multiple?: boolean;
 	hierarchy?: boolean;
 	target_id?: string;
 	min?: unknown;
@@ -86,6 +92,11 @@ export interface ModelDef {
 	model_id?: string;
 	name: string;
 	label?: string;
+	/**
+	 * Resolved label for lists (`%key%` → text or a readable fallback).
+	 * The raw `label` is kept for editing so translation keys are not overwritten.
+	 */
+	display_label?: string;
 	plural_label?: string;
 	icon?: string;
 	title_field?: string;
@@ -96,6 +107,20 @@ export interface ModelDef {
 	/** Indexes over several fields, and checks on the whole record; kept as they are. */
 	indexes?: unknown[];
 	checks?: unknown[];
+}
+
+/** Label to show in lists: resolved display, else a humanized `%key%`, else the name. */
+export function modelListLabel(model: Pick<ModelDef, 'name' | 'label' | 'display_label'>): string {
+	if (model.display_label?.trim()) return model.display_label.trim();
+	const raw = model.label?.trim();
+	if (!raw) return model.name;
+	const key = raw.match(/^%([a-zA-Z0-9._:-]+)%$/)?.[1];
+	if (!key) return raw;
+	return key
+		.split(/[_.\s-]+/)
+		.filter(Boolean)
+		.map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+		.join(' ');
 }
 
 export interface PluginModels {

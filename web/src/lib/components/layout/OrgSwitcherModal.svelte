@@ -1,5 +1,6 @@
 <script lang="ts">
 	import * as Dialog from '$lib/components/ui/dialog/index.js';
+	import OrgLogo from '$lib/components/org/OrgLogo.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { orgStore, type OrgChoice } from '$lib/org/orgStore.svelte';
 
@@ -26,18 +27,21 @@
 	<li>
 		<Button
 			variant={org.db_name === orgStore.current ? 'default' : 'outline'}
-			class="h-auto w-full justify-between px-4 py-3 text-left"
+			class="h-auto w-full justify-between gap-3 px-4 py-3 text-left"
 			disabled={orgStore.switching}
 			onclick={() => orgStore.choose(org.db_name)}
 		>
-			<span class="flex flex-col items-start normal-case tracking-normal">
-				<span class="text-sm font-medium">{org.name}</span>
-				{#if org.db_name.toLowerCase() !== org.name.toLowerCase()}
-					<span class="font-mono text-xs opacity-70">{org.db_name}</span>
-				{/if}
+			<span class="flex min-w-0 items-center gap-3">
+				<OrgLogo logoUrl={org.logo_url} name={org.name} class="size-9 rounded-md" />
+				<span class="flex min-w-0 flex-col items-start normal-case tracking-normal">
+					<span class="text-sm font-medium">{org.name}</span>
+					{#if org.db_name.toLowerCase() !== org.name.toLowerCase()}
+						<span class="font-mono text-xs opacity-70">{org.db_name}</span>
+					{/if}
+				</span>
 			</span>
 			{#if org.db_name === orgStore.current}
-				<span class="text-xs tracking-wide uppercase">Current</span>
+				<span class="shrink-0 text-xs tracking-wide uppercase">Current</span>
 			{/if}
 		</Button>
 	</li>

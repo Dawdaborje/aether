@@ -28,6 +28,70 @@ pub struct BootstrapResult {
     pub superuser_already_existed: bool,
 }
 
+pub struct MigrateResult {
+    pub applied_migrations: Vec<String>,
+    pub namespace: String,
+    pub database: String,
+}
+
+/// Apply pending core migrations only. Use `--init` for a first-time bootstrap
+/// (migrations + seeds + developer account).
+pub async fn migrate_system(
+    db: &Surreal<Client>,
+    namespace: &str,
+    database: &str,
+) -> Result<MigrateResult, InitError> {
+    println!("{}", "Migrating Aether…".bold());
+    println!("  target: {} / {}", namespace.cyan(), database.cyan());
+
+    let applied = migrate_core(db, namespace, database).await?;
+
+    if applied.is_empty() {
+        println!("{}", "  migrations: already up to date".green());
+    } else {
+        println!(
+            "{}",
+            format!("  migrations: applied {}", applied.join(", ")).green()
+        );
+    }
+
+    Ok(MigrateResult {
+        applied_migrations: applied,
+        namespace: namespace.to_string(),
+        database: database.to_string(),
+    })
+}
+
+pub fn print_migrate_summary(result: &MigrateResult) {
+    println!();
+    println!("{}", "══════════════════════════════════════".green());
+    println!("{}", "  Aether migrate complete".green().bold());
+    println!("{}", "══════════════════════════════════════".green());
+    println!(
+        "  {}  {} / {}",
+        "Database:".green().bold(),
+        result.namespace,
+        result.database
+    );
+
+    if result.applied_migrations.is_empty() {
+        println!(
+            "  {}  {}",
+            "Migrations:".green().bold(),
+            "none pending".dimmed()
+        );
+    } else {
+        println!(
+            "  {}  {}",
+            "Migrations:".green().bold(),
+            result.applied_migrations.join(", ")
+        );
+    }
+
+    println!("{}", "══════════════════════════════════════".green());
+    println!();
+}
+
 /// Bootstrap the platform core DB: apply migrations, seed settings, ensure the developer account
 /// (stored as a superuser: the kernel skips RBAC checks for it).
 pub async fn initialize_system(

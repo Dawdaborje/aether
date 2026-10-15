@@ -79,12 +79,18 @@ pub struct Enqueued {
 
 fn check(job: &NewJob) -> Result<(), QueueError> {
     if let Some(payload) = &job.payload {
-        let size = serde_json::to_vec(payload).map(|bytes| bytes.len()).unwrap_or(usize::MAX);
+        let size = serde_json::to_vec(payload)
+            .map(|bytes| bytes.len())
+            .unwrap_or(usize::MAX);
         if size > MAX_PAYLOAD_BYTES {
-            return Err(QueueError::Refused(format!("a job's payload is at most {MAX_PAYLOAD_BYTES} bytes")));
+            return Err(QueueError::Refused(format!(
+                "a job's payload is at most {MAX_PAYLOAD_BYTES} bytes"
+            )));
         }
         if !payload.is_object() {
-            return Err(QueueError::Refused("a job's payload must be a JSON object".into()));
+            return Err(QueueError::Refused(
+                "a job's payload must be a JSON object".into(),
+            ));
         }
     }
     if !(1..=20).contains(&job.max_attempts) {
@@ -92,11 +98,20 @@ fn check(job: &NewJob) -> Result<(), QueueError> {
     }
     let queue_ok = !job.queue.is_empty()
         && job.queue.len() <= 40
-        && job.queue.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-');
+        && job
+            .queue
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-');
     if !queue_ok {
-        return Err(QueueError::Refused("a queue name is lowercase letters, digits, `_` and `-` (at most 40)".into()));
+        return Err(QueueError::Refused(
+            "a queue name is lowercase letters, digits, `_` and `-` (at most 40)".into(),
+        ));
     }
-    if job.unique_key.as_ref().is_some_and(|key| key.is_empty() || key.len() > 200) {
+    if job
+        .unique_key
+        .as_ref()
+        .is_some_and(|key| key.is_empty() || key.len() > 200)
+    {
         return Err(QueueError::Refused("a unique_key is 1 to 200 bytes".into()));
     }
     Ok(())
@@ -110,7 +125,11 @@ fn unique_record_key(job: &NewJob, key: &str) -> String {
     hash.update(job.plugin.as_deref().unwrap_or("").as_bytes());
     hash.update([0]);
     hash.update(key.as_bytes());
-    hash.finalize().iter().take(16).map(|byte| format!("{byte:02x}")).collect()
+    hash.finalize()
+        .iter()
+        .take(16)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 #[derive(Debug, Deserialize, SurrealValue)]
@@ -129,14 +148,19 @@ pub async fn enqueue(db: &Surreal<Client>, job: NewJob) -> Result<Enqueued, Queu
             .await?
             .check()?;
         let waiting: Option<Value> = response.take(0)?;
-        let waiting = waiting.and_then(|row| row.get("n").and_then(Value::as_i64)).unwrap_or(0);
+        let waiting = waiting
+            .and_then(|row| row.get("n").and_then(Value::as_i64))
+            .unwrap_or(0);
         if waiting >= MAX_WAITING_PER_PLUGIN {
             return Err(QueueError::Refused(format!(
                 "`{plugin}` already has {waiting} jobs waiting; wait for them to run"
             )));
         }
     }
-    let key = job.unique_key.as_deref().map(|key| unique_record_key(&job, key));
+    let key = job
+        .unique_key
+        .as_deref()
+        .map(|key| unique_record_key(&job, key));
     // Fields that are not set are left out: the database distinguishes "absent" from `null`.
     let mut content = serde_json::Map::new();
     content.insert("kind".into(), job.kind.into());
@@ -181,7 +205,10 @@ pub async fn enqueue(db: &Surreal<Client>, job: NewJob) -> Result<Enqueued, Queu
         .check()?;
     let row: Option<CreatedRow> = response.take(5)?;
     let row = row.ok_or_else(|| QueueError::Refused("the queue did not answer".into()))?;
-    Ok(Enqueued { id: row.key, created: row.created })
+    Ok(Enqueued {
+        id: row.key,
+        created: row.created,
+    })
 }
 
 /// A job a worker has taken.
@@ -205,7 +232,13 @@ const CLAIMABLE: &str = "((state = 'queued' AND run_at <= time::now()) \
 
 /// Take up to `limit` due jobs of `queues` (all queues when empty) for `node`, holding them for
 /// `lease_secs`.
-pub async fn claim(db: &Surreal<Client>, node: &str, queues: &[String], limit: i64, lease_secs: i64) -> Result<Vec<Job>, QueueError> {
+pub async fn claim(
+    db: &Surreal<Client>,
+    node: &str,
+    queues: &[String],
+    limit: i64,
+    lease_secs: i64,
+) -> Result<Vec<Job>, QueueError> {
     let surql = format!(
         r#"
         BEGIN TRANSACTION;
@@ -319,7 +352,11 @@ pub async fn fail_abandoned(db: &Surreal<Client>) -> Result<usize, QueueError> {
 }
 
 /// A job as a plugin may see it.
-pub async fn status(db: &Surreal<Client>, plugin: &str, key: &str) -> Result<Option<Value>, QueueError> {
+pub async fn status(
+    db: &Surreal<Client>,
+    plugin: &str,
+    key: &str,
+) -> Result<Option<Value>, QueueError> {
     let mut response = db
         .query(
             "SELECT <string> record::id(id) AS id, kind, function_name AS function, queue, state, attempts, max_attempts, last_error, \
@@ -351,7 +388,11 @@ pub async fn cancel(db: &Surreal<Client>, plugin: &str, key: &str) -> Result<boo
 
 /// Delete finished jobs: successes older than `succeeded_days`, everything else finished older
 /// than `failed_days`.
-pub async fn purge(db: &Surreal<Client>, succeeded_days: i64, failed_days: i64) -> Result<usize, QueueError> {
+pub async fn purge(
+    db: &Surreal<Client>,
+    succeeded_days: i64,
+    failed_days: i64,
+) -> Result<usize, QueueError> {
     let mut response = db
         .query(
             "DELETE jobs WHERE (state = 'succeeded' AND date_finished < time::now() - <duration> $ok) \
@@ -372,7 +413,9 @@ pub async fn next_due(db: &Surreal<Client>) -> Result<Option<DateTime<Utc>>, Que
         .await?
         .check()?;
     let next: Option<String> = response.take(0)?;
-    Ok(next.and_then(|text| DateTime::parse_from_rfc3339(&text).ok()).map(|time| time.with_timezone(&Utc)))
+    Ok(next
+        .and_then(|text| DateTime::parse_from_rfc3339(&text).ok())
+        .map(|time| time.with_timezone(&Utc)))
 }
 
 #[cfg(test)]
@@ -388,7 +431,11 @@ mod tests {
         let first = unique_record_key(&a, "invoice-7");
         assert_eq!(first, unique_record_key(&a, "invoice-7"));
         assert_ne!(first, unique_record_key(&a, "invoice-8"));
-        assert_ne!(first, unique_record_key(&b, "invoice-7"), "another plugin's key is another job");
+        assert_ne!(
+            first,
+            unique_record_key(&b, "invoice-7"),
+            "another plugin's key is another job"
+        );
         assert_eq!(first.len(), 32);
     }
 

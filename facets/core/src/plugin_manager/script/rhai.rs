@@ -20,15 +20,16 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use rhai::{
-    AST, Dynamic, Engine, EvalAltResult, FnAccess, Map, Module, Position,
-    Scope, packages::{Package, StandardPackage},
+    AST, Dynamic, Engine, EvalAltResult, FnAccess, Map, Module, Position, Scope,
+    packages::{Package, StandardPackage},
 };
 use serde_json::Value;
 
 use crate::kernel::PluginHostContext;
 
 use super::{
-    MAX_CALL_LEVELS, MAX_ITEMS, MAX_OPERATIONS, MAX_RUN_TIME, MAX_STRING_BYTES, ScriptError, USER_MARK, kernel_data,
+    MAX_CALL_LEVELS, MAX_ITEMS, MAX_OPERATIONS, MAX_RUN_TIME, MAX_STRING_BYTES, ScriptError,
+    USER_MARK, kernel_data,
 };
 
 /// A checked Rhai script, ready to run. Cheap to share; each call builds its own engine.
@@ -58,7 +59,10 @@ impl RhaiProgram {
 
     /// Names of the functions a caller may invoke.
     pub fn function_names(&self) -> Vec<&str> {
-        self.functions.iter().map(|(name, _)| name.as_str()).collect()
+        self.functions
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect()
     }
 
     /// Run a function. Blocking: call it from a blocking thread. `runtime` drives the kernel's
@@ -76,8 +80,15 @@ impl RhaiProgram {
             .find(|(name, _)| name == function)
             .map(|(_, arity)| *arity)
             .ok_or_else(|| ScriptError::NoSuchFunction(function.to_string()))?;
-        let engine = limited_engine(Some(Arc::new(Host { context: host, runtime })), Instant::now());
-        let input = rhai::serde::to_dynamic(&input).map_err(|error| ScriptError::Data(error.to_string()))?;
+        let engine = limited_engine(
+            Some(Arc::new(Host {
+                context: host,
+                runtime,
+            })),
+            Instant::now(),
+        );
+        let input = rhai::serde::to_dynamic(&input)
+            .map_err(|error| ScriptError::Data(error.to_string()))?;
         let mut scope = Scope::new();
         let result = match arity {
             0 => engine.call_fn::<Dynamic>(&mut scope, &self.ast, function, ()),
@@ -89,7 +100,8 @@ impl RhaiProgram {
             }
         }
         .map_err(|error| describe(*error))?;
-        rhai::serde::from_dynamic::<Value>(&result).map_err(|error| ScriptError::Data(error.to_string()))
+        rhai::serde::from_dynamic::<Value>(&result)
+            .map_err(|error| ScriptError::Data(error.to_string()))
     }
 }
 
@@ -102,7 +114,8 @@ struct Host {
 impl Host {
     /// The command's `data` (or the whole answer without one), as a script value.
     fn data(&self, command: &str, payload: Value) -> Result<Dynamic, Box<EvalAltResult>> {
-        let data = kernel_data(&self.context, &self.runtime, command, payload).map_err(runtime_error)?;
+        let data =
+            kernel_data(&self.context, &self.runtime, command, payload).map_err(runtime_error)?;
         to_script(&data)
     }
 }
@@ -116,13 +129,18 @@ fn to_json(value: &Dynamic) -> Result<Value, Box<EvalAltResult>> {
 }
 
 fn runtime_error(message: String) -> Box<EvalAltResult> {
-    Box::new(EvalAltResult::ErrorRuntime(Dynamic::from(message), Position::NONE))
+    Box::new(EvalAltResult::ErrorRuntime(
+        Dynamic::from(message),
+        Position::NONE,
+    ))
 }
 
 fn describe(error: EvalAltResult) -> ScriptError {
     // An error inside a script function arrives wrapped in each call that led to it.
     let mut error = &error;
-    while let EvalAltResult::ErrorInFunctionCall(_, _, inner, _) | EvalAltResult::ErrorInModule(_, inner, _) = error {
+    while let EvalAltResult::ErrorInFunctionCall(_, _, inner, _)
+    | EvalAltResult::ErrorInModule(_, inner, _) = error
+    {
         error = inner;
     }
     match error {
@@ -133,12 +151,13 @@ fn describe(error: EvalAltResult) -> ScriptError {
                 None => ScriptError::Failed(text),
             }
         }
-        EvalAltResult::ErrorTooManyOperations(_) => {
-            ScriptError::Failed(format!("the script ran more than {MAX_OPERATIONS} operations"))
-        }
-        EvalAltResult::ErrorTerminated(_, _) => {
-            ScriptError::Failed(format!("the script ran longer than {} s", MAX_RUN_TIME.as_secs()))
-        }
+        EvalAltResult::ErrorTooManyOperations(_) => ScriptError::Failed(format!(
+            "the script ran more than {MAX_OPERATIONS} operations"
+        )),
+        EvalAltResult::ErrorTerminated(_, _) => ScriptError::Failed(format!(
+            "the script ran longer than {} s",
+            MAX_RUN_TIME.as_secs()
+        )),
         other => ScriptError::Failed(other.to_string()),
     }
 }
@@ -202,7 +221,10 @@ fn register_commands(engine: &mut Engine, host: &Arc<Host>) {
     });
     let h = host.clone();
     db.set_native_fn("transitions", move |model: &str, id: &str| {
-        h.data("db::transitions", serde_json::json!({ "model": model, "id": id }))
+        h.data(
+            "db::transitions",
+            serde_json::json!({ "model": model, "id": id }),
+        )
     });
     // `db::get(model, id, #{ expand: ["lines"] })`.
     let h = host.clone();
@@ -227,27 +249,73 @@ fn register_commands(engine: &mut Engine, host: &Arc<Host>) {
         h.data("db::find", serde_json::json!({ "model": model }))
     });
     let h = host.clone();
+    db.set_native_fn("count", move |model: &str, query: Map| {
+        let mut payload = to_json(&Dynamic::from_map(query))?;
+        if let Value::Object(object) = &mut payload {
+            object.insert("model".into(), Value::String(model.to_string()));
+        }
+        h.data("db::count", payload)
+    });
+    let h = host.clone();
+    db.set_native_fn("count", move |model: &str| {
+        h.data("db::count", serde_json::json!({ "model": model }))
+    });
+    let h = host.clone();
+    db.set_native_fn("aggregate", move |model: &str, query: Map| {
+        let mut payload = to_json(&Dynamic::from_map(query))?;
+        if let Value::Object(object) = &mut payload {
+            object.insert("model".into(), Value::String(model.to_string()));
+        }
+        h.data("db::aggregate", payload)
+    });
+    let h = host.clone();
+    db.set_native_fn("search", move |model: &str, query: Map| {
+        let mut payload = to_json(&Dynamic::from_map(query))?;
+        if let Value::Object(object) = &mut payload {
+            object.insert("model".into(), Value::String(model.to_string()));
+        }
+        h.data("db::search", payload)
+    });
+    let h = host.clone();
     db.set_native_fn("create", move |model: &str, data: Map| {
         let data = to_json(&Dynamic::from_map(data))?;
-        h.data("db::create", serde_json::json!({ "model": model, "data": data }))
+        h.data(
+            "db::create",
+            serde_json::json!({ "model": model, "data": data }),
+        )
     });
     let h = host.clone();
     db.set_native_fn("update", move |model: &str, id: &str, data: Map| {
         let data = to_json(&Dynamic::from_map(data))?;
-        h.data("db::update", serde_json::json!({ "model": model, "id": id, "data": data }))
+        h.data(
+            "db::update",
+            serde_json::json!({ "model": model, "id": id, "data": data }),
+        )
     });
     let h = host.clone();
-    db.set_native_fn("increment", move |model: &str, id: &str, field: &str, by: Dynamic| {
-        let by = to_json(&by)?;
-        h.data("db::increment", serde_json::json!({ "model": model, "id": id, "field": field, "by": by }))
-    });
+    db.set_native_fn(
+        "increment",
+        move |model: &str, id: &str, field: &str, by: Dynamic| {
+            let by = to_json(&by)?;
+            h.data(
+                "db::increment",
+                serde_json::json!({ "model": model, "id": id, "field": field, "by": by }),
+            )
+        },
+    );
     let h = host.clone();
     db.set_native_fn("increment", move |model: &str, id: &str, field: &str| {
-        h.data("db::increment", serde_json::json!({ "model": model, "id": id, "field": field }))
+        h.data(
+            "db::increment",
+            serde_json::json!({ "model": model, "id": id, "field": field }),
+        )
     });
     let h = host.clone();
     db.set_native_fn("delete", move |model: &str, id: &str| {
-        h.data("db::delete", serde_json::json!({ "model": model, "id": id }))
+        h.data(
+            "db::delete",
+            serde_json::json!({ "model": model, "id": id }),
+        )
     });
     let h = host.clone();
     db.set_native_fn("transaction", move |ops: rhai::Array| {
@@ -256,18 +324,37 @@ fn register_commands(engine: &mut Engine, host: &Arc<Host>) {
     });
     engine.register_static_module("db", db.into());
 
+    let mut report = Module::new();
+    let h = host.clone();
+    report.set_native_fn("query", move |query: Map| {
+        h.data("report::query", to_json(&Dynamic::from_map(query))?)
+    });
+    let h = host.clone();
+    report.set_native_fn("export", move |table: Map| {
+        h.data("report::export", to_json(&Dynamic::from_map(table))?)
+    });
+    engine.register_static_module("report", report.into());
+
     let mut cache = Module::new();
     let h = host.clone();
-    cache.set_native_fn("get", move |key: &str| h.data("cache::get", serde_json::json!({ "key": key })));
+    cache.set_native_fn("get", move |key: &str| {
+        h.data("cache::get", serde_json::json!({ "key": key }))
+    });
     let h = host.clone();
     cache.set_native_fn("set", move |key: &str, value: Dynamic| {
         let value = to_json(&value)?;
-        h.data("cache::set", serde_json::json!({ "key": key, "value": value }))
+        h.data(
+            "cache::set",
+            serde_json::json!({ "key": key, "value": value }),
+        )
     });
     let h = host.clone();
     cache.set_native_fn("set", move |key: &str, value: Dynamic, ttl_secs: i64| {
         let value = to_json(&value)?;
-        h.data("cache::set", serde_json::json!({ "key": key, "value": value, "ttl_secs": ttl_secs }))
+        h.data(
+            "cache::set",
+            serde_json::json!({ "key": key, "value": value, "ttl_secs": ttl_secs }),
+        )
     });
     let h = host.clone();
     cache.set_native_fn("invalidate", move |key: &str| {
@@ -279,44 +366,135 @@ fn register_commands(engine: &mut Engine, host: &Arc<Host>) {
     });
     let h = host.clone();
     cache.set_native_fn("clear", move || h.data("cache::clear", Value::Null));
+    let h = host.clone();
+    cache.set_native_fn("get_row", move |model: &str, id: &str| {
+        h.data(
+            "cache::get_row",
+            serde_json::json!({ "model": model, "id": id }),
+        )
+    });
+    let h = host.clone();
+    cache.set_native_fn("set_row", move |model: &str, id: &str, value: Dynamic| {
+        let value = to_json(&value)?;
+        h.data(
+            "cache::set_row",
+            serde_json::json!({ "model": model, "id": id, "value": value }),
+        )
+    });
+    let h = host.clone();
+    cache.set_native_fn(
+        "set_row",
+        move |model: &str, id: &str, value: Dynamic, ttl_secs: i64| {
+            let value = to_json(&value)?;
+            h.data(
+            "cache::set_row",
+            serde_json::json!({ "model": model, "id": id, "value": value, "ttl_secs": ttl_secs }),
+        )
+        },
+    );
+    let h = host.clone();
+    cache.set_native_fn("invalidate_row", move |model: &str, id: &str| {
+        h.data(
+            "cache::invalidate_row",
+            serde_json::json!({ "model": model, "id": id }),
+        )
+    });
+    let h = host.clone();
+    cache.set_native_fn("get_list", move |model: &str, query_hash: &str| {
+        h.data(
+            "cache::get_list",
+            serde_json::json!({ "model": model, "query_hash": query_hash }),
+        )
+    });
+    let h = host.clone();
+    cache.set_native_fn(
+        "set_list",
+        move |model: &str, query_hash: &str, value: Dynamic| {
+            let value = to_json(&value)?;
+            h.data(
+                "cache::set_list",
+                serde_json::json!({ "model": model, "query_hash": query_hash, "value": value }),
+            )
+        },
+    );
+    let h = host.clone();
+    cache.set_native_fn("get_meta", move |name: &str| {
+        h.data("cache::get_meta", serde_json::json!({ "name": name }))
+    });
+    let h = host.clone();
+    cache.set_native_fn("set_meta", move |name: &str, value: Dynamic| {
+        let value = to_json(&value)?;
+        h.data(
+            "cache::set_meta",
+            serde_json::json!({ "name": name, "value": value }),
+        )
+    });
     engine.register_static_module("cache", cache.into());
 
     let mut storage = Module::new();
     let h = host.clone();
     storage.set_native_fn("write", move |key: &str, text: &str| {
-        h.data("storage::write", serde_json::json!({ "key": key, "text": text }))
+        h.data(
+            "storage::write",
+            serde_json::json!({ "key": key, "text": text }),
+        )
     });
     let h = host.clone();
     storage.set_native_fn("write_base64", move |key: &str, data: &str| {
-        h.data("storage::write", serde_json::json!({ "key": key, "base64": data }))
+        h.data(
+            "storage::write",
+            serde_json::json!({ "key": key, "base64": data }),
+        )
     });
     let h = host.clone();
     storage.set_native_fn("read", move |key: &str| {
         let answer = h.data("storage::read", serde_json::json!({ "key": key }))?;
-        Ok(answer.try_cast::<Map>().and_then(|map| map.get("text").cloned()).unwrap_or(Dynamic::UNIT))
+        Ok(answer
+            .try_cast::<Map>()
+            .and_then(|map| map.get("text").cloned())
+            .unwrap_or(Dynamic::UNIT))
     });
     let h = host.clone();
     storage.set_native_fn("read_base64", move |key: &str| {
-        let answer = h.data("storage::read", serde_json::json!({ "key": key, "encoding": "base64" }))?;
-        Ok(answer.try_cast::<Map>().and_then(|map| map.get("base64").cloned()).unwrap_or(Dynamic::UNIT))
+        let answer = h.data(
+            "storage::read",
+            serde_json::json!({ "key": key, "encoding": "base64" }),
+        )?;
+        Ok(answer
+            .try_cast::<Map>()
+            .and_then(|map| map.get("base64").cloned())
+            .unwrap_or(Dynamic::UNIT))
     });
     let h = host.clone();
-    storage.set_native_fn("delete", move |key: &str| h.data("storage::delete", serde_json::json!({ "key": key })));
+    storage.set_native_fn("delete", move |key: &str| {
+        h.data("storage::delete", serde_json::json!({ "key": key }))
+    });
     let h = host.clone();
     storage.set_native_fn("list", move || h.data("storage::list", Value::Null));
     let h = host.clone();
-    storage.set_native_fn("list", move |prefix: &str| h.data("storage::list", serde_json::json!({ "prefix": prefix })));
+    storage.set_native_fn("list", move |prefix: &str| {
+        h.data("storage::list", serde_json::json!({ "prefix": prefix }))
+    });
     engine.register_static_module("storage", storage.into());
 
     let mut plugins = Module::new();
     let h = host.clone();
-    plugins.set_native_fn("invoke", move |plugin: &str, function: &str, input: Dynamic| {
-        let input = to_json(&input)?;
-        h.data("plugins::call", serde_json::json!({ "plugin": plugin, "function": function, "input": input }))
-    });
+    plugins.set_native_fn(
+        "invoke",
+        move |plugin: &str, function: &str, input: Dynamic| {
+            let input = to_json(&input)?;
+            h.data(
+                "plugins::call",
+                serde_json::json!({ "plugin": plugin, "function": function, "input": input }),
+            )
+        },
+    );
     let h = host.clone();
     plugins.set_native_fn("invoke", move |plugin: &str, function: &str| {
-        h.data("plugins::call", serde_json::json!({ "plugin": plugin, "function": function }))
+        h.data(
+            "plugins::call",
+            serde_json::json!({ "plugin": plugin, "function": function }),
+        )
     });
     engine.register_static_module("plugins", plugins.into());
 
@@ -324,11 +502,17 @@ fn register_commands(engine: &mut Engine, host: &Arc<Host>) {
     let h = host.clone();
     bridge.set_native_fn("invoke", move |name: &str, action: &str, params: Map| {
         let params = to_json(&Dynamic::from_map(params))?;
-        h.data("bridge::call", serde_json::json!({ "bridge": name, "action": action, "params": params }))
+        h.data(
+            "bridge::call",
+            serde_json::json!({ "bridge": name, "action": action, "params": params }),
+        )
     });
     let h = host.clone();
     bridge.set_native_fn("invoke", move |name: &str, action: &str| {
-        h.data("bridge::call", serde_json::json!({ "bridge": name, "action": action }))
+        h.data(
+            "bridge::call",
+            serde_json::json!({ "bridge": name, "action": action }),
+        )
     });
     engine.register_static_module("bridge", bridge.into());
 
@@ -336,31 +520,61 @@ fn register_commands(engine: &mut Engine, host: &Arc<Host>) {
     let h = host.clone();
     fs.set_native_fn("read", move |path: &str| {
         let answer = h.data("fs::read", serde_json::json!({ "path": path }))?;
-        Ok(answer.try_cast::<Map>().and_then(|map| map.get("text").cloned()).unwrap_or(Dynamic::UNIT))
+        Ok(answer
+            .try_cast::<Map>()
+            .and_then(|map| map.get("text").cloned())
+            .unwrap_or(Dynamic::UNIT))
     });
     let h = host.clone();
     fs.set_native_fn("read_base64", move |path: &str| {
-        let answer = h.data("fs::read", serde_json::json!({ "path": path, "encoding": "base64" }))?;
-        Ok(answer.try_cast::<Map>().and_then(|map| map.get("base64").cloned()).unwrap_or(Dynamic::UNIT))
+        let answer = h.data(
+            "fs::read",
+            serde_json::json!({ "path": path, "encoding": "base64" }),
+        )?;
+        Ok(answer
+            .try_cast::<Map>()
+            .and_then(|map| map.get("base64").cloned())
+            .unwrap_or(Dynamic::UNIT))
     });
     let h = host.clone();
-    fs.set_native_fn("write", move |path: &str, text: &str| h.data("fs::write", serde_json::json!({ "path": path, "text": text })));
+    fs.set_native_fn("write", move |path: &str, text: &str| {
+        h.data(
+            "fs::write",
+            serde_json::json!({ "path": path, "text": text }),
+        )
+    });
     let h = host.clone();
-    fs.set_native_fn("write_base64", move |path: &str, data: &str| h.data("fs::write", serde_json::json!({ "path": path, "base64": data })));
+    fs.set_native_fn("write_base64", move |path: &str, data: &str| {
+        h.data(
+            "fs::write",
+            serde_json::json!({ "path": path, "base64": data }),
+        )
+    });
     let h = host.clone();
     fs.set_native_fn("list", move || h.data("fs::list", Value::Null));
     let h = host.clone();
-    fs.set_native_fn("list", move |path: &str| h.data("fs::list", serde_json::json!({ "path": path })));
-    let h = host.clone();
-    fs.set_native_fn("stat", move |path: &str| h.data("fs::stat", serde_json::json!({ "path": path })));
-    let h = host.clone();
-    fs.set_native_fn("rename", move |from: &str, to: &str| h.data("fs::rename", serde_json::json!({ "from": from, "to": to })));
-    let h = host.clone();
-    fs.set_native_fn("rename", move |from: &str, to: &str, overwrite: bool| {
-        h.data("fs::rename", serde_json::json!({ "from": from, "to": to, "overwrite": overwrite }))
+    fs.set_native_fn("list", move |path: &str| {
+        h.data("fs::list", serde_json::json!({ "path": path }))
     });
     let h = host.clone();
-    fs.set_native_fn("delete", move |path: &str| h.data("fs::delete", serde_json::json!({ "path": path })));
+    fs.set_native_fn("stat", move |path: &str| {
+        h.data("fs::stat", serde_json::json!({ "path": path }))
+    });
+    let h = host.clone();
+    fs.set_native_fn("rename", move |from: &str, to: &str| {
+        h.data("fs::rename", serde_json::json!({ "from": from, "to": to }))
+    });
+    let h = host.clone();
+    fs.set_native_fn("rename", move |from: &str, to: &str, overwrite: bool| {
+        h.data(
+            "fs::rename",
+            serde_json::json!({ "from": from, "to": to, "overwrite": overwrite }),
+        )
+    });
+    let h = host.clone();
+    fs.set_native_fn("delete", move |path: &str| {
+        h.data("fs::delete", serde_json::json!({ "path": path }))
+    });
     engine.register_static_module("fs", fs.into());
 
     let mut communication = Module::new();
@@ -371,36 +585,83 @@ fn register_commands(engine: &mut Engine, host: &Arc<Host>) {
     });
     engine.register_static_module("communication", communication.into());
 
+    let mut magic_link = Module::new();
+    let h = host.clone();
+    magic_link.set_native_fn("create", move |request: Map| {
+        let payload = to_json(&Dynamic::from_map(request))?;
+        h.data("magic_link::create", payload)
+    });
+    let h = host.clone();
+    magic_link.set_native_fn("revoke", move |request: Map| {
+        let payload = to_json(&Dynamic::from_map(request))?;
+        h.data("magic_link::revoke", payload)
+    });
+    let h = host.clone();
+    magic_link.set_native_fn("inspect", move |token: &str| {
+        h.data("magic_link::inspect", serde_json::json!({ "token": token }))
+    });
+    engine.register_static_module("magic_link", magic_link.into());
+
+    let mut org = Module::new();
+    let h = host.clone();
+    org.set_native_fn("members", move || h.data("org::members", Value::Null));
+    let h = host.clone();
+    org.set_native_fn("create_member", move |request: Map| {
+        let payload = to_json(&Dynamic::from_map(request))?;
+        h.data("org::create_member", payload)
+    });
+    let h = host.clone();
+    org.set_native_fn("invite", move |request: Map| {
+        let payload = to_json(&Dynamic::from_map(request))?;
+        h.data("org::invite", payload)
+    });
+    engine.register_static_module("org", org.into());
+
     let mut scheduler = Module::new();
     let h = host.clone();
     scheduler.set_native_fn("enqueue", move |function: &str| {
-        h.data("scheduler::enqueue", serde_json::json!({ "function": function }))
+        h.data(
+            "scheduler::enqueue",
+            serde_json::json!({ "function": function }),
+        )
     });
     let h = host.clone();
     scheduler.set_native_fn("enqueue", move |function: &str, payload: Map| {
         let payload = to_json(&Dynamic::from_map(payload))?;
-        h.data("scheduler::enqueue", serde_json::json!({ "function": function, "payload": payload }))
+        h.data(
+            "scheduler::enqueue",
+            serde_json::json!({ "function": function, "payload": payload }),
+        )
     });
     let h = host.clone();
-    scheduler.set_native_fn("enqueue", move |function: &str, payload: Map, options: Map| {
-        let mut request = to_json(&Dynamic::from_map(options))?;
-        if let Value::Object(object) = &mut request {
-            object.insert("function".into(), Value::String(function.to_string()));
-            object.insert("payload".into(), to_json(&Dynamic::from_map(payload))?);
-        }
-        h.data("scheduler::enqueue", request)
+    scheduler.set_native_fn(
+        "enqueue",
+        move |function: &str, payload: Map, options: Map| {
+            let mut request = to_json(&Dynamic::from_map(options))?;
+            if let Value::Object(object) = &mut request {
+                object.insert("function".into(), Value::String(function.to_string()));
+                object.insert("payload".into(), to_json(&Dynamic::from_map(payload))?);
+            }
+            h.data("scheduler::enqueue", request)
+        },
+    );
+    let h = host.clone();
+    scheduler.set_native_fn("job", move |id: &str| {
+        h.data("scheduler::job", serde_json::json!({ "id": id }))
     });
     let h = host.clone();
-    scheduler.set_native_fn("job", move |id: &str| h.data("scheduler::job", serde_json::json!({ "id": id })));
-    let h = host.clone();
-    scheduler.set_native_fn("cancel_job", move |id: &str| h.data("scheduler::cancel_job", serde_json::json!({ "id": id })));
+    scheduler.set_native_fn("cancel_job", move |id: &str| {
+        h.data("scheduler::cancel_job", serde_json::json!({ "id": id }))
+    });
     let h = host.clone();
     scheduler.set_native_fn("register", move |task: Map| {
         let payload = to_json(&Dynamic::from_map(task))?;
         h.data("scheduler::register", payload)
     });
     let h = host.clone();
-    scheduler.set_native_fn("cancel", move |name: &str| h.data("scheduler::cancel", serde_json::json!({ "name": name })));
+    scheduler.set_native_fn("cancel", move |name: &str| {
+        h.data("scheduler::cancel", serde_json::json!({ "name": name }))
+    });
     engine.register_static_module("scheduler", scheduler.into());
 
     let mut http = Module::new();
@@ -411,14 +672,19 @@ fn register_commands(engine: &mut Engine, host: &Arc<Host>) {
     });
     let h = host.clone();
     http.set_native_fn("get", move |url: &str| {
-        h.data("http::request", serde_json::json!({ "method": "GET", "url": url }))
+        h.data(
+            "http::request",
+            serde_json::json!({ "method": "GET", "url": url }),
+        )
     });
     let h = host.clone();
     http.set_native_fn("post", move |url: &str, body: Dynamic| {
         let body = to_json(&body)?;
         // Text goes as it is; maps and arrays are sent as JSON.
         let payload = match body {
-            Value::String(text) => serde_json::json!({ "method": "POST", "url": url, "body": text }),
+            Value::String(text) => {
+                serde_json::json!({ "method": "POST", "url": url, "body": text })
+            }
             other => serde_json::json!({ "method": "POST", "url": url, "json": other }),
         };
         h.data("http::request", payload)
@@ -436,10 +702,15 @@ fn register_commands(engine: &mut Engine, host: &Arc<Host>) {
     let mut events = Module::new();
     let h = host.clone();
     events.set_native_fn("subscribe", move |event: &str, function: &str| {
-        h.data("events::subscribe", serde_json::json!({ "event": event, "function": function }))
+        h.data(
+            "events::subscribe",
+            serde_json::json!({ "event": event, "function": function }),
+        )
     });
     let h = host.clone();
-    events.set_native_fn("unsubscribe", move |event: &str| h.data("events::unsubscribe", serde_json::json!({ "event": event })));
+    events.set_native_fn("unsubscribe", move |event: &str| {
+        h.data("events::unsubscribe", serde_json::json!({ "event": event }))
+    });
     let h = host.clone();
     events.set_native_fn("emit", move |event: Map| {
         let payload = to_json(&Dynamic::from_map(event))?;
@@ -464,7 +735,8 @@ mod tests {
 
     #[test]
     fn only_public_functions_are_callable() -> Result<(), Box<dyn std::error::Error>> {
-        let script = program("fn hello(input) { input } private fn secret() { 1 } fn zero() { 2 }")?;
+        let script =
+            program("fn hello(input) { input } private fn secret() { 1 } fn zero() { 2 }")?;
         assert!(script.has_function("hello") && script.has_function("zero"));
         assert!(!script.has_function("secret"));
         Ok(())
@@ -472,7 +744,10 @@ mod tests {
 
     #[test]
     fn a_script_that_does_not_compile_is_refused_when_loaded() {
-        assert!(matches!(RhaiProgram::compile("fn broken( {"), Err(ScriptError::Compile(_))));
+        assert!(matches!(
+            RhaiProgram::compile("fn broken( {"),
+            Err(ScriptError::Compile(_))
+        ));
     }
 
     #[test]
@@ -487,19 +762,29 @@ mod tests {
         let engine = limited_engine(None, Instant::now());
         let mut scope = Scope::new();
         let result = engine.call_fn::<Dynamic>(&mut scope, &script.ast, "spin", (Dynamic::UNIT,));
-        let error = result.err().map(|error| describe(*error)).ok_or("it finished")?;
+        let error = result
+            .err()
+            .map(|error| describe(*error))
+            .ok_or("it finished")?;
         assert!(error.to_string().contains("operations"), "{error}");
         Ok(())
     }
 
     #[test]
-    fn fail_from_a_nested_function_still_reaches_the_caller() -> Result<(), Box<dyn std::error::Error>> {
+    fn fail_from_a_nested_function_still_reaches_the_caller()
+    -> Result<(), Box<dyn std::error::Error>> {
         let script = program(r#"fn inner() { fail("deep"); } fn outer(input) { inner(); }"#)?;
         let engine = limited_engine(None, Instant::now());
         let mut scope = Scope::new();
         let result = engine.call_fn::<Dynamic>(&mut scope, &script.ast, "outer", (Dynamic::UNIT,));
-        let error = result.err().map(|error| describe(*error)).ok_or("it finished")?;
-        assert!(matches!(&error, ScriptError::User(message) if message == "deep"), "{error}");
+        let error = result
+            .err()
+            .map(|error| describe(*error))
+            .ok_or("it finished")?;
+        assert!(
+            matches!(&error, ScriptError::User(message) if message == "deep"),
+            "{error}"
+        );
         Ok(())
     }
 
@@ -525,7 +810,12 @@ mod tests {
             &["plugins::call"],
         )
         .await?;
-        assert!(result.as_str().is_some_and(|text| text.contains("dependencies")), "{result}");
+        assert!(
+            result
+                .as_str()
+                .is_some_and(|text| text.contains("dependencies")),
+            "{result}"
+        );
         Ok(())
     }
 
@@ -554,7 +844,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn messaging_and_background_commands_are_bound_and_checked() -> Result<(), Box<dyn std::error::Error>> {
+    async fn messaging_and_background_commands_are_bound_and_checked()
+    -> Result<(), Box<dyn std::error::Error>> {
         // These reach the kernel: without the capability each is refused and the script can catch it.
         let result = run_script(
             r#"fn run() {
@@ -574,7 +865,16 @@ mod tests {
         .await?;
         assert_eq!(
             result,
-            serde_json::json!(["send", "enqueue", "enqueue_payload", "enqueue_options", "job", "cancel_job", "register", "cancel"])
+            serde_json::json!([
+                "send",
+                "enqueue",
+                "enqueue_payload",
+                "enqueue_options",
+                "job",
+                "cancel_job",
+                "register",
+                "cancel"
+            ])
         );
         Ok(())
     }
@@ -602,10 +902,18 @@ mod tests {
                 cache::invalidate("short");
                 #{ n: seen.n, tag: seen.tags[0], gone: gone, cleared: cache::clear().removed }
             }"#,
-            &["cache::get", "cache::set", "cache::invalidate", "cache::clear"],
+            &[
+                "cache::get",
+                "cache::set",
+                "cache::invalidate",
+                "cache::clear",
+            ],
         )
         .await?;
-        assert_eq!(result, serde_json::json!({ "n": 1, "tag": "a", "gone": null, "cleared": 1 }));
+        assert_eq!(
+            result,
+            serde_json::json!({ "n": 1, "tag": "a", "gone": null, "cleared": 1 })
+        );
         Ok(())
     }
 
@@ -630,7 +938,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_refused_command_can_be_caught_by_the_script() -> Result<(), Box<dyn std::error::Error>> {
+    async fn a_refused_command_can_be_caught_by_the_script()
+    -> Result<(), Box<dyn std::error::Error>> {
         // No capability: the kernel refuses, the script sees an error it can handle.
         let result = run_script(
             r#"fn run() {
@@ -653,7 +962,12 @@ mod tests {
             &["http::request"],
         )
         .await?;
-        assert!(result.as_str().is_some_and(|text| text.contains("http_hosts")), "{result}");
+        assert!(
+            result
+                .as_str()
+                .is_some_and(|text| text.contains("http_hosts")),
+            "{result}"
+        );
         Ok(())
     }
 

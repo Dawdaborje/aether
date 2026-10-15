@@ -54,13 +54,14 @@ The traits and message types are in the `communication` facet.
 
 Not yet implemented: Mailgun, Postmark, Bravo and WhatsApp (their crates are still empty), and message
 types other than `email` and `sms`. A new bridge implements `EmailBridge` or `SmsBridge`, describes its
-settings in a `Spec`, is listed in `messaging/mod.rs`, and gets a group in `seeds/settings/communications.json`
-(a test checks that the seed and the bridge agree).
+settings in a `Spec`, is listed in `messaging/mod.rs`, and is seeded under the *Communication* group in
+`seeds/settings/communications.json` (a test checks that the seed and the bridge agree).
 
 ## Configuring it: settings, not `aether.toml`
 
 Everything lives in the database settings, at two levels: **global** (the default for every
-organization) and **organization** (an override). The groups are *Email*, *SMS* and one per provider.
+organization) and **organization** (an override). Email, SMS and every provider share one
+*Communication* settings group (with sections for each).
 
 | Setting | |
 |---|---|

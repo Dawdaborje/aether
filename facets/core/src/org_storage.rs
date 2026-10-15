@@ -80,13 +80,25 @@ mod tests {
         assert_eq!(storage.media_prefix, "orgs/acme");
         assert!(storage.directory.join("conf").is_dir());
 
-        let marker = media.get(&MediaKey::parse("orgs/acme/.aether-org")?).await?;
+        let marker = media
+            .get(&MediaKey::parse("orgs/acme/.aether-org")?)
+            .await?;
         assert_eq!(marker, Bytes::from_static(b"{\"organization\":\"acme\"}"));
 
         // Repeating is harmless; a bad name is refused before anything is written.
         provision_org_storage(&app_dir, media.clone(), "acme").await?;
-        assert!(provision_org_storage(&app_dir, media.clone(), "../evil").await.is_err());
-        assert!(media.list(None).await?.iter().all(|o| o.key.starts_with("orgs/acme/")));
+        assert!(
+            provision_org_storage(&app_dir, media.clone(), "../evil")
+                .await
+                .is_err()
+        );
+        assert!(
+            media
+                .list(None)
+                .await?
+                .iter()
+                .all(|o| o.key.starts_with("orgs/acme/"))
+        );
         Ok(())
     }
 }

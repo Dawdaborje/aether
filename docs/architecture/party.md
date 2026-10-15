@@ -42,14 +42,16 @@ base currency on a date). Functions: `create_currency`, `update_currency`, `list
 `set_base`, `get_base`, `set_rate`, `get_rate`, `list_rates`, `convert`, `seed_currencies` (65 currencies in common
 use; the first run makes USD the base), `get_currency_by_code`. Converting from A to B on a date is
 `amount / rate(A) * rate(B)` with the newest rate on or before the date, rounded to B's decimals.
-Command: `currency.seed`. Announces `currency.rate_changed`.
+Command: `currency.seed` (`on_install` / `on_upgrade`: the kernel runs it when the plugin is
+installed or upgraded). Announces `currency.rate_changed`.
 
 ### `country` (v0.1)
 
 `country` (ISO code, 3-letter code, name, phone prefix, usual **currency**, active) and `country_region`.
 Functions: `create_country`, `update_country`, `get_country`, `list_countries`, `add_region`, `list_regions`,
 `remove_region`, `seed_countries` (the 54 African countries and 30 main economies elsewhere; each linked to its
-currency). Command: `country.seed` (run `currency.seed` first).
+currency). Command: `country.seed` (`on_install` / `on_upgrade`; depends on currencies already
+seeded — install order runs `currency` first).
 
 ### `party` (v0.1)
 
@@ -89,6 +91,18 @@ Functions: `create_company` (also creates the party record; the first company be
 contains a date, for the default company or one named: `{ start, end }`, both included; a Feb-29 start moves to the
 28th in years without one). Command: `company.create`. Having several companies in one organization is possible;
 **scoping other plugins' data by company** is a larger design (record rules per company) and is not done.
+
+#### Working company (shell context)
+
+An organization may hold several companies. The shell keeps a **working company** for the signed-in user
+(preference → org default → first active), exposed as:
+
+- `GET` / `PUT /api/ui/company` for the navbar switcher
+- `company` on `context::get` for plugins (`{ id, name, is_default }` or `null`)
+
+This is Odoo-style company context: it is the default for company-scoped documents later. It does **not**
+filter shared masters. Parties (and countries, currencies, …) stay org-wide; a party is not “owned” by the
+working company. Persist the preference in org table `aether_user_defaults`.
 
 ## How other plugins build on it
 

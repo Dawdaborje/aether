@@ -27,6 +27,8 @@ export function identifierFor(name: string): string {
 export async function createOrganization(input: {
 	name: string;
 	identifier: string;
+	description?: string;
+	parent?: string;
 	member: NewMember;
 }): Promise<CreatedOrganization> {
 	const res = await apiFetch('/api/ui/organizations', {
@@ -35,6 +37,8 @@ export async function createOrganization(input: {
 		body: JSON.stringify({
 			name: input.name,
 			identifier: input.identifier || undefined,
+			description: input.description?.trim() || undefined,
+			parent: input.parent?.trim() || undefined,
 			member: input.member
 		})
 	});

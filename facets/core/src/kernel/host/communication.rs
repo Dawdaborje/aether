@@ -30,7 +30,10 @@ pub async fn send(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonVa
     let request = payload
         .as_object()
         .ok_or_else(|| HostError::InvalidPayload("a message is a JSON object".into()))?;
-    let kind = request.get("type").and_then(JsonValue::as_str).unwrap_or("");
+    let kind = request
+        .get("type")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("");
     match kind {
         "email" | "sms" => ctx.require_cap(&format!("{kind}::send"))?,
         _ => {}
@@ -38,8 +41,15 @@ pub async fn send(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonVa
     message::reject_unknown_fields(request).map_err(|e| HostError::InvalidPayload(e.0))?;
     let messages = Message::from_request(payload).map_err(|e| HostError::InvalidPayload(e.0))?;
 
-    let scheduler = ctx.services()?.scheduler.clone().ok_or_else(|| HostError::Message("sending messages is not available here".into()))?;
-    scheduler.check_messaging(&ctx.database, kind).await.map_err(HostError::Message)?;
+    let scheduler = ctx
+        .services()?
+        .scheduler
+        .clone()
+        .ok_or_else(|| HostError::Message("sending messages is not available here".into()))?;
+    scheduler
+        .check_messaging(&ctx.database, kind)
+        .await
+        .map_err(HostError::Message)?;
 
     let mut response = ctx
         .db
@@ -48,7 +58,9 @@ pub async fn send(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonVa
         .await?
         .check()?;
     let recent: Option<JsonValue> = response.take(0)?;
-    let recent = recent.and_then(|row| row.get("n").and_then(JsonValue::as_i64)).unwrap_or(0);
+    let recent = recent
+        .and_then(|row| row.get("n").and_then(JsonValue::as_i64))
+        .unwrap_or(0);
     if recent + messages.len() as i64 > MAX_PER_PLUGIN_PER_HOUR {
         return Err(HostError::Message(format!(
             "this plugin has already queued {recent} messages in the last hour; the limit is {MAX_PER_PLUGIN_PER_HOUR}"
@@ -63,7 +75,12 @@ pub async fn send(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonVa
         job.payload = Some(message.to_payload());
         job.max_attempts = defaults.max_attempts;
         job.backoff_secs = defaults.backoff_secs;
-        job.enqueued_by = ctx.audit.actor.id().map(str::to_string).or_else(|| Some("anonymous".into()));
+        job.enqueued_by = ctx
+            .audit
+            .actor
+            .id()
+            .map(str::to_string)
+            .or_else(|| Some("anonymous".into()));
         job.request_id = Some(ctx.audit.request_id.clone());
         match queue::enqueue(&ctx.db, job).await {
             Ok(enqueued) => jobs.push(enqueued.id),

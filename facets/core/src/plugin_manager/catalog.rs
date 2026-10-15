@@ -10,27 +10,27 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
+use aether_security::capabilities::CapabilityCatalog;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use surrealdb::{Surreal, engine::remote::ws::Client, types::SurrealValue};
-use aether_security::capabilities::CapabilityCatalog;
 use thiserror::Error;
 
-use crate::app_dir::{AppDir, AppDirError};
-use super::models::plugin_db_def::{PluginDbAuthor, PluginDbCategory, PluginDbDefinition};
-use super::models::plugin_def::{ManifestError, PluginManifest};
 use super::components::{
     ComponentDocument, ComponentError, ComponentRef, ComponentRegistry, collect_uses,
     discover_components, expand_tree, registry_from_documents,
 };
+use super::models::plugin_db_def::{PluginDbAuthor, PluginDbCategory, PluginDbDefinition};
+use super::models::plugin_def::{ManifestError, PluginManifest};
 use super::pages::{PageDocument, PageError, discover_pages, write_view_files};
 use super::revisions;
 use super::shell_defs::{
     ErrorSetDef, LayoutDef, ShellDefError, discover_error_sets, discover_layouts,
     error_sets_by_name, is_builtin_error_set, is_builtin_layout, layouts_by_name,
 };
-use crate::data_model::{ModelDef, ModelFileError, apply as model_apply, read_models};
 use super::themes::{ThemeDocument, ThemeError, parse_theme};
+use crate::app_dir::{AppDir, AppDirError};
+use crate::data_model::{ModelDef, ModelFileError, apply as model_apply, read_models};
 
 const MANIFEST_FILE: &str = "plugin.toml";
 const INSTALLED_BY_CLI: &str = "cli";
@@ -78,7 +78,9 @@ pub enum CatalogError {
     #[error(transparent)]
     ShellDef(#[from] ShellDefError),
 
-    #[error("{path}: theme `{field}` is `{name}`, which is neither a built-in nor defined under `{folder}/`")]
+    #[error(
+        "{path}: theme `{field}` is `{name}`, which is neither a built-in nor defined under `{folder}/`"
+    )]
     UnknownShellDef {
         path: PathBuf,
         field: &'static str,
@@ -86,11 +88,12 @@ pub enum CatalogError {
         folder: &'static str,
     },
 
-    #[error("{path}: `[app].route` is `{route}`, which is not a page of this plugin (pages: {pages})")]
+    #[error("{path}: `[app].route` is `{route}`, which is not a page of this plugin. {fix}")]
     AppRouteNotAPage {
         path: PathBuf,
         route: String,
-        pages: String,
+        /// What to change, worded for the person who wrote the plugin.
+        fix: String,
     },
 
     #[error("{path}: `[app].{field}` is invalid: {reason}")]
@@ -98,6 +101,13 @@ pub enum CatalogError {
         path: PathBuf,
         field: &'static str,
         reason: &'static str,
+    },
+
+    #[error("{path}: the stylesheet of theme {theme} {reason}")]
+    ThemeStylesheet {
+        path: PathBuf,
+        theme: PathBuf,
+        reason: String,
     },
 
     #[error("{0}: `[theme]` needs `tokens_file`")]
@@ -177,7 +187,9 @@ pub enum CatalogError {
         source: aether_security::capabilities::CapabilityError,
     },
 
-    #[error("{path}: `public_capabilities` lists `{capability}`, which the plugin does not list in `capabilities`")]
+    #[error(
+        "{path}: `public_capabilities` lists `{capability}`, which the plugin does not list in `capabilities`"
+    )]
     PublicCapabilityNotHeld { path: PathBuf, capability: String },
 
     #[error("the built-in capability catalog is invalid: {0}")]
@@ -192,11 +204,23 @@ pub enum CatalogError {
     #[error(transparent)]
     ModelSchema(#[from] model_apply::ApplyError),
 
-    #[error("{path}: `{name}` is listed in `{list}` but there is no model of that name; define it in `models/{name}.json`")]
-    UnknownGrantedModel { path: PathBuf, name: String, list: &'static str },
+    #[error(
+        "{path}: `{name}` is listed in `{list}` but there is no model of that name; define it in `models/{name}.json`"
+    )]
+    UnknownGrantedModel {
+        path: PathBuf,
+        name: String,
+        list: &'static str,
+    },
 
-    #[error("model id `{model_id}` ({model}) is already used by plugin `{plugin}`; ids must be unique across plugins")]
-    ModelIdTaken { model_id: String, model: String, plugin: String },
+    #[error(
+        "model id `{model_id}` ({model}) is already used by plugin `{plugin}`; ids must be unique across plugins"
+    )]
+    ModelIdTaken {
+        model_id: String,
+        model: String,
+        plugin: String,
+    },
 
     #[error("organization database `{0}` was not found")]
     OrganizationNotFound(String),
@@ -317,6 +341,12 @@ struct NewApp {
     icon: Option<String>,
     route: String,
     description: Option<String>,
+    #[serde(default)]
+    standalone: bool,
+    #[serde(default)]
+    folder: Option<String>,
+    #[serde(default)]
+    roles: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, SurrealValue)]
@@ -339,6 +369,7 @@ struct NewTheme {
     nav: Option<serde_json::Value>,
     layout_def: Option<serde_json::Value>,
     error_pages_def: Option<serde_json::Value>,
+    shell: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, SurrealValue)]
@@ -370,6 +401,11 @@ struct NewUiPage {
     model: Option<String>,
     models: Vec<String>,
     is_public: bool,
+    is_menu_visible: bool,
+    icon: Option<String>,
+    menu_group: Option<String>,
+    sort_order: i64,
+    required_roles: Vec<String>,
     component_tree: serde_json::Value,
     source_path: String,
 }
@@ -404,12 +440,22 @@ pub fn base_version(version: &str) -> &str {
 async fn read_rule_files(package_dir: &Path) -> Result<Vec<(PathBuf, String)>, CatalogError> {
     let directory = package_dir.join(crate::data_model::rules::RULE_DIR);
     let mut found = Vec::new();
-    let Ok(mut entries) = tokio::fs::read_dir(&directory).await else { return Ok(found) };
+    let Ok(mut entries) = tokio::fs::read_dir(&directory).await else {
+        return Ok(found);
+    };
     while let Some(entry) = entries.next_entry().await.map_err(io_error(&directory))? {
         let path = entry.path();
-        if path.extension().is_some_and(|extension| extension == "json") {
-            let text = tokio::fs::read_to_string(&path).await.map_err(io_error(&path))?;
-            let relative = path.strip_prefix(package_dir).unwrap_or(&path).to_path_buf();
+        if path
+            .extension()
+            .is_some_and(|extension| extension == "json")
+        {
+            let text = tokio::fs::read_to_string(&path)
+                .await
+                .map_err(io_error(&path))?;
+            let relative = path
+                .strip_prefix(package_dir)
+                .unwrap_or(&path)
+                .to_path_buf();
             found.push((relative, text));
         }
     }
@@ -424,7 +470,10 @@ fn logical_path(path: &Path) -> String {
 
 /// The capabilities a manifest asks for must exist, and a public capability must be one the
 /// plugin holds.
-fn validate_capabilities(manifest: &PluginManifest, manifest_path: &Path) -> Result<(), CatalogError> {
+fn validate_capabilities(
+    manifest: &PluginManifest,
+    manifest_path: &Path,
+) -> Result<(), CatalogError> {
     use std::sync::OnceLock;
     static CATALOG: OnceLock<Result<CapabilityCatalog, String>> = OnceLock::new();
     let catalog = CATALOG
@@ -559,7 +608,16 @@ pub async fn check_plugin(
     plugin_path: &Path,
     batch_models: &HashMap<String, String>,
 ) -> Result<LoadedPlugin, CatalogError> {
-    load_plugin_inner(db, namespace, core_database, app_dir, plugin_path, true, batch_models).await
+    load_plugin_inner(
+        db,
+        namespace,
+        core_database,
+        app_dir,
+        plugin_path,
+        true,
+        batch_models,
+    )
+    .await
 }
 
 /// `plugin.model` → `model_id` for every package in `plugin_paths` that has models on disk.
@@ -636,7 +694,15 @@ async fn load_plugin_inner(
     let error_sets = discover_error_sets(&package_dir).await?;
     let model_files = read_models(&package_dir)?;
     let models: Vec<ModelDef> = model_files.iter().map(|(_, model)| model.clone()).collect();
-    check_foreign_links(db, namespace, core_database, &manifest.plugin, &models, batch_models).await?;
+    check_foreign_links(
+        db,
+        namespace,
+        core_database,
+        &manifest.plugin,
+        &models,
+        batch_models,
+    )
+    .await?;
     validate_page_models(&manifest, &models, &pages)?;
     validate_component_models(&models, &components)?;
     validate_component_uses(db, namespace, core_database, &manifest, &components, &pages).await?;
@@ -651,10 +717,16 @@ async fn load_plugin_inner(
     let app = read_app(&manifest, &manifest_path, &pages)?;
     let rule_files = read_rule_files(&package_dir).await?;
     crate::data_model::rules::parse_all(
-        &rule_files.iter().map(|(path, text)| (logical_path(path), text.clone())).collect::<Vec<_>>(),
+        &rule_files
+            .iter()
+            .map(|(path, text)| (logical_path(path), text.clone()))
+            .collect::<Vec<_>>(),
         &models,
     )
-    .map_err(|problems| CatalogError::Rules { plugin: manifest.plugin.name.clone(), problems: problems.join("; ") })?;
+    .map_err(|problems| CatalogError::Rules {
+        plugin: manifest.plugin.name.clone(),
+        problems: problems.join("; "),
+    })?;
 
     let mut files = BTreeSet::from([PathBuf::from(MANIFEST_FILE)]);
     files.extend(rule_files.iter().map(|(path, _)| path.clone()));
@@ -672,7 +744,12 @@ async fn load_plugin_inner(
     }
     // Logos and other static files under `assets/` (and a top-level `icon_path`).
     files.extend(collect_asset_files(&package_dir).await?);
-    if let Some(icon) = manifest.plugin.icon_path.as_deref().filter(|path| !path.is_empty()) {
+    if let Some(icon) = manifest
+        .plugin
+        .icon_path
+        .as_deref()
+        .filter(|path| !path.is_empty())
+    {
         files.insert(resolve_package_file(&package_dir, icon).await?);
     }
     let text_catalogs = super::i18n::read_catalogs(&package_dir, &manifest)
@@ -692,7 +769,8 @@ async fn load_plugin_inner(
     let artifact = match manifest.plugin.code_file() {
         Some(code_file) => {
             let source = resolve_package_file(&package_dir, code_file).await?;
-            if manifest.plugin.is_script() && super::script::ScriptKind::of_path(&source).is_none() {
+            if manifest.plugin.is_script() && super::script::ScriptKind::of_path(&source).is_none()
+            {
                 return Err(CatalogError::ScriptExtension { path: source });
             }
             let name = source
@@ -716,17 +794,26 @@ async fn load_plugin_inner(
         content.update(&bytes);
         contents.push((logical_path(relative), bytes));
     }
-    let artifact_logical = artifact.as_ref().map(|artifact| logical_path(&artifact.name));
+    let artifact_logical = artifact
+        .as_ref()
+        .map(|artifact| logical_path(&artifact.name));
     if let Some(artifact) = &artifact {
         let source = package_dir.join(&artifact.source);
         let bytes = tokio::fs::read(&source).await.map_err(io_error(&source))?;
         // A script that does not compile is refused now, not at the first call.
         if manifest.plugin.is_script() {
             let text = String::from_utf8_lossy(&bytes);
-            let kind = super::script::ScriptKind::of_path(&source)
-                .ok_or_else(|| CatalogError::ScriptExtension { path: source.clone() })?;
-            super::script::ScriptProgram::compile(kind, &text)
-                .map_err(|error| CatalogError::ScriptInvalid { path: source.clone(), message: error.to_string() })?;
+            let kind = super::script::ScriptKind::of_path(&source).ok_or_else(|| {
+                CatalogError::ScriptExtension {
+                    path: source.clone(),
+                }
+            })?;
+            super::script::ScriptProgram::compile(kind, &text).map_err(|error| {
+                CatalogError::ScriptInvalid {
+                    path: source.clone(),
+                    message: error.to_string(),
+                }
+            })?;
         }
         wasm_hash = Some(sha256_hex(&bytes));
         content.update(artifact.name.to_string_lossy().as_bytes());
@@ -740,18 +827,32 @@ async fn load_plugin_inner(
         .collect::<String>();
 
     let is_system_theme = manifest.theme.as_ref().is_some_and(|theme| theme.is_system);
-    let app_summary = app.as_ref().map(|app| (app.label.clone(), app.route.clone()));
+    let app_summary = app
+        .as_ref()
+        .map(|app| (app.label.clone(), app.route.clone()));
     let theme_summary = theme
         .as_ref()
         .map(|theme| (theme.name.clone(), theme.layout.clone()));
-    let schedules: Vec<serde_json::Value> =
-        manifest.schedule.iter().filter_map(|task| serde_json::to_value(task).ok()).collect();
-    let commands: Vec<serde_json::Value> =
-        manifest.command.iter().filter_map(|command| serde_json::to_value(command).ok()).collect();
-    let watches: Vec<serde_json::Value> =
-        manifest.watch.iter().filter_map(|watch| serde_json::to_value(watch).ok()).collect();
-    let roles: Vec<serde_json::Value> =
-        manifest.roles.iter().filter_map(|role| serde_json::to_value(role).ok()).collect();
+    let schedules: Vec<serde_json::Value> = manifest
+        .schedule
+        .iter()
+        .filter_map(|task| serde_json::to_value(task).ok())
+        .collect();
+    let commands: Vec<serde_json::Value> = manifest
+        .command
+        .iter()
+        .filter_map(|command| serde_json::to_value(command).ok())
+        .collect();
+    let watches: Vec<serde_json::Value> = manifest
+        .watch
+        .iter()
+        .filter_map(|watch| serde_json::to_value(watch).ok())
+        .collect();
+    let roles: Vec<serde_json::Value> = manifest
+        .roles
+        .iter()
+        .filter_map(|role| serde_json::to_value(role).ok())
+        .collect();
     let event_listeners: Vec<serde_json::Value> = manifest
         .events
         .iter()
@@ -799,24 +900,43 @@ async fn load_plugin_inner(
 
     // A model id belongs to one plugin, in every version of it.
     if !models.is_empty() {
-        let ids: Vec<String> = models.iter().filter_map(|model| model.model_id.clone()).collect();
+        let ids: Vec<String> = models
+            .iter()
+            .filter_map(|model| model.model_id.clone())
+            .collect();
         let mut response = db
-            .query("SELECT model_id, plugin.name AS plugin FROM plugin_models WHERE model_id IN $ids;")
+            .query(
+                "SELECT model_id, plugin.name AS plugin FROM plugin_models WHERE model_id IN $ids;",
+            )
             .bind(("ids", ids))
             .await?
             .check()?;
         let taken: Vec<ModelIdOwner> = response.take(0)?;
-        if let Some(other) = taken.into_iter().find(|owner| owner.plugin != definition.name) {
+        if let Some(other) = taken
+            .into_iter()
+            .find(|owner| owner.plugin != definition.name)
+        {
             let model = models
                 .iter()
                 .find(|model| model.model_id.as_deref() == Some(other.model_id.as_str()))
                 .map_or_else(String::new, |model| model.name.clone());
-            return Err(CatalogError::ModelIdTaken { model_id: other.model_id, model, plugin: other.plugin });
+            return Err(CatalogError::ModelIdTaken {
+                model_id: other.model_id,
+                model,
+                plugin: other.plugin,
+            });
         }
     }
 
     if dry_run {
-        return Ok(summary(definition.version.clone(), artifact_logical, false, None, 0, 0));
+        return Ok(summary(
+            definition.version.clone(),
+            artifact_logical,
+            false,
+            None,
+            0,
+            0,
+        ));
     }
 
     // The same content again is not a new revision.
@@ -836,8 +956,16 @@ async fn load_plugin_inner(
                 }
                 artifact_logical
                     .as_ref()
-                    .and_then(|logical| index.as_ref()?.files.get(logical).map(|entry| (logical, entry)))
-                    .map(|(logical, entry)| revisions::relative_path(&definition.name, entry, logical))
+                    .and_then(|logical| {
+                        index
+                            .as_ref()?
+                            .files
+                            .get(logical)
+                            .map(|entry| (logical, entry))
+                    })
+                    .map(|(logical, entry)| {
+                        revisions::relative_path(&definition.name, entry, logical)
+                    })
                     .map(|path| path.to_string_lossy().into_owned())
             }
             // Stored in the older layout: files are in plugins/<name>/<version>/.
@@ -849,14 +977,24 @@ async fn load_plugin_inner(
                 })
                 .transpose()?,
         };
-        return Ok(summary(same.version.clone(), artifact_path, false, same.revision.clone(), 0, 0));
+        return Ok(summary(
+            same.version.clone(),
+            artifact_path,
+            false,
+            same.revision.clone(),
+            0,
+            0,
+        ));
     }
 
     // New content. Compare its files by hash with the plugin's latest revision and write
     // only the ones that differ, into a new folder named after the date and time.
     let previous = match known.first() {
         Some(latest) => {
-            let folder = latest.revision.clone().unwrap_or_else(|| latest.version.clone());
+            let folder = latest
+                .revision
+                .clone()
+                .unwrap_or_else(|| latest.version.clone());
             revisions::read_index(&layout, &definition.name, &folder)
                 .await?
                 .map(|index| (folder, index))
@@ -867,21 +1005,32 @@ async fn load_plugin_inner(
         &layout,
         &definition.name,
         &definition.version,
-        previous.as_ref().map(|(folder, index)| (folder.as_str(), index)),
+        previous
+            .as_ref()
+            .map(|(folder, index)| (folder.as_str(), index)),
         &contents,
     )
     .await?;
 
     // The first load of a version keeps the version as written; a rebuild of one that is
     // already catalogued is `<version>+<stamp>`, so nothing needs a manual version bump.
-    let catalog_version = if known.iter().any(|row| base_version(&row.version) == definition.version) {
+    let catalog_version = if known
+        .iter()
+        .any(|row| base_version(&row.version) == definition.version)
+    {
         format!("{}+{}", definition.version, stored.revision)
     } else {
         definition.version.clone()
     };
     let artifact_path = artifact_logical
         .as_ref()
-        .and_then(|logical| stored.index.files.get(logical).map(|entry| (logical, entry)))
+        .and_then(|logical| {
+            stored
+                .index
+                .files
+                .get(logical)
+                .map(|entry| (logical, entry))
+        })
         .map(|(logical, entry)| {
             revisions::relative_path(&definition.name, entry, logical)
                 .to_string_lossy()
@@ -931,7 +1080,9 @@ async fn load_plugin_inner(
         public_functions: definition.public_functions.clone(),
         schedules,
         commands,
-        i18n: text_catalogs.as_ref().map(|found| super::i18n::to_value(&found.catalogs)),
+        i18n: text_catalogs
+            .as_ref()
+            .map(|found| super::i18n::to_value(&found.catalogs)),
         watches,
         event_listeners,
         roles,
@@ -947,6 +1098,7 @@ async fn load_plugin_inner(
             definition: serde_json::to_value(model).unwrap_or(serde_json::Value::Null),
         })
         .collect();
+    let plugin_name = definition.name.as_str();
     let rows: Vec<NewUiPage> = pages
         .iter()
         .map(|page| NewUiPage {
@@ -959,6 +1111,16 @@ async fn load_plugin_inner(
             model: page.model.clone(),
             models: page.models.iter().cloned().collect(),
             is_public: page.public,
+            is_menu_visible: page.menu_visible,
+            icon: page.icon.clone(),
+            menu_group: page.menu_group.clone(),
+            sort_order: page.sort_order,
+            required_roles: page
+                .roles
+                .iter()
+                .map(|role| crate::roles::qualify_role(plugin_name, role))
+                .filter(|role| !role.is_empty())
+                .collect(),
             component_tree: page.tree.clone(),
             source_path: page.source.to_string_lossy().into_owned(),
         })
@@ -988,7 +1150,8 @@ async fn load_plugin_inner(
                 error_pages: $theme.error_pages,
                 nav: $theme.nav,
                 layout_def: $theme.layout_def,
-                error_pages_def: $theme.error_pages_def
+                error_pages_def: $theme.error_pages_def,
+                shell: $theme.shell
             };
         };
         FOR $layout IN $layouts {
@@ -1033,6 +1196,11 @@ async fn load_plugin_inner(
                 model: $page.model,
                 models: $page.models,
                 is_public: $page.is_public,
+                is_menu_visible: $page.is_menu_visible,
+                icon: $page.icon,
+                menu_group: $page.menu_group,
+                sort_order: $page.sort_order,
+                required_roles: $page.required_roles,
                 component_tree: $page.component_tree,
                 source_path: $page.source_path
             };
@@ -1050,34 +1218,50 @@ async fn load_plugin_inner(
         "#,
     )
     .bind(("record", record))
-    .bind(("theme", theme.map(|theme| NewTheme {
-        name: theme.name,
-        label: theme.label,
-        is_system: is_system_theme,
-        color_mode: theme.color_mode,
-        tokens: theme.tokens,
-        layout: theme.layout,
-        error_pages: theme.error_pages,
-        nav: theme.nav,
-        layout_def: theme.layout_def,
-        error_pages_def: theme.error_pages_def,
-    })))
+    .bind((
+        "theme",
+        theme.map(|theme| NewTheme {
+            name: theme.name,
+            label: theme.label,
+            is_system: is_system_theme,
+            color_mode: theme.color_mode,
+            tokens: theme.tokens,
+            layout: theme.layout,
+            error_pages: theme.error_pages,
+            nav: theme.nav,
+            layout_def: theme.layout_def,
+            error_pages_def: theme.error_pages_def,
+            shell: theme.shell,
+        }),
+    ))
     .bind(("pages", rows))
     .bind(("components", component_rows))
-    .bind(("layouts", layouts.iter().map(|layout| NewLayoutRow {
-        name: layout.name.clone(),
-        label: layout.label.clone(),
-        chrome: layout.chrome.clone(),
-        definition: layout.definition.clone(),
-        source_path: layout.source.to_string_lossy().into_owned(),
-    }).collect::<Vec<_>>()))
-    .bind(("error_sets", error_sets.iter().map(|set| NewErrorSetRow {
-        name: set.name.clone(),
-        label: set.label.clone(),
-        variant: set.variant.clone(),
-        definition: set.definition.clone(),
-        source_path: set.source.to_string_lossy().into_owned(),
-    }).collect::<Vec<_>>()))
+    .bind((
+        "layouts",
+        layouts
+            .iter()
+            .map(|layout| NewLayoutRow {
+                name: layout.name.clone(),
+                label: layout.label.clone(),
+                chrome: layout.chrome.clone(),
+                definition: layout.definition.clone(),
+                source_path: layout.source.to_string_lossy().into_owned(),
+            })
+            .collect::<Vec<_>>(),
+    ))
+    .bind((
+        "error_sets",
+        error_sets
+            .iter()
+            .map(|set| NewErrorSetRow {
+                name: set.name.clone(),
+                label: set.label.clone(),
+                variant: set.variant.clone(),
+                definition: set.definition.clone(),
+                source_path: set.source.to_string_lossy().into_owned(),
+            })
+            .collect::<Vec<_>>(),
+    ))
     .bind(("models", model_rows))
     .await?
     .check()?;
@@ -1102,11 +1286,12 @@ fn read_app(
     let Some(app) = &manifest.app else {
         return Ok(None);
     };
-    let route = super::pages::RoutePattern::parse(&app.route).map_err(|_| CatalogError::InvalidApp {
-        path: manifest_path.to_path_buf(),
-        field: "route",
-        reason: "must be an absolute page route such as `/chat`",
-    })?;
+    let route =
+        super::pages::RoutePattern::parse(&app.route).map_err(|_| CatalogError::InvalidApp {
+            path: manifest_path.to_path_buf(),
+            field: "route",
+            reason: "must be an absolute page route such as `/chat`",
+        })?;
     if route.is_pattern() {
         return Err(CatalogError::InvalidApp {
             path: manifest_path.to_path_buf(),
@@ -1116,10 +1301,26 @@ fn read_app(
     }
     let route = route.canonical();
     if !pages.iter().any(|page| page.route == route) {
+        // Pages made up for `extends` tabs cannot be opened by a tile; do not offer them.
+        let own: Vec<&str> = pages
+            .iter()
+            .map(|page| page.route.as_str())
+            .filter(|route| !route.starts_with(super::pages::EXTENSION_ROUTE_PREFIX))
+            .collect();
+        let fix = if own.is_empty() {
+            "This plugin has no page of its own (it only adds tabs to other pages), so it has \
+             nothing for an app tile to open: remove the `[app]` section from plugin.toml."
+                .to_string()
+        } else {
+            format!(
+                "Set `[app].route` to one of this plugin's pages ({}), or remove the `[app]` section.",
+                own.join(", ")
+            )
+        };
         return Err(CatalogError::AppRouteNotAPage {
             path: manifest_path.to_path_buf(),
             route,
-            pages: pages.iter().map(|page| page.route.as_str()).collect::<Vec<_>>().join(", "),
+            fix,
         });
     }
     if let Some(icon) = &app.icon
@@ -1135,13 +1336,33 @@ fn read_app(
         .label
         .clone()
         .filter(|label| !label.trim().is_empty())
-        .or_else(|| (!manifest.plugin.label.trim().is_empty()).then(|| manifest.plugin.label.clone()))
+        .or_else(|| {
+            (!manifest.plugin.label.trim().is_empty()).then(|| manifest.plugin.label.clone())
+        })
         .unwrap_or_else(|| manifest.plugin.name.clone());
+    let folder = app
+        .folder
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string);
+    let roles = app
+        .roles
+        .iter()
+        .map(|role| crate::roles::qualify_role(&manifest.plugin.name, role))
+        .filter(|role| !role.is_empty())
+        .collect();
     Ok(Some(NewApp {
         label,
         icon: app.icon.clone(),
         route,
-        description: app.description.clone().filter(|text| !text.trim().is_empty()),
+        description: app
+            .description
+            .clone()
+            .filter(|text| !text.trim().is_empty()),
+        standalone: app.standalone,
+        folder,
+        roles,
     }))
 }
 
@@ -1162,8 +1383,44 @@ async fn read_theme(
         .ok_or_else(|| CatalogError::ThemeWithoutTokens(manifest_path.to_path_buf()))?;
     let relative = resolve_package_file(package_dir, tokens_file).await?;
     let path = package_dir.join(relative);
-    let text = tokio::fs::read_to_string(&path).await.map_err(io_error(&path))?;
-    Ok(Some(parse_theme(&text, &path, &theme.name, theme.label.as_deref())?))
+    let text = tokio::fs::read_to_string(&path)
+        .await
+        .map_err(io_error(&path))?;
+    let mut document = parse_theme(&text, &path, &theme.name, theme.label.as_deref())?;
+    attach_stylesheet(&mut document, package_dir, &manifest.plugin.name, &path).await?;
+    Ok(Some(document))
+}
+
+/// Read the stylesheet a theme names, check it, and keep the checked text on the theme.
+async fn attach_stylesheet(
+    theme: &mut ThemeDocument,
+    package_dir: &Path,
+    plugin: &str,
+    theme_path: &Path,
+) -> Result<(), CatalogError> {
+    let Some(shell) = theme.shell.as_mut().and_then(|shell| shell.as_object_mut()) else {
+        return Ok(());
+    };
+    let Some(file) = shell
+        .remove("css_file")
+        .and_then(|file| file.as_str().map(str::to_string))
+    else {
+        return Ok(());
+    };
+    let relative = resolve_package_file(package_dir, &file).await?;
+    let css_path = package_dir.join(relative);
+    let css = tokio::fs::read_to_string(&css_path)
+        .await
+        .map_err(io_error(&css_path))?;
+    let checked = super::theme_css::sanitize(&css, plugin).map_err(|reason| {
+        CatalogError::ThemeStylesheet {
+            path: css_path.clone(),
+            theme: theme_path.to_path_buf(),
+            reason,
+        }
+    })?;
+    shell.insert("css".into(), serde_json::Value::String(checked));
+    Ok(())
 }
 
 /// A page's `layout=` must be a built-in name or one this package defines.
@@ -1173,7 +1430,9 @@ fn validate_page_layouts(
 ) -> Result<(), CatalogError> {
     let known = layouts_by_name(layouts);
     for page in pages {
-        let Some(layout) = page.layout.as_deref() else { continue };
+        let Some(layout) = page.layout.as_deref() else {
+            continue;
+        };
         if is_builtin_layout(layout) || known.contains_key(layout) {
             continue;
         }
@@ -1275,7 +1534,10 @@ async fn validate_component_uses(
     components: &[ComponentDocument],
     pages: &[PageDocument],
 ) -> Result<(), CatalogError> {
-    let local: BTreeSet<&str> = components.iter().map(|component| component.name.as_str()).collect();
+    let local: BTreeSet<&str> = components
+        .iter()
+        .map(|component| component.name.as_str())
+        .collect();
     let plugin = &manifest.plugin;
     let mut foreign: BTreeSet<(String, String)> = BTreeSet::new();
 
@@ -1314,7 +1576,11 @@ async fn validate_component_uses(
                     }
                 }
                 Some(other) => {
-                    if !plugin.dependencies.iter().any(|dependency| dependency == other) {
+                    if !plugin
+                        .dependencies
+                        .iter()
+                        .any(|dependency| dependency == other)
+                    {
                         return Err(CatalogError::BadComponentUse {
                             path: path.to_path_buf(),
                             reference: raw,
@@ -1342,11 +1608,12 @@ async fn validate_component_uses(
         let Some(wrap) = page.wrap.as_deref() else {
             continue;
         };
-        let reference = ComponentRef::parse(wrap).map_err(|reason| CatalogError::BadComponentUse {
-            path: page.source.clone(),
-            reference: wrap.to_string(),
-            reason,
-        })?;
+        let reference =
+            ComponentRef::parse(wrap).map_err(|reason| CatalogError::BadComponentUse {
+                path: page.source.clone(),
+                reference: wrap.to_string(),
+                reason,
+            })?;
         match &reference.plugin {
             None => {
                 if !local.contains(reference.name.as_str()) {
@@ -1373,7 +1640,11 @@ async fn validate_component_uses(
                 }
             }
             Some(other) => {
-                if !plugin.dependencies.iter().any(|dependency| dependency == other) {
+                if !plugin
+                    .dependencies
+                    .iter()
+                    .any(|dependency| dependency == other)
+                {
                     return Err(CatalogError::BadComponentUse {
                         path: page.source.clone(),
                         reference: wrap.to_string(),
@@ -1445,8 +1716,14 @@ fn validate_granted_models(
 ) -> Result<(), CatalogError> {
     let declared: BTreeSet<&str> = models.iter().map(|model| model.name.as_str()).collect();
     let plugin = &manifest.plugin;
-    for (list, entries) in [("access_models", &plugin.access_models), ("public_access_models", &plugin.public_access_models)] {
-        if let Some(entry) = entries.iter().find(|entry| !declared.contains(entry.name.as_str())) {
+    for (list, entries) in [
+        ("access_models", &plugin.access_models),
+        ("public_access_models", &plugin.public_access_models),
+    ] {
+        if let Some(entry) = entries
+            .iter()
+            .find(|entry| !declared.contains(entry.name.as_str()))
+        {
             return Err(CatalogError::UnknownGrantedModel {
                 path: manifest_path.to_path_buf(),
                 name: entry.name.clone(),
@@ -1487,7 +1764,9 @@ async fn collect_asset_files(package_dir: &Path) -> Result<Vec<PathBuf>, Catalog
     let mut found = Vec::new();
     let mut pending = vec![root];
     while let Some(current) = pending.pop() {
-        let mut entries = tokio::fs::read_dir(&current).await.map_err(io_error(&current))?;
+        let mut entries = tokio::fs::read_dir(&current)
+            .await
+            .map_err(io_error(&current))?;
         while let Some(entry) = entries.next_entry().await.map_err(io_error(&current))? {
             let path = entry.path();
             let file_type = entry.file_type().await.map_err(io_error(&path))?;
@@ -1513,12 +1792,13 @@ async fn resolve_package_file(package_dir: &Path, declared: &str) -> Result<Path
     let canonical = tokio::fs::canonicalize(&candidate)
         .await
         .map_err(io_error(&candidate))?;
-    let relative = canonical
-        .strip_prefix(package_dir)
-        .map_err(|_| CatalogError::FileOutsidePackage {
-            path: canonical.clone(),
-            package: package_dir.to_path_buf(),
-        })?;
+    let relative =
+        canonical
+            .strip_prefix(package_dir)
+            .map_err(|_| CatalogError::FileOutsidePackage {
+                path: canonical.clone(),
+                package: package_dir.to_path_buf(),
+            })?;
     if !canonical.is_file() {
         return Err(CatalogError::FileOutsidePackage {
             path: canonical,
@@ -1558,6 +1838,7 @@ struct PlannedTheme {
     nav: Option<serde_json::Value>,
     layout_def: Option<serde_json::Value>,
     error_pages_def: Option<serde_json::Value>,
+    shell: Option<serde_json::Value>,
 }
 
 /// Result of [`install_plugins`], in installation order.
@@ -1650,7 +1931,10 @@ pub async fn install_plugins(
     };
     for (index, record) in order.into_iter().enumerate() {
         let dependencies = record.dependencies.clone().unwrap_or_default();
-        let theme = themes.iter().find(|theme| theme.plugin == record.id).cloned();
+        let theme = themes
+            .iter()
+            .find(|theme| theme.plugin == record.id)
+            .cloned();
         model_apply::apply_plans(db, &model_plans[index]).await?;
         db.query(
             r#"
@@ -1679,6 +1963,7 @@ pub async fn install_plugins(
                     nav: $theme.nav,
                     layout_def: $theme.layout_def,
                     error_pages_def: $theme.error_pages_def,
+                    shell: $theme.shell,
                     plugin_name: $name,
                     plugin_version: $version
                 };
@@ -1700,8 +1985,10 @@ pub async fn install_plugins(
         .await?
         .check()?;
         sync_schedules(db, &record.name, record.schedules.as_deref()).await?;
-        crate::plugin_files::watch::sync_watches(db, &record.name, record.watches.as_deref()).await?;
-        crate::plugin_events::sync_listeners(db, &record.name, record.event_listeners.as_deref()).await?;
+        crate::plugin_files::watch::sync_watches(db, &record.name, record.watches.as_deref())
+            .await?;
+        crate::plugin_events::sync_listeners(db, &record.name, record.event_listeners.as_deref())
+            .await?;
         crate::roles::sync_roles(db, &record.name, record.roles.as_deref()).await?;
         if let Some(theme) = theme {
             report.themes.push(InstalledTheme {
@@ -1712,6 +1999,19 @@ pub async fn install_plugins(
             has_active_theme = true;
         }
         report.installed.push((record.name, record.version));
+    }
+
+    if !report.installed.is_empty() {
+        super::mantle_signals::emit(
+            db,
+            namespace,
+            core_database,
+            super::mantle_signals::SignalKind::Installed,
+            None,
+            None,
+            Some(org_database),
+        )
+        .await;
     }
 
     Ok(report)
@@ -1759,8 +2059,10 @@ pub async fn upgrade_plugins(
         .await?
         .check()?;
     let rows: Vec<InstalledRow> = response.take(0)?;
-    let mut installed: HashMap<String, String> =
-        rows.into_iter().map(|row| (row.plugin_name, row.version)).collect();
+    let mut installed: HashMap<String, String> = rows
+        .into_iter()
+        .map(|row| (row.plugin_name, row.version))
+        .collect();
 
     db.use_db(core_database).await?;
     let resolved = resolve_upgrade_specs(db, &installed, specs).await?;
@@ -1820,6 +2122,7 @@ pub async fn upgrade_plugins(
                     nav: $theme.nav,
                     layout_def: $theme.layout_def,
                     error_pages_def: $theme.error_pages_def,
+                    shell: $theme.shell,
                     plugin_name: $name,
                     plugin_version: $version
                 };
@@ -1834,10 +2137,34 @@ pub async fn upgrade_plugins(
         .check()?;
         sync_schedules(db, &spec.name, target.schedules.as_deref()).await?;
         crate::plugin_files::watch::sync_watches(db, &spec.name, target.watches.as_deref()).await?;
-        crate::plugin_events::sync_listeners(db, &spec.name, target.event_listeners.as_deref()).await?;
+        crate::plugin_events::sync_listeners(db, &spec.name, target.event_listeners.as_deref())
+            .await?;
         crate::roles::sync_roles(db, &spec.name, target.roles.as_deref()).await?;
         installed.insert(spec.name.clone(), target.version.clone());
-        report.upgraded.push((spec.name.clone(), from, target.version));
+        // Tell a separate `--serve` process to drop warm installed_plugins / pages.
+        super::mantle_signals::emit(
+            db,
+            namespace,
+            core_database,
+            super::mantle_signals::SignalKind::Installed,
+            Some(&spec.name),
+            Some(&target.version),
+            Some(org_database),
+        )
+        .await;
+        super::mantle_signals::emit(
+            db,
+            namespace,
+            core_database,
+            super::mantle_signals::SignalKind::PluginSurface,
+            Some(&spec.name),
+            Some(&target.version),
+            None,
+        )
+        .await;
+        report
+            .upgraded
+            .push((spec.name.clone(), from, target.version));
     }
     Ok(report)
 }
@@ -1856,9 +2183,19 @@ async fn check_foreign_links(
     let mut wanted: Vec<(String, String, String, String)> = Vec::new();
     for model in models {
         for field in model.live_fields() {
-            let Some(target) = field.target.as_deref() else { continue };
-            let Some((other_plugin, other_model)) = crate::data_model::foreign_target(target) else { continue };
-            if other_plugin != plugin.name && !plugin.dependencies.iter().any(|dependency| dependency == other_plugin) {
+            let Some(target) = field.target.as_deref() else {
+                continue;
+            };
+            let Some((other_plugin, other_model)) = crate::data_model::foreign_target(target)
+            else {
+                continue;
+            };
+            if other_plugin != plugin.name
+                && !plugin
+                    .dependencies
+                    .iter()
+                    .any(|dependency| dependency == other_plugin)
+            {
                 return Err(CatalogError::ForeignLink(format!(
                     "{}.{} links to `{target}`, so `{other_plugin}` must be listed under `dependencies` in plugin.toml",
                     model.name, field.name
@@ -1944,7 +2281,9 @@ pub async fn foreign_model_ids(
     db.use_db(core_database).await?;
     let mut found = HashMap::new();
     for name in names {
-        let Some((plugin, model)) = crate::data_model::foreign_target(name) else { continue };
+        let Some((plugin, model)) = crate::data_model::foreign_target(name) else {
+            continue;
+        };
         let mut response = db
             .query(
                 "SELECT VALUE model_id FROM plugin_models WHERE name = $model \
@@ -2004,13 +2343,24 @@ async fn fetch_planned_models(
         .map(|row| {
             serde_json::from_value::<ModelDef>(row.definition)
                 .map(|model| (row.plugin, model))
-                .map_err(|source| CatalogError::ModelFile(ModelFileError::Parse { path: PathBuf::from("plugin_models"), source }))
+                .map_err(|source| {
+                    CatalogError::ModelFile(ModelFileError::Parse {
+                        path: PathBuf::from("plugin_models"),
+                        source,
+                    })
+                })
         })
         .collect()
 }
 
-fn models_of(all: &[(surrealdb::types::RecordId, ModelDef)], plugin: &surrealdb::types::RecordId) -> Vec<ModelDef> {
-    all.iter().filter(|(id, _)| id == plugin).map(|(_, model)| model.clone()).collect()
+fn models_of(
+    all: &[(surrealdb::types::RecordId, ModelDef)],
+    plugin: &surrealdb::types::RecordId,
+) -> Vec<ModelDef> {
+    all.iter()
+        .filter(|(id, _)| id == plugin)
+        .map(|(_, model)| model.clone())
+        .collect()
 }
 
 /// The themes shipped by the plugins about to be installed. Caller must be on
@@ -2026,7 +2376,7 @@ async fn fetch_planned_themes(
     let mut response = db
         .query(
             "SELECT plugin, name, label, is_system, color_mode, tokens, layout, error_pages, nav, \
-                    layout_def, error_pages_def \
+                    layout_def, error_pages_def, shell \
              FROM plugin_themes WHERE plugin IN $ids;",
         )
         .bind(("ids", ids))
@@ -2136,7 +2486,10 @@ async fn check_component_consumers(
             continue;
         }
         for (reference, raw) in collect_uses(&row.component_tree) {
-            let owner = reference.plugin.as_deref().unwrap_or(row.plugin_name.as_str());
+            let owner = reference
+                .plugin
+                .as_deref()
+                .unwrap_or(row.plugin_name.as_str());
             if owner != plugin {
                 continue;
             }
@@ -2154,6 +2507,14 @@ async fn check_component_consumers(
         }
     }
     Ok(())
+}
+
+/// A made-up route of a page that only extends another page (never served on its own).
+fn is_extension_shape(shape: &str) -> bool {
+    shape.starts_with(&format!(
+        "{}/",
+        crate::plugin_manager::pages::EXTENSION_ROUTE_PREFIX
+    ))
 }
 
 /// Fail when a page route of a plugin about to be installed would match the
@@ -2176,7 +2537,8 @@ async fn check_route_conflicts(
         .bind(("ids", ids))
         .await?
         .check()?;
-    let planned: Vec<PlannedPageRoute> = response.take(0)?;
+    let mut planned: Vec<PlannedPageRoute> = response.take(0)?;
+    planned.retain(|page| !is_extension_shape(&page.route_shape));
     if planned.is_empty() {
         return Ok(());
     }
@@ -2217,6 +2579,9 @@ async fn check_route_conflicts(
         .check()?;
     let claimed: Vec<ClaimedRoute> = response.take(0)?;
     for claim in claimed {
+        if is_extension_shape(&claim.route_shape) {
+            continue;
+        }
         let serves_this_org = installed
             .get(&claim.plugin_name)
             .is_some_and(|version| *version == claim.plugin_version);
@@ -2410,6 +2775,39 @@ async fn select_catalog_version(
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn a_themes_stylesheet_is_checked_and_kept_with_the_theme()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let package = dir.path().canonicalize()?;
+        std::fs::write(
+            package.join("theme.css"),
+            "[data-part=\"list.row\"] { background: url(assets/row.png); }",
+        )?;
+        let json = r##"{ "light": {"background": "#fff"}, "dark": {"background": "#000"},
+                         "css": "theme.css" }"##;
+        let theme_path = package.join("theme.json");
+        let mut theme = parse_theme(json, &theme_path, "sea", None)?;
+        attach_stylesheet(&mut theme, &package, "sea_theme", &theme_path).await?;
+        let shell = theme.shell.ok_or("no shell")?;
+        assert!(shell.get("css_file").is_none());
+        assert!(
+            shell["css"]
+                .as_str()
+                .is_some_and(|css| css.contains("/api/ui/plugins/sea_theme/assets/row.png"))
+        );
+
+        // A stylesheet that reaches out refuses the whole plugin.
+        std::fs::write(
+            package.join("theme.css"),
+            "@import url(https://evil.example/x.css);",
+        )?;
+        let mut bad = parse_theme(json, &theme_path, "sea", None)?;
+        let refused = attach_stylesheet(&mut bad, &package, "sea_theme", &theme_path).await;
+        assert!(matches!(refused, Err(CatalogError::ThemeStylesheet { .. })));
+        Ok(())
+    }
+
     #[test]
     fn parses_plain_and_versioned_specs() -> Result<(), CatalogError> {
         let plain: PluginSpec = "partner".parse()?;
@@ -2463,7 +2861,10 @@ mod tests {
         tokio::fs::write(root.path().join("secret.txt"), "s").await?;
 
         let result = resolve_package_file(&package, "../secret.txt").await;
-        assert!(matches!(result, Err(CatalogError::FileOutsidePackage { .. })));
+        assert!(matches!(
+            result,
+            Err(CatalogError::FileOutsidePackage { .. })
+        ));
         Ok(())
     }
 
@@ -2485,7 +2886,10 @@ mod tests {
         let pages = [page("/chat")?];
         let manifest = manifest_with_app("[app]\nroute = \"/chat\"\nicon = \"message-square\"\n")?;
         let app = read_app(&manifest, Path::new("plugin.toml"), &pages)?.ok_or("no app")?;
-        assert_eq!((app.route.as_str(), app.label.as_str()), ("/chat", "Team Chat"));
+        assert_eq!(
+            (app.route.as_str(), app.label.as_str()),
+            ("/chat", "Team Chat")
+        );
         assert_eq!(app.icon.as_deref(), Some("message-square"));
 
         let elsewhere = manifest_with_app("[app]\nroute = \"/other\"\n")?;
@@ -2497,7 +2901,8 @@ mod tests {
     }
 
     #[test]
-    fn an_app_route_is_a_fixed_page_and_the_icon_a_plain_name() -> Result<(), Box<dyn std::error::Error>> {
+    fn an_app_route_is_a_fixed_page_and_the_icon_a_plain_name()
+    -> Result<(), Box<dyn std::error::Error>> {
         let pages = [page("/chat/{channel}")?];
         for app in [
             "[app]\nroute = \"/chat/{channel}\"\n",
@@ -2506,7 +2911,12 @@ mod tests {
         ] {
             let manifest = manifest_with_app(app)?;
             assert!(
-                read_app(&manifest, Path::new("plugin.toml"), &[page("/chat")?, pages[0].clone()]).is_err(),
+                read_app(
+                    &manifest,
+                    Path::new("plugin.toml"),
+                    &[page("/chat")?, pages[0].clone()]
+                )
+                .is_err(),
                 "{app}"
             );
         }
@@ -2517,7 +2927,8 @@ mod tests {
     }
 
     #[test]
-    fn the_app_label_can_be_overridden_and_defaults_to_the_plugin() -> Result<(), Box<dyn std::error::Error>> {
+    fn the_app_label_can_be_overridden_and_defaults_to_the_plugin()
+    -> Result<(), Box<dyn std::error::Error>> {
         let pages = [page("/chat")?];
         let named = manifest_with_app("[app]\nlabel = \"Chat\"\nroute = \"/chat\"\n")?;
         assert_eq!(

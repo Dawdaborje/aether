@@ -13,10 +13,7 @@
 	// XML `type="bar"` on <chart> becomes `viewType` (same remap as <view type="…">).
 	const kind = $derived.by(() => {
 		const explicit =
-			text(node.viewType) ??
-			text(node.view_type) ??
-			text(node.chartType) ??
-			text(node.kind);
+			text(node.viewType) ?? text(node.view_type) ?? text(node.chartType) ?? text(node.kind);
 		return (explicit ?? 'bar').toLowerCase();
 	});
 	const source = $derived(text(node.source));
@@ -86,10 +83,12 @@
 	const loading = $derived(source ? ownLoading : Boolean(dash?.loading && points.length === 0));
 	const error = $derived(ownError ?? (!source ? dash?.error : null) ?? null);
 
-	const pieColors = ['bg-primary', 'bg-sky-500', 'bg-emerald-500', 'bg-amber-500', 'bg-violet-500', 'bg-rose-500'];
+	// The theme's chart palette (`--chart-1` … `--chart-5`).
+	const pieColors = ['bg-chart-1', 'bg-chart-2', 'bg-chart-3', 'bg-chart-4', 'bg-chart-5'];
+	const chartVars = pieColors.map((_, i) => `var(--chart-${i + 1})`);
 </script>
 
-<div class="rounded-md border border-border bg-card p-4 shadow-sm">
+<div class="rounded-md border border-border bg-card p-4" data-part="dashboard.chart">
 	<p class="mb-3 text-sm font-medium text-foreground">{title}</p>
 
 	{#if loading}
@@ -110,8 +109,7 @@
 					.map((p, i) => {
 						const start = points.slice(0, i).reduce((a, x) => a + x.value, 0) / total;
 						const end = start + p.value / total;
-						const colors = ['var(--color-primary)', '#0ea5e9', '#10b981', '#f59e0b', '#8b5cf6', '#f43f5e'];
-						return `${colors[i % colors.length]} ${start * 360}deg ${end * 360}deg`;
+						return `${chartVars[i % chartVars.length]} ${start * 360}deg ${end * 360}deg`;
 					})
 					.join(', ')})"
 				role="img"
@@ -128,7 +126,13 @@
 			</ul>
 		</div>
 	{:else if kind === 'line'}
-		<svg viewBox="0 0 100 40" class="h-40 w-full text-primary" preserveAspectRatio="none" role="img" aria-label={title}>
+		<svg
+			viewBox="0 0 100 40"
+			class="h-40 w-full text-primary"
+			preserveAspectRatio="none"
+			role="img"
+			aria-label={title}
+		>
 			<polyline
 				fill="none"
 				stroke="currentColor"
@@ -147,7 +151,7 @@
 				<circle cx={x} cy={y} r="1.2" fill="currentColor" />
 			{/each}
 		</svg>
-		<div class="mt-1 flex justify-between gap-1 text-[10px] text-muted-foreground">
+		<div class="mt-1 flex justify-between gap-1 text-xs text-muted-foreground">
 			{#each points as p (p.label)}
 				<span class="truncate">{p.label}</span>
 			{/each}
@@ -157,13 +161,13 @@
 		<div class="flex h-40 items-end gap-2" role="img" aria-label={title}>
 			{#each points as p (p.label)}
 				<div class="flex min-w-0 flex-1 flex-col items-center gap-1">
-					<span class="text-[10px] tabular-nums text-muted-foreground">{p.value}</span>
+					<span class="text-xs text-muted-foreground tabular-nums">{p.value}</span>
 					<div
-						class="w-full rounded-t-sm bg-primary/80"
+						class="w-full rounded-t-sm bg-chart-1"
 						style="height: {Math.max(4, (p.value / max) * 100)}%"
 						title="{p.label}: {p.value}"
 					></div>
-					<span class="w-full truncate text-center text-[10px] text-muted-foreground">{p.label}</span>
+					<span class="w-full truncate text-center text-xs text-muted-foreground">{p.label}</span>
 				</div>
 			{/each}
 		</div>

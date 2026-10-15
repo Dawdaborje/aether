@@ -1,14 +1,13 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! Report specs and file export.
+//!
+//! The kernel parses a [`ReportQuery`] here, then runs it against the organization
+//! database. [`export`] turns rows the plugin already has into an Excel or PDF table.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+mod export;
+mod spec;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use export::{ExportColumn, ExportFile, ExportFormat, ExportTable, export_table, parse_export};
+pub use spec::{
+    AvgDaysTo, Dimension, Fill, Grain, Measure, ReportError, ReportQuery, PREVIEW_CHOICES,
+    PREVIEW_DEFAULT, normalize_preview_rows,
+};

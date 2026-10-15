@@ -42,6 +42,7 @@ describe('apiFetch CSRF', () => {
 		const headers = new Headers(init.headers);
 		expect(headers.get(__csrfTest.CSRF_HEADER)).toBe('tok123');
 		expect(init.credentials).toBe('include');
+		expect(init.cache).toBe('no-store');
 	});
 
 	it('bootstraps the cookie via GET /api/auth/methods when missing', async () => {

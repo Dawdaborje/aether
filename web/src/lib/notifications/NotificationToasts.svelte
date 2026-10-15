@@ -5,10 +5,10 @@
 	import { notificationsStore, type AppNotification } from './notificationsStore.svelte';
 
 	const bar: Record<AppNotification['level'], string> = {
-		info: 'bg-primary',
-		success: 'bg-emerald-500',
-		warning: 'bg-amber-500',
-		error: 'bg-red-500'
+		info: 'bg-info',
+		success: 'bg-success',
+		warning: 'bg-warning',
+		error: 'bg-destructive'
 	};
 
 	async function open(toast: AppNotification) {
@@ -24,7 +24,7 @@
 >
 	{#each notificationsStore.toasts as toast (toast.id)}
 		<div
-			class="pointer-events-auto flex overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-lg"
+			class="pointer-events-auto flex overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-md"
 		>
 			<span class="w-1 shrink-0 {bar[toast.level]}"></span>
 			<button

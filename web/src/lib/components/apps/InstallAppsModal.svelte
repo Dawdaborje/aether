@@ -11,6 +11,8 @@
 		type CatalogPlugin,
 		type InstallOutcome
 	} from '$lib/apps/catalogApi';
+	import { groupCatalogByName } from '$lib/apps/catalogGroup';
+	import { formatCatalogDate } from '$lib/apps/formatCatalogDate';
 	import { matchPlugin } from '$lib/apps/matchPlugin';
 	import { appIcon } from '$lib/components/apps/icons';
 	import { orgStore } from '$lib/org/orgStore.svelte';
@@ -42,16 +44,28 @@
 	const orgName = (dbName: string) =>
 		organizations.find((org) => org.db_name === dbName)?.name ?? dbName;
 
-	const filteredPlugins = $derived.by(() =>
-		(catalog ?? []).filter((plugin) => matchPlugin(plugin, query))
+	/** Chosen version per plugin name (defaults to newest when selecting). */
+	let versionByName = $state<Record<string, string>>({});
+
+	const groups = $derived(groupCatalogByName(catalog ?? []));
+
+	const filteredGroups = $derived.by(() =>
+		groups.filter((group) => group.versions.some((plugin) => matchPlugin(plugin, query)))
 	);
 
+	function selectedKey(name: string): string | null {
+		const group = groups.find((g) => g.name === name);
+		if (!group) return null;
+		const version = versionByName[name] ?? group.latest.version;
+		return `${name}@${version}`;
+	}
+
 	const workspaces = $derived.by(() => {
-		const map = new Map<string, CatalogPlugin[]>();
-		for (const plugin of filteredPlugins) {
-			const label = categoryLabel(plugin.category);
+		const map = new Map<string, typeof filteredGroups>();
+		for (const group of filteredGroups) {
+			const label = categoryLabel(group.latest.category);
 			const list = map.get(label) ?? [];
-			list.push(plugin);
+			list.push(group);
 			map.set(label, list);
 		}
 		return [...map.entries()]
@@ -63,17 +77,18 @@
 			.map(([label, plugins]) => ({
 				label,
 				plugins,
-				keys: plugins.map(key)
+				keys: plugins.map((g) => selectedKey(g.name)!).filter(Boolean)
 			}));
 	});
 
-	/** Full workspace membership (unfiltered) — used so select-all still installs the whole group. */
+	/** Full workspace membership (unfiltered) — one key per plugin name (chosen/latest version). */
 	const workspaceAllKeys = $derived.by(() => {
 		const map = new Map<string, string[]>();
-		for (const plugin of catalog ?? []) {
-			const label = categoryLabel(plugin.category);
+		for (const group of groups) {
+			const label = categoryLabel(group.latest.category);
 			const list = map.get(label) ?? [];
-			list.push(key(plugin));
+			const k = selectedKey(group.name);
+			if (k) list.push(k);
 			map.set(label, list);
 		}
 		return map;
@@ -92,9 +107,24 @@
 		}
 	}
 
-	function keysForWorkspaces(labels: string[], list: CatalogPlugin[]): string[] {
+	function keysForGroups(
+		labels: string[],
+		pluginGroups: ReturnType<typeof groupCatalogByName>,
+		versions: Record<string, string>
+	): string[] {
 		const wanted = new Set(labels);
-		return list.filter((plugin) => wanted.has(categoryLabel(plugin.category))).map(key);
+		return pluginGroups
+			.filter((group) => wanted.has(categoryLabel(group.latest.category)))
+			.map((group) => `${group.name}@${versions[group.name] ?? group.latest.version}`);
+	}
+
+	function setVersion(name: string, version: string) {
+		const prev = selectedKey(name);
+		versionByName = { ...versionByName, [name]: version };
+		const next = `${name}@${version}`;
+		if (prev && chosenApps.includes(prev) && prev !== next) {
+			chosenApps = chosenApps.map((k) => (k === prev ? next : k));
+		}
 	}
 
 	// Start fresh each time the modal opens.
@@ -103,24 +133,34 @@
 		results = null;
 		failed = null;
 		query = '';
+		versionByName = {};
 		chosenOrgs = orgStore.current ? [orgStore.current] : [];
 		chosenWorkspaces = [...preselectedWorkspaces];
 		chosenApps = [...preselected];
 		void load().then(() => {
 			if (!open || !catalog) return;
+			const pluginGroups = groupCatalogByName(catalog);
+			const nextVersions: Record<string, string> = {};
+			for (const group of pluginGroups) {
+				const seeded = preselected.find((k) => k.startsWith(`${group.name}@`));
+				nextVersions[group.name] = seeded
+					? seeded.slice(group.name.length + 1)
+					: group.latest.version;
+			}
+			versionByName = nextVersions;
 			if (preselectedWorkspaces.length > 0) {
 				chosenWorkspaces = [...preselectedWorkspaces];
-				chosenApps = keysForWorkspaces(preselectedWorkspaces, catalog);
+				chosenApps = keysForGroups(preselectedWorkspaces, pluginGroups, nextVersions);
 				return;
 			}
 			if (preselected.length > 0) {
 				chosenApps = [...preselected];
 				const selected = new Set(preselected);
 				const byWorkspace = new Map<string, string[]>();
-				for (const plugin of catalog) {
-					const label = categoryLabel(plugin.category);
+				for (const group of pluginGroups) {
+					const label = categoryLabel(group.latest.category);
 					const list = byWorkspace.get(label) ?? [];
-					list.push(key(plugin));
+					list.push(`${group.name}@${nextVersions[group.name] ?? group.latest.version}`);
 					byWorkspace.set(label, list);
 				}
 				chosenWorkspaces = [...byWorkspace.entries()]
@@ -218,6 +258,9 @@
 							{#if outcome.installed.length > 0}
 								<p class="text-muted-foreground">Installed: {outcome.installed.join(', ')}</p>
 							{/if}
+							{#if outcome.upgraded.length > 0}
+								<p class="text-muted-foreground">Upgraded: {outcome.upgraded.join(', ')}</p>
+							{/if}
 							{#if outcome.already_installed.length > 0}
 								<p class="text-muted-foreground">
 									Already there: {outcome.already_installed.join(', ')}
@@ -297,14 +340,19 @@
 										</span>
 									</label>
 									<ul
-										class="grid grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] gap-1.5 p-2"
+										class="grid grid-cols-[repeat(auto-fill,minmax(13rem,1fr))] gap-1.5 p-2"
 									>
-										{#each ws.plugins as plugin (key(plugin))}
+										{#each ws.plugins as group (group.name)}
+											{@const plugin =
+												group.versions.find(
+													(v) => v.version === (versionByName[group.name] ?? group.latest.version)
+												) ?? group.latest}
+											{@const pluginKey = key(plugin)}
 											{@const Icon = appIcon(plugin.icon)}
 											<li>
 												<label
 													class="flex h-full cursor-pointer items-start gap-2 rounded-md border border-transparent p-2 hover:border-border hover:bg-accent {chosenApps.includes(
-														key(plugin)
+														pluginKey
 													)
 														? 'bg-accent/60'
 														: ''}"
@@ -312,8 +360,8 @@
 													<input
 														type="checkbox"
 														class="mt-1 rounded-sm"
-														checked={chosenApps.includes(key(plugin))}
-														onchange={() => togglePlugin(key(plugin), ws.label)}
+														checked={chosenApps.includes(pluginKey)}
+														onchange={() => togglePlugin(pluginKey, ws.label)}
 													/>
 													<span
 														class="flex size-9 shrink-0 items-center justify-center overflow-hidden bg-primary/10 text-primary ring-1 ring-primary/15"
@@ -333,11 +381,37 @@
 															>
 														{/if}
 													</span>
-													<span class="min-w-0 text-sm">
+													<span class="min-w-0 flex-1 text-sm">
 														<span class="block truncate font-medium">{plugin.label}</span>
 														<span class="block truncate text-xs text-muted-foreground">
-															{plugin.name} · v{plugin.version}
+															{plugin.name}
 														</span>
+														{#if group.versions.length > 1}
+															<select
+																class="mt-1 w-full rounded-sm border border-border bg-background px-1 py-0.5 font-mono text-xs"
+																value={plugin.version}
+																aria-label={`Version of ${plugin.label}`}
+																onclick={(e) => e.stopPropagation()}
+																onchange={(e) => {
+																	e.stopPropagation();
+																	setVersion(
+																		group.name,
+																		(e.currentTarget as HTMLSelectElement).value
+																	);
+																}}
+															>
+																{#each group.versions as version (version.version)}
+																	{@const when = formatCatalogDate(version.date_created)}
+																	<option value={version.version}>
+																		v{version.version}{when ? ` · ${when}` : ''}
+																	</option>
+																{/each}
+															</select>
+														{:else}
+															<span class="block truncate font-mono text-xs text-muted-foreground">
+																v{plugin.version}
+															</span>
+														{/if}
 													</span>
 												</label>
 											</li>

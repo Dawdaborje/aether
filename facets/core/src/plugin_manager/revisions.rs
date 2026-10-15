@@ -87,7 +87,10 @@ pub struct Stored {
 
 /// Where a file's bytes are, relative to the app_dir root.
 pub fn relative_path(name: &str, entry: &FileEntry, logical: &str) -> PathBuf {
-    Path::new("plugins").join(name).join(&entry.revision).join(logical)
+    Path::new("plugins")
+        .join(name)
+        .join(&entry.revision)
+        .join(logical)
 }
 
 /// The revision folder `folder` of plugin `name` as an index: from its `files.json`, or,
@@ -104,7 +107,10 @@ pub async fn read_index(
         Ok(text) => {
             return serde_json::from_str(&text)
                 .map(Some)
-                .map_err(|source| RevisionError::Index { path: index_file, source });
+                .map_err(|source| RevisionError::Index {
+                    path: index_file,
+                    source,
+                });
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(io_error(&index_file)(error)),
@@ -124,7 +130,9 @@ async fn index_of_folder(
     let mut files = BTreeMap::new();
     let mut pending = vec![directory.to_path_buf()];
     while let Some(current) = pending.pop() {
-        let mut entries = tokio::fs::read_dir(&current).await.map_err(io_error(&current))?;
+        let mut entries = tokio::fs::read_dir(&current)
+            .await
+            .map_err(io_error(&current))?;
         while let Some(entry) = entries.next_entry().await.map_err(io_error(&current))? {
             let path = entry.path();
             if entry.file_type().await.map_err(io_error(&path))?.is_dir() {
@@ -167,7 +175,9 @@ pub async fn store(
     files: &[(String, Vec<u8>)],
 ) -> Result<Stored, RevisionError> {
     let root = layout.plugin_root(name)?;
-    tokio::fs::create_dir_all(&root).await.map_err(io_error(&root))?;
+    tokio::fs::create_dir_all(&root)
+        .await
+        .map_err(io_error(&root))?;
     let (revision, directory) = create_unique_folder(&root, &stamp_now()).await?;
 
     let mut index = RevisionIndex {
@@ -190,9 +200,13 @@ pub async fn store(
             }
             let target = directory.join(logical);
             if let Some(parent) = target.parent() {
-                tokio::fs::create_dir_all(parent).await.map_err(io_error(parent))?;
+                tokio::fs::create_dir_all(parent)
+                    .await
+                    .map_err(io_error(parent))?;
             }
-            tokio::fs::write(&target, bytes).await.map_err(io_error(&target))?;
+            tokio::fs::write(&target, bytes)
+                .await
+                .map_err(io_error(&target))?;
             index.files.insert(
                 logical.clone(),
                 FileEntry {
@@ -202,8 +216,10 @@ pub async fn store(
             );
             written.push(logical.clone());
         }
-        let text = serde_json::to_string_pretty(&index)
-            .map_err(|source| RevisionError::Index { path: directory.join(INDEX_FILE), source })?;
+        let text = serde_json::to_string_pretty(&index).map_err(|source| RevisionError::Index {
+            path: directory.join(INDEX_FILE),
+            source,
+        })?;
         let file = directory.join(INDEX_FILE);
         tokio::fs::write(&file, text).await.map_err(io_error(&file))
     }
@@ -213,14 +229,72 @@ pub async fn store(
         let _ = tokio::fs::remove_dir_all(&directory).await;
         return Err(error);
     }
-    Ok(Stored { revision, index, written, reused })
+    Ok(Stored {
+        revision,
+        index,
+        written,
+        reused,
+    })
+}
+
+/// What changed in a revision relative to the previous one.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+pub struct RevisionDiff {
+    /// Paths present now that were missing before (or every path on the first revision).
+    pub added: Vec<String>,
+    /// Paths present in both with a different content hash.
+    pub changed: Vec<String>,
+    /// Paths present before that are gone now.
+    pub removed: Vec<String>,
+}
+
+/// Compare `current` to `previous` (or treat `current` as the first load when `previous` is none).
+pub fn diff_revision(current: &RevisionIndex, previous: Option<&RevisionIndex>) -> RevisionDiff {
+    let Some(previous) = previous else {
+        let mut added: Vec<_> = current.files.keys().cloned().collect();
+        added.sort();
+        return RevisionDiff {
+            added,
+            changed: Vec::new(),
+            removed: Vec::new(),
+        };
+    };
+
+    let mut added = Vec::new();
+    let mut changed = Vec::new();
+    for (path, entry) in &current.files {
+        match previous.files.get(path) {
+            None => added.push(path.clone()),
+            Some(before) if before.sha256 != entry.sha256 => changed.push(path.clone()),
+            Some(_) => {}
+        }
+    }
+    let mut removed: Vec<_> = previous
+        .files
+        .keys()
+        .filter(|path| !current.files.contains_key(path.as_str()))
+        .cloned()
+        .collect();
+    added.sort();
+    changed.sort();
+    removed.sort();
+    RevisionDiff {
+        added,
+        changed,
+        removed,
+    }
 }
 
 /// Files of `index` that are not on disk any more.
-pub async fn missing_files(layout: &AppDir, index: &RevisionIndex) -> Result<Vec<String>, RevisionError> {
+pub async fn missing_files(
+    layout: &AppDir,
+    index: &RevisionIndex,
+) -> Result<Vec<String>, RevisionError> {
     let mut missing = Vec::new();
     for (logical, entry) in &index.files {
-        let path = layout.revision_dir(&index.name, &entry.revision)?.join(logical);
+        let path = layout
+            .revision_dir(&index.name, &entry.revision)?
+            .join(logical);
         if !path.is_file() {
             missing.push(logical.clone());
         }
@@ -236,27 +310,42 @@ pub async fn restore(
     files: &[(String, Vec<u8>)],
 ) -> Result<(), RevisionError> {
     for (logical, bytes) in files {
-        let Some(entry) = index.files.get(logical) else { continue };
+        let Some(entry) = index.files.get(logical) else {
+            continue;
+        };
         if entry.sha256 != sha256_hex(bytes) {
             continue;
         }
-        let target = layout.revision_dir(&index.name, &entry.revision)?.join(logical);
+        let target = layout
+            .revision_dir(&index.name, &entry.revision)?
+            .join(logical);
         if target.is_file() {
             continue;
         }
         if let Some(parent) = target.parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(io_error(parent))?;
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(io_error(parent))?;
         }
-        tokio::fs::write(&target, bytes).await.map_err(io_error(&target))?;
+        tokio::fs::write(&target, bytes)
+            .await
+            .map_err(io_error(&target))?;
     }
     Ok(())
 }
 
 /// Create `<root>/<stamp>`, or `<stamp>-2`, `-3`, ... when two revisions land in one second.
-async fn create_unique_folder(root: &Path, stamp: &str) -> Result<(String, PathBuf), RevisionError> {
+async fn create_unique_folder(
+    root: &Path,
+    stamp: &str,
+) -> Result<(String, PathBuf), RevisionError> {
     let mut attempt = 1u32;
     loop {
-        let name = if attempt == 1 { stamp.to_string() } else { format!("{stamp}-{attempt}") };
+        let name = if attempt == 1 {
+            stamp.to_string()
+        } else {
+            format!("{stamp}-{attempt}")
+        };
         let path = root.join(&name);
         match tokio::fs::create_dir(&path).await {
             Ok(()) => return Ok((name, path)),
@@ -282,11 +371,16 @@ pub fn stamp_of(seconds: u64) -> String {
     let z = days as i64 + 719_468;
     let era = z.div_euclid(146_097);
     let day_of_era = z.rem_euclid(146_097);
-    let year_of_era = (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
     let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
     let shifted_month = (5 * day_of_year + 2) / 153;
     let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
-    let month = if shifted_month < 10 { shifted_month + 3 } else { shifted_month - 9 };
+    let month = if shifted_month < 10 {
+        shifted_month + 3
+    } else {
+        shifted_month - 9
+    };
     let year = year_of_era + era * 400 + i64::from(month <= 2);
     format!("{year:04}{month:02}{day:02}T{hour:02}{minute:02}{second:02}Z")
 }
@@ -296,7 +390,9 @@ mod tests {
     use super::*;
 
     fn files(list: &[(&str, &str)]) -> Vec<(String, Vec<u8>)> {
-        list.iter().map(|(path, text)| (path.to_string(), text.as_bytes().to_vec())).collect()
+        list.iter()
+            .map(|(path, text)| (path.to_string(), text.as_bytes().to_vec()))
+            .collect()
     }
 
     #[test]
@@ -304,7 +400,89 @@ mod tests {
         assert_eq!(stamp_of(0), "19700101T000000Z");
         assert_eq!(stamp_of(951_782_400), "20000229T000000Z", "a leap day");
         assert_eq!(stamp_of(1_791_057_600), "20261003T200000Z");
-        assert_eq!(stamp_of(1_791_057_600 + 3 * 3600 + 25 * 60 + 9), "20261003T232509Z");
+        assert_eq!(
+            stamp_of(1_791_057_600 + 3 * 3600 + 25 * 60 + 9),
+            "20261003T232509Z"
+        );
+    }
+
+    #[test]
+    fn diff_revision_reports_added_changed_and_removed() {
+        let first = RevisionIndex {
+            name: "notes".into(),
+            version: "0.1.0".into(),
+            previous: None,
+            files: BTreeMap::from([
+                (
+                    "plugin.toml".into(),
+                    FileEntry {
+                        sha256: "a".into(),
+                        revision: "r1".into(),
+                    },
+                ),
+                (
+                    "pages/a.xml".into(),
+                    FileEntry {
+                        sha256: "p1".into(),
+                        revision: "r1".into(),
+                    },
+                ),
+            ]),
+        };
+        let second = RevisionIndex {
+            name: "notes".into(),
+            version: "0.1.0".into(),
+            previous: Some("r1".into()),
+            files: BTreeMap::from([
+                (
+                    "plugin.toml".into(),
+                    FileEntry {
+                        sha256: "a".into(),
+                        revision: "r1".into(),
+                    },
+                ),
+                (
+                    "pages/a.xml".into(),
+                    FileEntry {
+                        sha256: "p2".into(),
+                        revision: "r2".into(),
+                    },
+                ),
+                (
+                    "pages/b.xml".into(),
+                    FileEntry {
+                        sha256: "b".into(),
+                        revision: "r2".into(),
+                    },
+                ),
+            ]),
+        };
+        let initial = diff_revision(&first, None);
+        assert_eq!(initial.added, ["pages/a.xml", "plugin.toml"]);
+        assert!(initial.changed.is_empty());
+        assert!(initial.removed.is_empty());
+
+        let delta = diff_revision(&second, Some(&first));
+        assert_eq!(delta.added, ["pages/b.xml"]);
+        assert_eq!(delta.changed, ["pages/a.xml"]);
+        assert!(delta.removed.is_empty());
+
+        let shrunk = RevisionIndex {
+            name: "notes".into(),
+            version: "0.1.0".into(),
+            previous: Some("r2".into()),
+            files: BTreeMap::from([(
+                "plugin.toml".into(),
+                FileEntry {
+                    sha256: "a".into(),
+                    revision: "r1".into(),
+                },
+            )]),
+        };
+        let drop = diff_revision(&shrunk, Some(&second));
+        assert!(drop.added.is_empty());
+        assert!(drop.changed.is_empty());
+        assert_eq!(drop.removed, ["pages/a.xml", "pages/b.xml"]);
     }
 
     #[tokio::test]
@@ -314,23 +492,42 @@ mod tests {
         let layout = AppDir::new(directory.path());
 
         let first = store(
-            &layout, "notes", "0.1.0", None,
-            &files(&[("plugin.toml", "a"), ("pages/notes.xml", "page"), ("plugin.wasm", "wasm-1")]),
-        ).await?;
+            &layout,
+            "notes",
+            "0.1.0",
+            None,
+            &files(&[
+                ("plugin.toml", "a"),
+                ("pages/notes.xml", "page"),
+                ("plugin.wasm", "wasm-1"),
+            ]),
+        )
+        .await?;
         assert_eq!(first.written.len(), 3);
         assert!(first.reused.is_empty());
         assert_eq!(first.index.previous, None);
 
         // Only the wasm changes.
         let second = store(
-            &layout, "notes", "0.1.0", Some((&first.revision, &first.index)),
-            &files(&[("plugin.toml", "a"), ("pages/notes.xml", "page"), ("plugin.wasm", "wasm-2")]),
-        ).await?;
+            &layout,
+            "notes",
+            "0.1.0",
+            Some((&first.revision, &first.index)),
+            &files(&[
+                ("plugin.toml", "a"),
+                ("pages/notes.xml", "page"),
+                ("plugin.wasm", "wasm-2"),
+            ]),
+        )
+        .await?;
         assert_eq!(second.written, ["plugin.wasm"]);
         let mut reused = second.reused.clone();
         reused.sort();
         assert_eq!(reused, ["pages/notes.xml", "plugin.toml"]);
-        assert_eq!(second.index.previous.as_deref(), Some(first.revision.as_str()));
+        assert_eq!(
+            second.index.previous.as_deref(),
+            Some(first.revision.as_str())
+        );
 
         // The new folder holds just what changed (and the index); nothing is duplicated.
         let folder = layout.revision_dir("notes", &second.revision)?;
@@ -349,7 +546,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn two_revisions_in_one_second_get_distinct_folders() -> Result<(), Box<dyn std::error::Error>> {
+    async fn two_revisions_in_one_second_get_distinct_folders()
+    -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         let layout = AppDir::new(directory.path());
         let one = store(&layout, "p", "1", None, &files(&[("plugin.toml", "a")])).await?;
@@ -359,7 +557,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_folder_in_the_older_layout_is_a_revision_too() -> Result<(), Box<dyn std::error::Error>> {
+    async fn a_folder_in_the_older_layout_is_a_revision_too()
+    -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         let layout = AppDir::new(directory.path());
         let legacy = layout.revision_dir("old", "1.0.0")?;
@@ -368,14 +567,24 @@ mod tests {
         tokio::fs::write(legacy.join("pages/a.xml"), "p").await?;
         tokio::fs::write(legacy.join("plugin.wasm"), "w").await?;
 
-        let previous = read_index(&layout, "old", "1.0.0").await?.ok_or("no index")?;
+        let previous = read_index(&layout, "old", "1.0.0")
+            .await?
+            .ok_or("no index")?;
         assert_eq!(previous.files.len(), 3);
         assert_eq!(previous.files["pages/a.xml"].revision, "1.0.0");
 
         let next = store(
-            &layout, "old", "1.1.0", Some(("1.0.0", &previous)),
-            &files(&[("plugin.toml", "t2"), ("pages/a.xml", "p"), ("plugin.wasm", "w")]),
-        ).await?;
+            &layout,
+            "old",
+            "1.1.0",
+            Some(("1.0.0", &previous)),
+            &files(&[
+                ("plugin.toml", "t2"),
+                ("pages/a.xml", "p"),
+                ("plugin.wasm", "w"),
+            ]),
+        )
+        .await?;
         assert_eq!(next.written, ["plugin.toml"]);
         assert_eq!(next.index.files["plugin.wasm"].revision, "1.0.0");
         assert_eq!(read_index(&layout, "old", "nope").await?, None);
@@ -383,14 +592,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_files_are_found_and_restored_where_they_belong() -> Result<(), Box<dyn std::error::Error>> {
+    async fn missing_files_are_found_and_restored_where_they_belong()
+    -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         let layout = AppDir::new(directory.path());
         let list = files(&[("plugin.toml", "a"), ("plugin.wasm", "w")]);
         let stored = store(&layout, "p", "1", None, &list).await?;
-        let wasm = layout.revision_dir("p", &stored.revision)?.join("plugin.wasm");
+        let wasm = layout
+            .revision_dir("p", &stored.revision)?
+            .join("plugin.wasm");
         tokio::fs::remove_file(&wasm).await?;
-        assert_eq!(missing_files(&layout, &stored.index).await?, ["plugin.wasm"]);
+        assert_eq!(
+            missing_files(&layout, &stored.index).await?,
+            ["plugin.wasm"]
+        );
         restore(&layout, &stored.index, &list).await?;
         assert!(wasm.is_file());
         assert!(missing_files(&layout, &stored.index).await?.is_empty());

@@ -28,12 +28,7 @@ use tokio::sync::watch;
 
 use crate::{application::settings::get_setting_plain_in, state::AppState};
 
-use super::{
-    Remote,
-    nodes,
-    queue::{self, NewJob},
-    worker::WorkerOptions,
-};
+use super::{Remote, nodes, worker::WorkerOptions};
 
 const TOKEN_SETTING: &str = "scheduler.control_token";
 /// How long a hint may take to be delivered before it is dropped.
@@ -46,10 +41,14 @@ pub async fn control_token(state: &AppState) -> Result<String, String> {
     let read = |state: &AppState| {
         let state = state.clone();
         async move {
-            get_setting_plain_in(&state, TOKEN_SETTING, crate::application::settings::Scope::Global)
-                .await
-                .map(|value| value.and_then(|v| v.as_str().map(str::to_string)))
-                .map_err(|e| e.to_string())
+            get_setting_plain_in(
+                &state,
+                TOKEN_SETTING,
+                crate::application::settings::Scope::Global,
+            )
+            .await
+            .map(|value| value.and_then(|v| v.as_str().map(str::to_string)))
+            .map_err(|e| e.to_string())
         }
     };
     if let Some(token) = read(state).await? {
@@ -72,13 +71,19 @@ pub async fn control_token(state: &AppState) -> Result<String, String> {
         .and_then(|response| response.check());
     match created {
         Ok(_) => Ok(token),
-        Err(_) => read(state).await?.ok_or_else(|| "the scheduler control token could not be created".to_string()),
+        Err(_) => read(state)
+            .await?
+            .ok_or_else(|| "the scheduler control token could not be created".to_string()),
     }
 }
 
 /// Send a hint to a standalone scheduler. Failures are logged and otherwise ignored.
 pub async fn push(remote: &Remote, action: &str, body: &Value) {
-    let client = match reqwest::Client::builder().timeout(PUSH_TIMEOUT).no_proxy().build() {
+    let client = match reqwest::Client::builder()
+        .timeout(PUSH_TIMEOUT)
+        .no_proxy()
+        .build()
+    {
         Ok(client) => client,
         Err(error) => {
             log::warn!("scheduler hint not sent: {error}");
@@ -93,8 +98,15 @@ pub async fn push(remote: &Remote, action: &str, body: &Value) {
         .await;
     match result {
         Ok(response) if response.status().is_success() => {}
-        Ok(response) => log::warn!("scheduler at {} answered {} to `{action}`", remote.address, response.status()),
-        Err(error) => log::debug!("scheduler at {} could not be reached for `{action}`: {error}", remote.address),
+        Ok(response) => log::warn!(
+            "scheduler at {} answered {} to `{action}`",
+            remote.address,
+            response.status()
+        ),
+        Err(error) => log::debug!(
+            "scheduler at {} could not be reached for `{action}`: {error}",
+            remote.address
+        ),
     }
 }
 
@@ -117,7 +129,9 @@ pub fn spawn_discovery(state: &AppState) -> tokio::task::JoinHandle<()> {
                 };
                 if found != state.scheduler.remote() {
                     match &found {
-                        Some(remote) => log::info!("Standalone scheduler found at {}", remote.address),
+                        Some(remote) => {
+                            log::info!("Standalone scheduler found at {}", remote.address)
+                        }
                         None => log::info!("No standalone scheduler is running"),
                     }
                     state.scheduler.set_remote(found);
@@ -138,10 +152,18 @@ struct Control {
 
 /// Whether two strings are equal, without stopping at the first difference.
 fn same(a: &str, b: &str) -> bool {
-    a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    a.len() == b.len()
+        && a.bytes()
+            .zip(b.bytes())
+            .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+            == 0
 }
 
-async fn authorize(State(control): State<Control>, request: Request, next: Next) -> Result<Response, StatusCode> {
+async fn authorize(
+    State(control): State<Control>,
+    request: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
     let given = request
         .headers()
         .get(header::AUTHORIZATION)
@@ -167,12 +189,24 @@ fn router(control: Control) -> Router {
 }
 
 async fn status(State(control): State<Control>) -> Result<Json<Value>, StatusCode> {
-    let core = control.state.core().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let core = control
+        .state
+        .core()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let mut orgs = Vec::new();
-    let mut response = core.query("SELECT VALUE db_name FROM organizations;").await.and_then(|r| r.check()).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let names: Vec<String> = response.take(0).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut response = core
+        .query("SELECT VALUE db_name FROM organizations;")
+        .await
+        .and_then(|r| r.check())
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let names: Vec<String> = response
+        .take(0)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     for name in names {
-        let Ok(db) = control.state.org(&name).await else { continue };
+        let Ok(db) = control.state.org(&name).await else {
+            continue;
+        };
         let counts = db
             .query("SELECT state, count() AS n FROM jobs GROUP BY state;")
             .await
@@ -216,35 +250,43 @@ async fn resume(State(control): State<Control>) -> StatusCode {
 }
 
 /// Run a scheduled task now, in addition to its normal schedule.
-async fn run_task(State(control): State<Control>, Json(body): Json<Value>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+async fn run_task(
+    State(control): State<Control>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let field = |name: &str| body.get(name).and_then(Value::as_str).map(str::to_string);
-    let (Some(org), Some(plugin), Some(task)) = (field("org"), field("plugin"), field("task")) else {
-        return Err((StatusCode::BAD_REQUEST, Json(json!({ "error": "give `org`, `plugin` and `task`" }))));
+    let (Some(org), Some(plugin), Some(task)) = (field("org"), field("plugin"), field("task"))
+    else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "give `org`, `plugin` and `task`" })),
+        ));
     };
     let internal = |e: &dyn std::fmt::Display| {
         log::error!("control run: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": "database error" })))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "database error" })),
+        )
     };
     let db = control.state.org(&org).await.map_err(|e| internal(&e))?;
-    let mut response = db
-        .query("SELECT function_name AS function, payload, queue, max_attempts FROM ONLY scheduled_tasks WHERE plugin = $plugin AND name = $name LIMIT 1;")
-        .bind(("plugin", plugin.clone()))
-        .bind(("name", task.clone()))
-        .await
-        .and_then(|r| r.check())
-        .map_err(|e| internal(&e))?;
-    let row: Option<Value> = response.take(0).map_err(|e| internal(&e))?;
-    let Some(row) = row else {
-        return Err((StatusCode::NOT_FOUND, Json(json!({ "error": "no such task" }))));
+    let enqueued = match super::tasks::enqueue_now(&db, &plugin, &task, "system:control", 30).await
+    {
+        Ok(enqueued) => enqueued,
+        Err(super::tasks::TaskError::Refused(message)) if message == "no such task" => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "no such task" })),
+            ));
+        }
+        Err(super::tasks::TaskError::Queue(error)) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": error.to_string() })),
+            ));
+        }
+        Err(error) => return Err(internal(&error)),
     };
-    let mut job = NewJob::new("plugin", row["queue"].as_str().unwrap_or("default"));
-    job.plugin = Some(plugin);
-    job.function = row["function"].as_str().map(str::to_string);
-    job.payload = row.get("payload").filter(|p| p.is_object()).cloned();
-    job.max_attempts = row["max_attempts"].as_i64().unwrap_or(3);
-    job.task = Some(task);
-    job.enqueued_by = Some("system:control".into());
-    let enqueued = queue::enqueue(&db, job).await.map_err(|e| (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))))?;
     control.state.scheduler.wake_local(&org);
     Ok(Json(json!({ "job": enqueued.id })))
 }
@@ -257,9 +299,19 @@ pub async fn serve(
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), String> {
     let token = control_token(&state).await?;
-    let listener = tokio::net::TcpListener::bind(bind).await.map_err(|e| format!("cannot listen on {bind}: {e}"))?;
-    log::info!("Scheduler control API on http://{}", listener.local_addr().map_err(|e| e.to_string())?);
-    let control = Control { state, token: Arc::new(token), node_id: options.node_id.clone(), queues: options.queues.clone() };
+    let listener = tokio::net::TcpListener::bind(bind)
+        .await
+        .map_err(|e| format!("cannot listen on {bind}: {e}"))?;
+    log::info!(
+        "Scheduler control API on http://{}",
+        listener.local_addr().map_err(|e| e.to_string())?
+    );
+    let control = Control {
+        state,
+        token: Arc::new(token),
+        node_id: options.node_id.clone(),
+        queues: options.queues.clone(),
+    };
     axum::serve(listener, router(control))
         .with_graceful_shutdown(async move {
             let _ = shutdown.wait_for(|stopping| *stopping).await;

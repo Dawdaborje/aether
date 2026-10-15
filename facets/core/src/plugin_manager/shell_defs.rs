@@ -19,6 +19,8 @@ pub const BUILTIN_LAYOUTS: &[&str] = &["default", "desk", "custom", "bare"];
 pub const BUILTIN_ERROR_SETS: &[&str] = &["default", "custom"];
 
 const CHROMES: &[&str] = &["top", "sidebar", "custom", "bare"];
+/// The chrome of a layout that lists its own `regions`.
+pub const COMPOSED: &str = "composed";
 const VARIANTS: &[&str] = &["default", "custom"];
 
 #[derive(Debug, Error)]
@@ -48,7 +50,8 @@ pub enum ShellDefError {
 pub struct LayoutDef {
     pub name: String,
     pub label: String,
-    /// `top` | `sidebar` | `custom` | `bare` — which first-party chrome to use.
+    /// `top` | `sidebar` | `custom` | `bare` — which first-party chrome to use — or
+    /// `composed` when the layout lists its own regions.
     pub chrome: String,
     pub source: PathBuf,
     pub definition: Value,
@@ -76,7 +79,10 @@ pub async fn discover_layouts(package_dir: &Path) -> Result<Vec<LayoutDef>, Shel
     let files = list_json_files(package_dir, LAYOUTS_DIR).await?;
     let mut found = Vec::with_capacity(files.len());
     for file in files {
-        let relative = file.strip_prefix(package_dir).unwrap_or(&file).to_path_buf();
+        let relative = file
+            .strip_prefix(package_dir)
+            .unwrap_or(&file)
+            .to_path_buf();
         let text = tokio::fs::read_to_string(&file)
             .await
             .map_err(|source| ShellDefError::Io {
@@ -84,7 +90,10 @@ pub async fn discover_layouts(package_dir: &Path) -> Result<Vec<LayoutDef>, Shel
                 source,
             })?;
         let def = parse_layout(&text, &relative)?;
-        if found.iter().any(|existing: &LayoutDef| existing.name == def.name) {
+        if found
+            .iter()
+            .any(|existing: &LayoutDef| existing.name == def.name)
+        {
             return Err(ShellDefError::Invalid {
                 path: relative,
                 reason: format!("layout `{}` is declared more than once", def.name),
@@ -105,7 +114,10 @@ pub async fn discover_error_sets(package_dir: &Path) -> Result<Vec<ErrorSetDef>,
     let files = list_json_files(package_dir, ERRORS_DIR).await?;
     let mut found = Vec::with_capacity(files.len());
     for file in files {
-        let relative = file.strip_prefix(package_dir).unwrap_or(&file).to_path_buf();
+        let relative = file
+            .strip_prefix(package_dir)
+            .unwrap_or(&file)
+            .to_path_buf();
         let text = tokio::fs::read_to_string(&file)
             .await
             .map_err(|source| ShellDefError::Io {
@@ -113,7 +125,10 @@ pub async fn discover_error_sets(package_dir: &Path) -> Result<Vec<ErrorSetDef>,
                 source,
             })?;
         let def = parse_error_set(&text, &relative)?;
-        if found.iter().any(|existing: &ErrorSetDef| existing.name == def.name) {
+        if found
+            .iter()
+            .any(|existing: &ErrorSetDef| existing.name == def.name)
+        {
             return Err(ShellDefError::Invalid {
                 path: relative,
                 reason: format!("error set `{}` is declared more than once", def.name),
@@ -122,7 +137,10 @@ pub async fn discover_error_sets(package_dir: &Path) -> Result<Vec<ErrorSetDef>,
         if is_builtin_error_set(&def.name) {
             return Err(ShellDefError::Invalid {
                 path: relative,
-                reason: format!("`{}` is a built-in error-page set name; choose another", def.name),
+                reason: format!(
+                    "`{}` is a built-in error-page set name; choose another",
+                    def.name
+                ),
             });
         }
         found.push(def);
@@ -139,7 +157,9 @@ pub fn parse_layout(text: &str, source: &Path) -> Result<LayoutDef, ShellDefErro
         path: source.to_path_buf(),
         source: source_err,
     })?;
-    let object = value.as_object().ok_or_else(|| invalid("must be a JSON object"))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| invalid("must be a JSON object"))?;
     let name = object
         .get("name")
         .and_then(Value::as_str)
@@ -150,11 +170,22 @@ pub fn parse_layout(text: &str, source: &Path) -> Result<LayoutDef, ShellDefErro
             "`name` must be lowercase letters, digits, `-` and `_`, starting with a letter",
         ));
     }
-    let chrome = object
-        .get("chrome")
-        .and_then(Value::as_str)
-        .unwrap_or("top");
-    if !CHROMES.contains(&chrome) {
+    // A layout either picks a first-party chrome or composes its own from regions
+    // and blocks (see `layout_blocks`).
+    let chrome = match object.get("regions") {
+        Some(regions) => {
+            super::layout_blocks::validate_regions(regions).map_err(|reason| invalid(&reason))?;
+            COMPOSED
+        }
+        None => object
+            .get("chrome")
+            .and_then(Value::as_str)
+            .unwrap_or("top"),
+    };
+    if chrome == COMPOSED && !object.contains_key("regions") {
+        return Err(invalid("a `composed` layout needs `regions`"));
+    }
+    if chrome != COMPOSED && !CHROMES.contains(&chrome) {
         return Err(invalid(&format!(
             "`chrome` must be one of {}",
             CHROMES.join(", ")
@@ -190,7 +221,9 @@ pub fn parse_error_set(text: &str, source: &Path) -> Result<ErrorSetDef, ShellDe
         path: source.to_path_buf(),
         source: source_err,
     })?;
-    let object = value.as_object().ok_or_else(|| invalid("must be a JSON object"))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| invalid("must be a JSON object"))?;
     let name = object
         .get("name")
         .and_then(Value::as_str)
@@ -208,7 +241,13 @@ pub fn parse_error_set(text: &str, source: &Path) -> Result<ErrorSetDef, ShellDe
     if !VARIANTS.contains(&variant) {
         return Err(invalid("`variant` must be \"default\" or \"custom\""));
     }
-    for key in ["not_found", "forbidden", "too_many_requests", "server_error", "card"] {
+    for key in [
+        "not_found",
+        "forbidden",
+        "too_many_requests",
+        "server_error",
+        "card",
+    ] {
         if let Some(entry) = object.get(key) {
             validate_copy(entry).map_err(|reason| invalid(&format!("`{key}`: {reason}")))?;
         }
@@ -263,21 +302,31 @@ async fn list_json_files(package_dir: &Path, folder: &str) -> Result<Vec<PathBuf
                 });
             }
         };
-        while let Some(entry) = entries.next_entry().await.map_err(|source| ShellDefError::Io {
-            path: directory.clone(),
-            source,
-        })? {
-            let path = entry.path();
-            let file_type = entry.file_type().await.map_err(|source| ShellDefError::Io {
-                path: path.clone(),
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|source| ShellDefError::Io {
+                path: directory.clone(),
                 source,
-            })?;
+            })?
+        {
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .await
+                .map_err(|source| ShellDefError::Io {
+                    path: path.clone(),
+                    source,
+                })?;
             if file_type.is_symlink() {
                 return Err(ShellDefError::Symlink(path));
             }
             if file_type.is_dir() {
                 pending.push(path);
-            } else if path.extension().is_some_and(|extension| extension == "json") {
+            } else if path
+                .extension()
+                .is_some_and(|extension| extension == "json")
+            {
                 files.push(path);
             }
         }
@@ -288,7 +337,10 @@ async fn list_json_files(package_dir: &Path, folder: &str) -> Result<Vec<PathBuf
 
 /// Index layout defs by name.
 pub fn layouts_by_name(layouts: &[LayoutDef]) -> BTreeMap<&str, &LayoutDef> {
-    layouts.iter().map(|layout| (layout.name.as_str(), layout)).collect()
+    layouts
+        .iter()
+        .map(|layout| (layout.name.as_str(), layout))
+        .collect()
 }
 
 /// Index error-set defs by name.
@@ -323,9 +375,42 @@ mod tests {
     }
 
     #[test]
+    fn parses_composed_layout() -> Result<(), ShellDefError> {
+        let def = parse_layout(
+            r#"{"name":"sea","regions":{"topbar":{"blocks":[{"type":"brand"},{"type":"user-menu"}]}}}"#,
+            Path::new("layouts/sea.json"),
+        )?;
+        assert_eq!(def.chrome, COMPOSED);
+        assert_eq!(
+            def.definition["regions"]["topbar"]["blocks"][0]["type"],
+            "brand"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_bad_composed_layouts() {
+        for json in [
+            r#"{"name":"sea","chrome":"composed"}"#,
+            r#"{"name":"sea","regions":{"topbar":{"blocks":[{"type":"marquee"}]}}}"#,
+        ] {
+            assert!(
+                matches!(
+                    parse_layout(json, Path::new("layouts/sea.json")),
+                    Err(ShellDefError::Invalid { .. })
+                ),
+                "{json}"
+            );
+        }
+    }
+
+    #[test]
     fn rejects_bad_chrome() {
         assert!(matches!(
-            parse_layout(r#"{"name":"sea","chrome":"floating"}"#, Path::new("layouts/sea.json")),
+            parse_layout(
+                r#"{"name":"sea","chrome":"floating"}"#,
+                Path::new("layouts/sea.json")
+            ),
             Err(ShellDefError::Invalid { .. })
         ));
     }

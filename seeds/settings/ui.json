@@ -1,0 +1,29 @@
+{
+  "groups": [
+    {
+      "id": "ui",
+      "label": "User Interface",
+      "color": "slate",
+      "icon": "layout",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "ui_list_page_size",
+          "label": "List rows per page",
+          "s_key": "ui.list.page_size",
+          "s_value": 10,
+          "description": "Default number of rows shown in data tables and plugin lists.",
+          "long_description": "Used when a list does not set its own page size. Choose 10, 25, 50, or 100. Organizations can override the global default."
+        },
+        {
+          "id": "ui_report_preview_rows",
+          "label": "Report preview rows",
+          "s_key": "ui.report.preview_rows",
+          "s_value": 10,
+          "description": "How many groups a report shows on screen before a download.",
+          "long_description": "Choose 5, 10, 25, or 50. The headline totals stay complete, and Excel or PDF downloads use the full result (still at most 1000 groups). Organizations can override the global default."
+        }
+      ]
+    }
+  ]
+}

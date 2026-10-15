@@ -11,19 +11,19 @@ use std::{
 use extism::{CompiledPlugin, Manifest, PluginBuilder, Wasm};
 use moka::{future::Cache as CompiledCache, notification::RemovalCause, policy::EvictionPolicy};
 use serde::{Deserialize, Serialize};
-use surrealdb::{Surreal, engine::remote::ws::Client};
 use surrealdb::types::SurrealValue;
+use surrealdb::{Surreal, engine::remote::ws::Client};
 use thiserror::Error;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::catalog::sha256_hex;
-use crate::app_dir::{AppDir, AppDirError};
-use crate::config_manager::models::PluginRuntimeConfig;
 use super::models::{
     plugin_db_def::PluginDbDefinition,
     plugin_def::{ManifestError, PluginManifest},
 };
 use super::services::fetch_active_plugin_version;
+use crate::app_dir::{AppDir, AppDirError};
+use crate::config_manager::models::PluginRuntimeConfig;
 
 const BYTES_PER_MB: f64 = 1024.0 * 1024.0;
 
@@ -39,7 +39,10 @@ impl PluginRuntimeError {
     pub fn user_message(&self) -> Option<String> {
         let text = match self {
             Self::Invoke(error) => error.to_string(),
-            Self::Script { source: super::script::ScriptError::User(message), .. } => {
+            Self::Script {
+                source: super::script::ScriptError::User(message),
+                ..
+            } => {
                 format!("{USER_ERROR_PREFIX}{message}")
             }
             _ => return None,
@@ -242,7 +245,9 @@ impl Drop for Waiting<'_> {
 
 /// The weight of a plugin in the cache, in KB.
 fn weight_kb(estimated_mb: f64) -> u32 {
-    (estimated_mb * 1024.0).ceil().clamp(1.0, f64::from(u32::MAX)) as u32
+    (estimated_mb * 1024.0)
+        .ceil()
+        .clamp(1.0, f64::from(u32::MAX)) as u32
 }
 
 impl PluginRuntime {
@@ -259,22 +264,26 @@ impl PluginRuntime {
         let listener_counters = counters.clone();
         let compiled = CompiledCache::builder()
             .max_capacity(config.max_compiled_memory_mb * 1024)
-            .weigher(|_key: &(String, String), plugin: &Arc<LoadedPlugin>| weight_kb(plugin.estimated_mb))
+            .weigher(|_key: &(String, String), plugin: &Arc<LoadedPlugin>| {
+                weight_kb(plugin.estimated_mb)
+            })
             // Strict least-recently-used: the default admission policy could refuse a
             // freshly compiled plugin to protect an older one, which looks like a plugin
             // that compiles on every call.
             .eviction_policy(EvictionPolicy::lru())
-            .eviction_listener(move |key: Arc<(String, String)>, plugin: Arc<LoadedPlugin>, cause| {
-                if cause == RemovalCause::Size {
-                    listener_counters.evictions.fetch_add(1, Ordering::Relaxed);
-                    log::info!(
-                        "Plugin `{}@{}` (about {:.0} MB) left memory to make room",
-                        key.0,
-                        key.1,
-                        plugin.estimated_mb
-                    );
-                }
-            })
+            .eviction_listener(
+                move |key: Arc<(String, String)>, plugin: Arc<LoadedPlugin>, cause| {
+                    if cause == RemovalCause::Size {
+                        listener_counters.evictions.fetch_add(1, Ordering::Relaxed);
+                        log::info!(
+                            "Plugin `{}@{}` (about {:.0} MB) left memory to make room",
+                            key.0,
+                            key.1,
+                            plugin.estimated_mb
+                        );
+                    }
+                },
+            )
             .build();
         Ok(Self {
             inner: Arc::new(Inner {
@@ -408,10 +417,12 @@ impl PluginRuntime {
     where
         F: std::future::Future<Output = Result<Option<PluginDbDefinition>, PluginRuntimeError>>,
     {
-        let record = fetch.await?.ok_or_else(|| PluginRuntimeError::NotInCatalog {
-            name: name.to_string(),
-            version: version.to_string(),
-        })?;
+        let record = fetch
+            .await?
+            .ok_or_else(|| PluginRuntimeError::NotInCatalog {
+                name: name.to_string(),
+                version: version.to_string(),
+            })?;
         let prepared = self.prepare(record).await.inspect_err(|error| {
             if matches!(
                 error,
@@ -462,7 +473,12 @@ impl PluginRuntime {
             }
             // A script is text held as a syntax tree: small, with no engine of its own.
             let estimated_mb = (wasm_bytes as f64 / BYTES_PER_MB * 50.0).max(0.1);
-            return Ok(Prepared { record, artifact_path, wasm_bytes, estimated_mb });
+            return Ok(Prepared {
+                record,
+                artifact_path,
+                wasm_bytes,
+                estimated_mb,
+            });
         }
 
         let size_mb = wasm_bytes as f64 / BYTES_PER_MB;
@@ -565,11 +581,19 @@ impl PluginRuntime {
             return tokio::task::spawn_blocking(move || {
                 let _permit = permit;
                 if !program.has_function(&function) {
-                    return Err(PluginRuntimeError::FunctionNotFound { name, version, function });
+                    return Err(PluginRuntimeError::FunctionNotFound {
+                        name,
+                        version,
+                        function,
+                    });
                 }
                 program
                     .call(&function, payload, host, runtime_handle)
-                    .map_err(|source| PluginRuntimeError::Script { name, version, source })
+                    .map_err(|source| PluginRuntimeError::Script {
+                        name,
+                        version,
+                        source,
+                    })
             })
             .await
             .map_err(|error| PluginRuntimeError::Worker(error.to_string()))?;
@@ -580,8 +604,8 @@ impl PluginRuntime {
         let compiled = compiled.clone();
         let output = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            let mut plugin = extism::Plugin::new_from_compiled(&compiled)
-                .map_err(PluginRuntimeError::Invoke)?;
+            let mut plugin =
+                extism::Plugin::new_from_compiled(&compiled).map_err(PluginRuntimeError::Invoke)?;
             if !plugin.function_exists(&function) {
                 return Err(PluginRuntimeError::FunctionNotFound {
                     name,
@@ -661,12 +685,16 @@ impl PluginRuntime {
                 version: version.clone(),
                 source,
             };
-            let source = String::from_utf8(bytes)
-                .map_err(|error| script_error(super::script::ScriptError::Compile(error.to_string())))?;
-            let kind = super::script::ScriptKind::of_path(&artifact_path).ok_or_else(|| {
-                script_error(super::script::ScriptError::Compile("a script must end in `.rhai` or `.lua`".into()))
+            let source = String::from_utf8(bytes).map_err(|error| {
+                script_error(super::script::ScriptError::Compile(error.to_string()))
             })?;
-            let program = super::script::ScriptProgram::compile(kind, &source).map_err(script_error)?;
+            let kind = super::script::ScriptKind::of_path(&artifact_path).ok_or_else(|| {
+                script_error(super::script::ScriptError::Compile(
+                    "a script must end in `.rhai` or `.lua`".into(),
+                ))
+            })?;
+            let program =
+                super::script::ScriptProgram::compile(kind, &source).map_err(script_error)?;
             let schemas = crate::data_model::schemas_of(&models);
             return Ok(LoadedPlugin {
                 manifest,
@@ -718,11 +746,13 @@ impl PluginRuntime {
                 Some(config) => builder.with_cache_config(config),
                 None => builder.with_cache_disabled(),
             };
-            builder.compile().map_err(|source| PluginRuntimeError::Compile {
-                name,
-                version,
-                source,
-            })
+            builder
+                .compile()
+                .map_err(|source| PluginRuntimeError::Compile {
+                    name,
+                    version,
+                    source,
+                })
         });
         let compiled = tokio::time::timeout(Duration::from_secs(secs), compiling)
             .await
@@ -758,10 +788,16 @@ impl PluginRuntime {
         let mut paths = Vec::new();
         if let Some(revision) = &record.revision {
             let layout = AppDir::new(self.inner.app_dir.as_path());
-            if let Some(index) = super::revisions::read_index(&layout, &record.name, revision).await? {
+            if let Some(index) =
+                super::revisions::read_index(&layout, &record.name, revision).await?
+            {
                 for (logical, entry) in &index.files {
                     if logical.starts_with("models/") && logical.ends_with(".json") {
-                        paths.push(layout.revision_dir(&record.name, &entry.revision)?.join(logical));
+                        paths.push(
+                            layout
+                                .revision_dir(&record.name, &entry.revision)?
+                                .join(logical),
+                        );
                     }
                 }
             }
@@ -789,21 +825,34 @@ impl PluginRuntime {
         record: &PluginDbDefinition,
         artifact_path: &Path,
         models: &[crate::data_model::ModelDef],
-    ) -> Result<std::collections::HashMap<String, Arc<crate::data_model::RuleSet>>, PluginRuntimeError> {
+    ) -> Result<
+        std::collections::HashMap<String, Arc<crate::data_model::RuleSet>>,
+        PluginRuntimeError,
+    > {
         let mut paths = Vec::new();
         if let Some(revision) = &record.revision {
             let layout = AppDir::new(self.inner.app_dir.as_path());
-            if let Some(index) = super::revisions::read_index(&layout, &record.name, revision).await? {
+            if let Some(index) =
+                super::revisions::read_index(&layout, &record.name, revision).await?
+            {
                 for (logical, entry) in &index.files {
                     if logical.starts_with("rules/") && logical.ends_with(".json") {
-                        paths.push((logical.clone(), layout.revision_dir(&record.name, &entry.revision)?.join(logical)));
+                        paths.push((
+                            logical.clone(),
+                            layout
+                                .revision_dir(&record.name, &entry.revision)?
+                                .join(logical),
+                        ));
                     }
                 }
             }
         } else if let Some(parent) = artifact_path.parent() {
             if let Ok(mut entries) = tokio::fs::read_dir(parent.join("rules")).await {
                 while let Some(entry) = entries.next_entry().await? {
-                    paths.push((format!("rules/{}", entry.file_name().to_string_lossy()), entry.path()));
+                    paths.push((
+                        format!("rules/{}", entry.file_name().to_string_lossy()),
+                        entry.path(),
+                    ));
                 }
             }
         }
@@ -813,9 +862,15 @@ impl PluginRuntime {
             files.push((logical, tokio::fs::read_to_string(&path).await?));
         }
         let sets = crate::data_model::rules::parse_all(&files, models).map_err(|problems| {
-            PluginRuntimeError::Rules { name: record.name.clone(), problems: problems.join("; ") }
+            PluginRuntimeError::Rules {
+                name: record.name.clone(),
+                problems: problems.join("; "),
+            }
         })?;
-        Ok(sets.into_iter().map(|set| (set.model.clone(), Arc::new(set))).collect())
+        Ok(sets
+            .into_iter()
+            .map(|set| (set.model.clone(), Arc::new(set)))
+            .collect())
     }
 
     /// Where this version's `plugin.toml` is: in its revision's file index (the file may be
@@ -827,9 +882,13 @@ impl PluginRuntime {
     ) -> Result<PathBuf, PluginRuntimeError> {
         if let Some(revision) = &record.revision {
             let layout = AppDir::new(self.inner.app_dir.as_path());
-            if let Some(index) = super::revisions::read_index(&layout, &record.name, revision).await? {
+            if let Some(index) =
+                super::revisions::read_index(&layout, &record.name, revision).await?
+            {
                 if let Some(entry) = index.files.get("plugin.toml") {
-                    return Ok(layout.revision_dir(&record.name, &entry.revision)?.join("plugin.toml"));
+                    return Ok(layout
+                        .revision_dir(&record.name, &entry.revision)?
+                        .join("plugin.toml"));
                 }
             }
         }
@@ -964,7 +1023,10 @@ mod tests {
         }
     }
 
-    fn runtime(directory: &Path, config: PluginRuntimeConfig) -> Result<PluginRuntime, PluginRuntimeError> {
+    fn runtime(
+        directory: &Path,
+        config: PluginRuntimeConfig,
+    ) -> Result<PluginRuntime, PluginRuntimeError> {
         PluginRuntime::new(directory.join("app_dir"), config)
     }
 
@@ -1018,7 +1080,9 @@ mod tests {
     ) -> Result<Arc<LoadedPlugin>, PluginRuntimeError> {
         let record = record.clone();
         runtime
-            .ensure_loaded_with(&record.name.clone(), &record.version.clone(), async { Ok(Some(record)) })
+            .ensure_loaded_with(&record.name.clone(), &record.version.clone(), async {
+                Ok(Some(record))
+            })
             .await
     }
 
@@ -1055,12 +1119,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_plugin_compiles_on_first_use_and_is_ready_after() -> Result<(), Box<dyn std::error::Error>> {
+    async fn a_plugin_compiles_on_first_use_and_is_ready_after()
+    -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         let runtime = runtime(directory.path(), config())?;
         let record = install(runtime.app_dir(), "sample", "1.0.0", MODULE)?;
 
-        assert_eq!(runtime.stats().await.plugins_ready, 0, "nothing compiles at start-up");
+        assert_eq!(
+            runtime.stats().await.plugins_ready,
+            0,
+            "nothing compiles at start-up"
+        );
         load(&runtime, &record).await?;
         load(&runtime, &record).await?;
         let stats = runtime.stats().await;
@@ -1103,7 +1172,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_memory_budget_evicts_the_least_recently_used() -> Result<(), Box<dyn std::error::Error>> {
+    async fn the_memory_budget_evicts_the_least_recently_used()
+    -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         // Each tiny plugin is estimated at 6 MB; 16 MB holds two.
         let runtime = runtime(
@@ -1125,7 +1195,11 @@ mod tests {
         load(&runtime, &c).await?;
         let stats = runtime.stats().await;
         assert_eq!(stats.plugins_ready, 2);
-        assert!(stats.resident_mb <= 16.0, "resident {} MB", stats.resident_mb);
+        assert!(
+            stats.resident_mb <= 16.0,
+            "resident {} MB",
+            stats.resident_mb
+        );
         assert_eq!(stats.evictions, 1);
 
         // b was the one pushed out: loading it again is a load, loading a is a hit.
@@ -1138,11 +1212,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_plugin_that_cannot_fit_the_budget_is_refused() -> Result<(), Box<dyn std::error::Error>> {
+    async fn a_plugin_that_cannot_fit_the_budget_is_refused()
+    -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         let runtime = runtime(
             directory.path(),
-            PluginRuntimeConfig { max_compiled_memory_mb: 16, engine_overhead_mb: 20.0, ..config() },
+            PluginRuntimeConfig {
+                max_compiled_memory_mb: 16,
+                engine_overhead_mb: 20.0,
+                ..config()
+            },
         )?;
         let record = install(runtime.app_dir(), "big", "1.0.0", MODULE)?;
         let refused = load(&runtime, &record).await;
@@ -1156,14 +1235,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_oversized_wasm_is_refused_before_it_is_read() -> Result<(), Box<dyn std::error::Error>> {
+    async fn an_oversized_wasm_is_refused_before_it_is_read()
+    -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         let runtime = runtime(
             directory.path(),
-            PluginRuntimeConfig { max_wasm_size_mb: 1, ..config() },
+            PluginRuntimeConfig {
+                max_wasm_size_mb: 1,
+                ..config()
+            },
         )?;
         // Not even valid WebAssembly: the size check comes first.
-        let record = install(runtime.app_dir(), "huge", "1.0.0", &vec![0u8; 2 * 1024 * 1024])?;
+        let record = install(
+            runtime.app_dir(),
+            "huge",
+            "1.0.0",
+            &vec![0u8; 2 * 1024 * 1024],
+        )?;
         let refused = load(&runtime, &record).await;
         assert!(matches!(
             refused.as_ref().map_err(PluginRuntimeError::root),
@@ -1199,7 +1287,12 @@ mod tests {
             },
         )?;
         // Someone else is compiling: the only turn is taken.
-        let busy = runtime.inner.compile_permits.clone().acquire_owned().await?;
+        let busy = runtime
+            .inner
+            .compile_permits
+            .clone()
+            .acquire_owned()
+            .await?;
 
         // One caller may wait; it gives up after the timeout.
         let waiter = {
@@ -1211,9 +1304,15 @@ mod tests {
         }
         // The next is turned away at once.
         let turned_away = runtime.acquire_compile_turn("b", "1").await;
-        assert!(matches!(turned_away, Err(PluginRuntimeError::CompileQueueFull)));
+        assert!(matches!(
+            turned_away,
+            Err(PluginRuntimeError::CompileQueueFull)
+        ));
 
-        assert!(matches!(waiter.await?, Err(PluginRuntimeError::CompileTimeout { .. })));
+        assert!(matches!(
+            waiter.await?,
+            Err(PluginRuntimeError::CompileTimeout { .. })
+        ));
         drop(busy);
         let stats = runtime.stats().await;
         assert_eq!((stats.queue_full, stats.timeouts), (1, 1));
@@ -1236,7 +1335,10 @@ mod tests {
             },
         )?;
         let conf = std::fs::read_to_string(runtime.app_dir().join("conf/wasmtime-cache.toml"))?;
-        assert!(conf.contains("files-total-size-soft-limit = \"64Mi\""), "{conf}");
+        assert!(
+            conf.contains("files-total-size-soft-limit = \"64Mi\""),
+            "{conf}"
+        );
         assert!(runtime.stats().await.disk_cache);
 
         let record = install(runtime.app_dir(), "sample", "1.0.0", MODULE)?;
@@ -1251,7 +1353,11 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        assert!(found, "compiled code was written under {}", cached.display());
+        assert!(
+            found,
+            "compiled code was written under {}",
+            cached.display()
+        );
         Ok(())
     }
 
@@ -1270,7 +1376,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn without_the_disk_tier_nothing_is_written_outside_memory() -> Result<(), Box<dyn std::error::Error>> {
+    async fn without_the_disk_tier_nothing_is_written_outside_memory()
+    -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         let runtime = runtime(directory.path(), config())?;
         assert!(!runtime.stats().await.disk_cache);
@@ -1283,12 +1390,21 @@ mod tests {
         let marked = PluginRuntimeError::Invoke(extism::Error::msg(format!(
             "call failed: {USER_ERROR_PREFIX}channel is archived\nwith a newline"
         )));
-        assert_eq!(marked.user_message().as_deref(), Some("channel is archivedwith a newline"));
+        assert_eq!(
+            marked.user_message().as_deref(),
+            Some("channel is archivedwith a newline")
+        );
         let internal = PluginRuntimeError::Invoke(extism::Error::msg("JSON error: invalid type"));
         assert_eq!(internal.user_message(), None);
         assert_eq!(PluginRuntimeError::Busy.user_message(), None);
-        let long = PluginRuntimeError::Invoke(extism::Error::msg(format!("{USER_ERROR_PREFIX}{}", "x".repeat(1000))));
-        assert_eq!(long.user_message().map(|m| m.len()), Some(MAX_USER_ERROR_CHARS));
+        let long = PluginRuntimeError::Invoke(extism::Error::msg(format!(
+            "{USER_ERROR_PREFIX}{}",
+            "x".repeat(1000)
+        )));
+        assert_eq!(
+            long.user_message().map(|m| m.len()),
+            Some(MAX_USER_ERROR_CHARS)
+        );
     }
 
     #[test]
@@ -1296,20 +1412,37 @@ mod tests {
         let config = PluginRuntimeConfig::default();
         assert_eq!(config.validate(), Ok(()));
         assert_eq!(config.max_compiled_memory_mb, 256);
-        assert!(config.compile_cache.enabled, "the disk tier is on by default");
+        assert!(
+            config.compile_cache.enabled,
+            "the disk tier is on by default"
+        );
 
-        let small = PluginRuntimeConfig { max_compiled_memory_mb: 8, ..Default::default() };
+        let small = PluginRuntimeConfig {
+            max_compiled_memory_mb: 8,
+            ..Default::default()
+        };
         assert!(small.validate().is_err());
-        let cannot_fit = PluginRuntimeConfig { max_wasm_size_mb: 64, ..Default::default() };
-        assert!(cannot_fit.validate().is_err(), "the biggest accepted wasm must fit the budget");
-        let no_compiles = PluginRuntimeConfig { max_concurrent_compiles: 0, ..Default::default() };
+        let cannot_fit = PluginRuntimeConfig {
+            max_wasm_size_mb: 64,
+            ..Default::default()
+        };
+        assert!(
+            cannot_fit.validate().is_err(),
+            "the biggest accepted wasm must fit the budget"
+        );
+        let no_compiles = PluginRuntimeConfig {
+            max_concurrent_compiles: 0,
+            ..Default::default()
+        };
         assert!(no_compiles.validate().is_err());
     }
 
     /// A synthetic module of about `functions` functions: arithmetic, loops, memory access
     /// and calls, with different constants so nothing is shared.
     fn synthetic_wasm(functions: usize) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        let mut text = String::from("(module (memory 1) (func $leaf (param i32) (result i32) local.get 0 i32.const 1 i32.add)\n");
+        let mut text = String::from(
+            "(module (memory 1) (func $leaf (param i32) (result i32) local.get 0 i32.const 1 i32.add)\n",
+        );
         for index in 0..functions {
             let k = index as i32 * 7 + 3;
             text.push_str(&format!(
@@ -1335,7 +1468,11 @@ mod tests {
     fn resident_mb() -> f64 {
         let pages: f64 = std::fs::read_to_string("/proc/self/statm")
             .ok()
-            .and_then(|text| text.split_whitespace().nth(1).and_then(|field| field.parse().ok()))
+            .and_then(|text| {
+                text.split_whitespace()
+                    .nth(1)
+                    .and_then(|field| field.parse().ok())
+            })
             .unwrap_or(0.0);
         pages * 4096.0 / BYTES_PER_MB
     }
@@ -1356,8 +1493,14 @@ mod tests {
         // The fixed cost of one engine: a tiny module, many times.
         let tiny = wat::parse_str("(module (func (export \"f\")))")?;
         let before = resident_mb();
-        let engines: Vec<_> = (0..20).map(|_| compile(tiny.clone())).collect::<Result<_, _>>()?;
-        eprintln!("CAL engine overhead: {:.2} MB per compiled plugin ({} of them)", (resident_mb() - before) / 20.0, engines.len());
+        let engines: Vec<_> = (0..20)
+            .map(|_| compile(tiny.clone()))
+            .collect::<Result<_, _>>()?;
+        eprintln!(
+            "CAL engine overhead: {:.2} MB per compiled plugin ({} of them)",
+            (resident_mb() - before) / 20.0,
+            engines.len()
+        );
         drop(engines);
 
         // What matters is the memory of each plugin kept ready, not what one compile leaves
@@ -1381,8 +1524,14 @@ mod tests {
     }
 
     /// A script plugin held in memory, with no catalog behind it.
-    fn script_plugin(name: &str, kind: super::super::script::ScriptKind, source: &str) -> Result<Arc<LoadedPlugin>, Box<dyn std::error::Error>> {
-        let manifest = PluginManifest::parse(&format!("[plugin]\nname = \"{name}\"\nlabel = \"{name}\"\nversion = \"1.0.0\"\n"))?;
+    fn script_plugin(
+        name: &str,
+        kind: super::super::script::ScriptKind,
+        source: &str,
+    ) -> Result<Arc<LoadedPlugin>, Box<dyn std::error::Error>> {
+        let manifest = PluginManifest::parse(&format!(
+            "[plugin]\nname = \"{name}\"\nlabel = \"{name}\"\nversion = \"1.0.0\"\n"
+        ))?;
         let program = super::super::script::ScriptProgram::compile(kind, source)?;
         Ok(Arc::new(LoadedPlugin {
             manifest,
@@ -1422,23 +1571,37 @@ mod tests {
     /// With one call permit, a plugin that calls another must not wait for a permit its own
     /// request is holding.
     #[tokio::test]
-    async fn a_nested_call_does_not_need_a_permit_of_its_own() -> Result<(), Box<dyn std::error::Error>> {
+    async fn a_nested_call_does_not_need_a_permit_of_its_own()
+    -> Result<(), Box<dyn std::error::Error>> {
         use super::super::script::ScriptKind;
         let dir = tempfile::tempdir()?;
         let runtime = runtime(
             dir.path(),
-            PluginRuntimeConfig { max_concurrent_calls: 1, compile_timeout_secs: 1, ..config() },
+            PluginRuntimeConfig {
+                max_concurrent_calls: 1,
+                compile_timeout_secs: 1,
+                ..config()
+            },
         )?;
-        let inner = script_plugin("inner", ScriptKind::Rhai, "fn double(input) { #{ n: input.n * 2 } }")?;
+        let inner = script_plugin(
+            "inner",
+            ScriptKind::Rhai,
+            "fn double(input) { #{ n: input.n * 2 } }",
+        )?;
         let outer = script_plugin(
             "outer",
             ScriptKind::Lua,
             r#"function run() return plugins.call("inner", "double", { n = 21 }) end"#,
         )?;
-        let caller = Arc::new(Chain { runtime: runtime.clone(), target: inner });
+        let caller = Arc::new(Chain {
+            runtime: runtime.clone(),
+            target: inner,
+        });
         let host = crate::kernel::host::test_support::dummy_ctx(&["plugins::call"])
             .with_plugin_calls(vec!["inner".into()], vec!["outer.run".into()], caller);
-        let answer = runtime.invoke(outer, "run", serde_json::Value::Null, host).await?;
+        let answer = runtime
+            .invoke(outer, "run", serde_json::Value::Null, host)
+            .await?;
         assert_eq!(answer, serde_json::json!({ "n": 42 }));
         Ok(())
     }

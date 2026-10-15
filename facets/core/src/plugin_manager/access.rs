@@ -35,7 +35,12 @@ pub fn user_grants(
         .plugin
         .access_models
         .iter()
-        .map(|access| (access.name.clone(), grant_for(&access.name, &access.permissions, schemas)))
+        .map(|access| {
+            (
+                access.name.clone(),
+                grant_for(&access.name, &access.permissions, schemas),
+            )
+        })
         .collect()
 }
 
@@ -74,7 +79,10 @@ pub fn anonymous_grants(
 /// Capabilities for an anonymous visitor: those the plugin lists in
 /// `public_capabilities` (and also holds), plus `db::query` when it has any
 /// public data to read.
-pub fn anonymous_capabilities(manifest: &PluginManifest, has_readable_models: bool) -> HashSet<String> {
+pub fn anonymous_capabilities(
+    manifest: &PluginManifest,
+    has_readable_models: bool,
+) -> HashSet<String> {
     let plugin = &manifest.plugin;
     let mut granted: HashSet<String> = plugin
         .public_capabilities
@@ -114,10 +122,11 @@ public_access_models = [{ name = "guestbook", permissions = ["write"] }]
         let models: Vec<crate::data_model::ModelDef> = ["message", "guestbook"]
             .iter()
             .map(|name| {
-                let mut model: crate::data_model::ModelDef = serde_json::from_value(serde_json::json!({
-                    "name": name, "fields": [{ "name": "body", "type": "text" }]
-                }))
-                .unwrap_or_else(|error| panic!("{error}"));
+                let mut model: crate::data_model::ModelDef =
+                    serde_json::from_value(serde_json::json!({
+                        "name": name, "fields": [{ "name": "body", "type": "text" }]
+                    }))
+                    .unwrap_or_else(|error| panic!("{error}"));
                 crate::data_model::sync_ids(&mut model);
                 model
             })
@@ -126,13 +135,20 @@ public_access_models = [{ name = "guestbook", permissions = ["write"] }]
     }
 
     #[test]
-    fn users_get_their_access_models_with_the_table_of_their_definition() -> Result<(), Box<dyn std::error::Error>> {
+    fn users_get_their_access_models_with_the_table_of_their_definition()
+    -> Result<(), Box<dyn std::error::Error>> {
         let schemas = schemas();
         let grants = user_grants(&manifest()?, &schemas);
-        assert_eq!(grants["message"].table, schemas["message"].table, "records live in the model's id");
+        assert_eq!(
+            grants["message"].table, schemas["message"].table,
+            "records live in the model's id"
+        );
         assert!(grants["message"].schema.is_some());
         assert!(grants["message"].can_write);
-        assert_eq!(grants["channel"].table, "channel", "a model without a definition keeps its name");
+        assert_eq!(
+            grants["channel"].table, "channel",
+            "a model without a definition keeps its name"
+        );
         assert!(grants["channel"].schema.is_none());
         Ok(())
     }
@@ -145,7 +161,10 @@ public_access_models = [{ name = "guestbook", permissions = ["write"] }]
         let message = &grants["message"];
         assert!(message.can_read && !message.can_write);
         assert_eq!(message.table, schemas["message"].table);
-        assert!(!grants.contains_key("secret"), "undeclared models stay private");
+        assert!(
+            !grants.contains_key("secret"),
+            "undeclared models stay private"
+        );
         assert!(!grants.contains_key("channel"));
         Ok(())
     }
@@ -161,7 +180,8 @@ public_access_models = [{ name = "guestbook", permissions = ["write"] }]
     }
 
     #[test]
-    fn a_declared_model_merges_page_read_with_declared_write() -> Result<(), Box<dyn std::error::Error>> {
+    fn a_declared_model_merges_page_read_with_declared_write()
+    -> Result<(), Box<dyn std::error::Error>> {
         let manifest = PluginManifest::parse(
             r#"
 [plugin]
@@ -169,18 +189,27 @@ name = "x"
 public_access_models = [{ name = "post", permissions = ["write"] }]
 "#,
         )?;
-        let grants = anonymous_grants(&manifest, &HashMap::new(), &BTreeSet::from(["post".to_string()]));
+        let grants = anonymous_grants(
+            &manifest,
+            &HashMap::new(),
+            &BTreeSet::from(["post".to_string()]),
+        );
         assert!(grants["post"].can_read && grants["post"].can_write);
         Ok(())
     }
 
     #[test]
-    fn anonymous_capabilities_are_the_declared_subset()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn anonymous_capabilities_are_the_declared_subset() -> Result<(), Box<dyn std::error::Error>> {
         let caps = anonymous_capabilities(&manifest()?, true);
         assert!(caps.contains("db::mutate"));
-        assert!(caps.contains("db::query"), "implied by readable public data");
-        assert!(!caps.contains("events::emit"), "the plugin does not hold it");
+        assert!(
+            caps.contains("db::query"),
+            "implied by readable public data"
+        );
+        assert!(
+            !caps.contains("events::emit"),
+            "the plugin does not hold it"
+        );
 
         assert!(!anonymous_capabilities(&manifest()?, false).contains("db::query"));
         Ok(())
@@ -198,7 +227,8 @@ public_access_models = [{ name = "post", permissions = ["write"] }]
     #[test]
     fn a_manifest_that_still_asks_for_raw_surql_is_refused() {
         for field in ["capabilities", "public_capabilities"] {
-            let text = format!("[plugin]\nname = \"old\"\n{field} = [\"db::query\", \"db::surql\"]\n");
+            let text =
+                format!("[plugin]\nname = \"old\"\n{field} = [\"db::query\", \"db::surql\"]\n");
             assert!(
                 matches!(PluginManifest::parse(&text), Err(super::super::models::plugin_def::ManifestError::RawSurql(f)) if f == field),
                 "{field}"

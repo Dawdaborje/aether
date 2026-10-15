@@ -8,9 +8,11 @@
 	let open = $state(false);
 </script>
 
-<Button size="sm" variant="outline" onclick={() => (open = true)}>
-	{String(node.title ?? node.label ?? 'Open')}
-</Button>
+<div>
+	<Button size="sm" variant="outline" onclick={() => (open = true)}>
+		{String(node.title ?? node.label ?? 'Open')}
+	</Button>
+</div>
 
 <Dialog.Root bind:open>
 	<Dialog.Content>

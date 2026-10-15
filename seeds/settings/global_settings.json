@@ -4,7 +4,7 @@
       "id": "general",
       "label": "General Settings",
       "color": "blue",
-      "icon": "cog",
+      "icon": "settings",
       "icon_type": "lucide",
       "items": [
         {

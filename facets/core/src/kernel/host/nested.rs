@@ -21,8 +21,8 @@ use serde_json::{Map, Value as JsonValue, json};
 
 use super::context::PluginHostContext;
 use super::db::{
-    CreateRequest, DeleteRequest, Injection, Options, Plan, UpdateRequest, plan_create_with, plan_delete_with, plan_update_with,
-    require_model, run_composed, strip_table_prefix,
+    CreateRequest, DeleteRequest, Injection, Options, Plan, UpdateRequest, plan_create_with,
+    plan_delete_with, plan_update_with, require_model, run_composed, strip_table_prefix,
 };
 use super::error::HostError;
 use super::integrity;
@@ -43,7 +43,10 @@ fn invalid(message: impl Into<String>) -> HostError {
 type Rows<'a> = Vec<(&'a ChildField, Vec<Map<String, JsonValue>>)>;
 
 /// The record's own values, and the rows of each child field it names.
-fn split<'a>(schema: &'a ModelSchema, data: &Map<String, JsonValue>) -> Result<(Map<String, JsonValue>, Rows<'a>), HostError> {
+fn split<'a>(
+    schema: &'a ModelSchema,
+    data: &Map<String, JsonValue>,
+) -> Result<(Map<String, JsonValue>, Rows<'a>), HostError> {
     let mut own = Map::new();
     let mut groups: Rows<'a> = Vec::new();
     let mut total = 0;
@@ -52,23 +55,33 @@ fn split<'a>(schema: &'a ModelSchema, data: &Map<String, JsonValue>) -> Result<(
             own.insert(name.clone(), value.clone());
             continue;
         };
-        let list = value.as_array().ok_or_else(|| invalid(format!("`{name}` is a list of rows")))?;
+        let list = value
+            .as_array()
+            .ok_or_else(|| invalid(format!("`{name}` is a list of rows")))?;
         let mut rows = Vec::with_capacity(list.len());
         for (position, row) in list.iter().enumerate() {
-            let row = row.as_object().ok_or_else(|| invalid(format!("{name}[{position}] must be an object")))?;
+            let row = row
+                .as_object()
+                .ok_or_else(|| invalid(format!("{name}[{position}] must be an object")))?;
             rows.push(row.clone());
         }
         total += rows.len();
         groups.push((child, rows));
     }
     if total > MAX_ROWS {
-        return Err(invalid(format!("at most {MAX_ROWS} rows are written in one call, not {total}")));
+        return Err(invalid(format!(
+            "at most {MAX_ROWS} rows are written in one call, not {total}"
+        )));
     }
     Ok((own, groups))
 }
 
 /// A row as it is written: numbered by its place when the field says so.
-fn numbered(child: &ChildField, mut row: Map<String, JsonValue>, position: usize) -> Map<String, JsonValue> {
+fn numbered(
+    child: &ChildField,
+    mut row: Map<String, JsonValue>,
+    position: usize,
+) -> Map<String, JsonValue> {
     if let Some((field, _)) = &child.order {
         row.insert(field.clone(), JsonValue::from(position as i64 + 1));
     }
@@ -77,7 +90,9 @@ fn numbered(child: &ChildField, mut row: Map<String, JsonValue>, position: usize
 
 fn at(child: &ChildField, position: usize, error: HostError) -> HostError {
     match error {
-        HostError::InvalidPayload(message) => HostError::InvalidPayload(format!("{}[{position}]: {message}", child.field)),
+        HostError::InvalidPayload(message) => {
+            HostError::InvalidPayload(format!("{}[{position}]: {message}", child.field))
+        }
         other => other,
     }
 }
@@ -88,7 +103,9 @@ fn finish(schema: &ModelSchema, plans: &mut [Plan<'_>]) -> Result<(), HostError>
         return Ok(());
     }
     if let Some(last) = plans.last_mut() {
-        last.extra.after.extend(integrity::derived_again(schema, "$rows_0")?);
+        last.extra
+            .after
+            .extend(integrity::derived_again(schema, "$rows_0")?);
         integrity::model_checks(schema, "$rows_0", &mut last.binds, &mut last.extra)?;
     }
     Ok(())
@@ -105,21 +122,33 @@ fn assemble(mut record: JsonValue, listed: Vec<(&ChildField, Vec<JsonValue>)>) -
 }
 
 /// A create that carries rows; `None` when it carries none.
-pub(super) async fn create(ctx: &PluginHostContext, req: &CreateRequest) -> Result<Option<JsonValue>, HostError> {
+pub(super) async fn create(
+    ctx: &PluginHostContext,
+    req: &CreateRequest,
+) -> Result<Option<JsonValue>, HostError> {
     let grant = require_model(ctx, &req.model, true)?;
-    let Some(schema) = &grant.schema else { return Ok(None) };
+    let Some(schema) = &grant.schema else {
+        return Ok(None);
+    };
     if schema.children.is_empty() || !req.data.keys().any(|key| schema.child(key).is_some()) {
         return Ok(None);
     }
     let (own, groups) = split(schema, &req.data)?;
-    let parent = Options { allow_empty: true, defer_checks: true, ..Options::default() };
+    let parent = Options {
+        allow_empty: true,
+        defer_checks: true,
+        ..Options::default()
+    };
     let mut plans = vec![plan_create_with(ctx, req.model.clone(), own, parent).await?];
     let mut listed = Vec::new();
     for (child, rows) in groups {
         let mut indexes = Vec::new();
         for (position, row) in rows.into_iter().enumerate() {
             if row.contains_key(&child.inverse_field) || row.contains_key("id") {
-                return Err(invalid(format!("{}[{position}]: a row has no `id` or `{}` here, the kernel sets them", child.field, child.inverse_field)));
+                return Err(invalid(format!(
+                    "{}[{position}]: a row has no `id` or `{}` here, the kernel sets them",
+                    child.field, child.inverse_field
+                )));
             }
             let options = Options {
                 inject: Some(Injection {
@@ -131,9 +160,14 @@ pub(super) async fn create(ctx: &PluginHostContext, req: &CreateRequest) -> Resu
                 skip_parent_refresh: true,
                 ..Options::default()
             };
-            let plan = plan_create_with(ctx, child.model.clone(), numbered(child, row, position), options)
-                .await
-                .map_err(|error| at(child, position, error))?;
+            let plan = plan_create_with(
+                ctx,
+                child.model.clone(),
+                numbered(child, row, position),
+                options,
+            )
+            .await
+            .map_err(|error| at(child, position, error))?;
             indexes.push(plans.len());
             plans.push(plan);
         }
@@ -144,65 +178,134 @@ pub(super) async fn create(ctx: &PluginHostContext, req: &CreateRequest) -> Resu
     let record = results.first().cloned().unwrap_or(JsonValue::Null);
     let listed = listed
         .into_iter()
-        .map(|(child, indexes)| (child, indexes.into_iter().filter_map(|i| results.get(i).cloned()).collect()))
+        .map(|(child, indexes)| {
+            (
+                child,
+                indexes
+                    .into_iter()
+                    .filter_map(|i| results.get(i).cloned())
+                    .collect(),
+            )
+        })
         .collect();
-    Ok(Some(json!({ "ok": true, "data": assemble(record, listed) })))
+    Ok(Some(
+        json!({ "ok": true, "data": assemble(record, listed) }),
+    ))
 }
 
 /// The ids of the rows of `record` (by `child`) the caller can read, as record keys.
-async fn visible_rows(ctx: &PluginHostContext, child: &ChildField, record: &str) -> Result<Vec<String>, HostError> {
+async fn visible_rows(
+    ctx: &PluginHostContext,
+    child: &ChildField,
+    record: &str,
+) -> Result<Vec<String>, HostError> {
     let reply = super::db::find_records(
         ctx,
         &json!({ "model": child.model, "filter": { child.inverse_field.clone(): record }, "limit": MAX_EXISTING }),
     )
     .await?;
-    let rows = reply.get("data").and_then(JsonValue::as_array).cloned().unwrap_or_default();
+    let rows = reply
+        .get("data")
+        .and_then(JsonValue::as_array)
+        .cloned()
+        .unwrap_or_default();
     if rows.len() >= MAX_EXISTING {
-        return Err(invalid(format!("`{}` has too many rows to replace together", child.field)));
+        return Err(invalid(format!(
+            "`{}` has too many rows to replace together",
+            child.field
+        )));
     }
-    Ok(rows.iter().filter_map(|row| row.get("id").and_then(JsonValue::as_str)).map(|id| strip_table_prefix(id, &child.table).to_string()).collect())
+    Ok(rows
+        .iter()
+        .filter_map(|row| row.get("id").and_then(JsonValue::as_str))
+        .map(|id| strip_table_prefix(id, &child.table).to_string())
+        .collect())
 }
 
 /// An update that carries rows; `None` when it carries none.
-pub(super) async fn update(ctx: &PluginHostContext, req: &UpdateRequest) -> Result<Option<JsonValue>, HostError> {
+pub(super) async fn update(
+    ctx: &PluginHostContext,
+    req: &UpdateRequest,
+) -> Result<Option<JsonValue>, HostError> {
     let grant = require_model(ctx, &req.model, true)?;
-    let Some(schema) = &grant.schema else { return Ok(None) };
+    let Some(schema) = &grant.schema else {
+        return Ok(None);
+    };
     if schema.children.is_empty() || !req.data.keys().any(|key| schema.child(key).is_some()) {
         return Ok(None);
     }
     let (own, groups) = split(schema, &req.data)?;
-    let parent = Options { allow_empty: true, defer_checks: true, ..Options::default() };
-    let mut plans = vec![plan_update_with(ctx, req.model.clone(), req.id.clone(), own, parent).await?];
+    let parent = Options {
+        allow_empty: true,
+        defer_checks: true,
+        ..Options::default()
+    };
+    let mut plans =
+        vec![plan_update_with(ctx, req.model.clone(), req.id.clone(), own, parent).await?];
     let mut listed = Vec::new();
     for (child, rows) in groups {
-        let existing: BTreeSet<String> = visible_rows(ctx, child, &req.id).await?.into_iter().collect();
+        let existing: BTreeSet<String> = visible_rows(ctx, child, &req.id)
+            .await?
+            .into_iter()
+            .collect();
         let mut kept = BTreeSet::new();
         let mut indexes = Vec::new();
         for (position, mut row) in rows.into_iter().enumerate() {
             if let Some(back) = row.remove(&child.inverse_field)
-                && back.as_str().map(|id| strip_table_prefix(id, &grant.table)) != Some(strip_table_prefix(&req.id, &grant.table))
+                && back.as_str().map(|id| strip_table_prefix(id, &grant.table))
+                    != Some(strip_table_prefix(&req.id, &grant.table))
             {
-                return Err(invalid(format!("{}[{position}]: `{}` is this record", child.field, child.inverse_field)));
+                return Err(invalid(format!(
+                    "{}[{position}]: `{}` is this record",
+                    child.field, child.inverse_field
+                )));
             }
             let id = match row.remove("id") {
                 None | Some(JsonValue::Null) => None,
-                Some(JsonValue::String(id)) => Some(strip_table_prefix(&id, &child.table).to_string()),
-                Some(_) => return Err(invalid(format!("{}[{position}]: `id` is text", child.field))),
+                Some(JsonValue::String(id)) => {
+                    Some(strip_table_prefix(&id, &child.table).to_string())
+                }
+                Some(_) => {
+                    return Err(invalid(format!(
+                        "{}[{position}]: `id` is text",
+                        child.field
+                    )));
+                }
             };
-            let options = Options { allow_empty: true, skip_parent_refresh: true, ..Options::default() };
+            let options = Options {
+                allow_empty: true,
+                skip_parent_refresh: true,
+                ..Options::default()
+            };
             let plan = match id {
                 Some(id) => {
                     if !existing.contains(&id) {
-                        return Err(invalid(format!("{}[{position}]: `{id}` is not a row of this record", child.field)));
+                        return Err(invalid(format!(
+                            "{}[{position}]: `{id}` is not a row of this record",
+                            child.field
+                        )));
                     }
                     if !kept.insert(id.clone()) {
-                        return Err(invalid(format!("{}[{position}]: `{id}` is listed twice", child.field)));
+                        return Err(invalid(format!(
+                            "{}[{position}]: `{id}` is listed twice",
+                            child.field
+                        )));
                     }
-                    plan_update_with(ctx, child.model.clone(), id, numbered(child, row, position), options).await
+                    plan_update_with(
+                        ctx,
+                        child.model.clone(),
+                        id,
+                        numbered(child, row, position),
+                        options,
+                    )
+                    .await
                 }
                 None => {
                     let mut row = numbered(child, row, position);
-                    row.insert(child.inverse_field.clone(), JsonValue::String(req.id.clone()));
+                    row.insert(
+                        child.inverse_field.clone(),
+                        JsonValue::String(req.id.clone()),
+                    );
                     plan_create_with(ctx, child.model.clone(), row, options).await
                 }
             }
@@ -211,7 +314,10 @@ pub(super) async fn update(ctx: &PluginHostContext, req: &UpdateRequest) -> Resu
             plans.push(plan);
         }
         for id in existing.difference(&kept) {
-            let options = Options { skip_parent_refresh: true, ..Options::default() };
+            let options = Options {
+                skip_parent_refresh: true,
+                ..Options::default()
+            };
             plans.push(plan_delete_with(ctx, child.model.clone(), id.clone(), options).await?);
         }
         listed.push((child, indexes));
@@ -221,15 +327,30 @@ pub(super) async fn update(ctx: &PluginHostContext, req: &UpdateRequest) -> Resu
     let record = results.first().cloned().unwrap_or(JsonValue::Null);
     let listed = listed
         .into_iter()
-        .map(|(child, indexes)| (child, indexes.into_iter().filter_map(|i| results.get(i).cloned()).collect()))
+        .map(|(child, indexes)| {
+            (
+                child,
+                indexes
+                    .into_iter()
+                    .filter_map(|i| results.get(i).cloned())
+                    .collect(),
+            )
+        })
         .collect();
-    Ok(Some(json!({ "ok": true, "data": assemble(record, listed) })))
+    Ok(Some(
+        json!({ "ok": true, "data": assemble(record, listed) }),
+    ))
 }
 
 /// A delete of a record that has rows; `None` when it has none.
-pub(super) async fn delete(ctx: &PluginHostContext, req: &DeleteRequest) -> Result<Option<JsonValue>, HostError> {
+pub(super) async fn delete(
+    ctx: &PluginHostContext,
+    req: &DeleteRequest,
+) -> Result<Option<JsonValue>, HostError> {
     let grant = require_model(ctx, &req.model, true)?;
-    let Some(schema) = &grant.schema else { return Ok(None) };
+    let Some(schema) = &grant.schema else {
+        return Ok(None);
+    };
     if schema.children.is_empty() {
         return Ok(None);
     }
@@ -238,16 +359,36 @@ pub(super) async fn delete(ctx: &PluginHostContext, req: &DeleteRequest) -> Resu
         let visible = visible_rows(ctx, child, &req.id).await?;
         let mut response = ctx
             .db
-            .query(format!("SELECT count() AS n FROM {} WHERE {} = $record GROUP ALL;", child.table, child.inverse_column))
-            .bind(("record", format!("{}:{}", grant.table, strip_table_prefix(&req.id, &grant.table))))
+            .query(format!(
+                "SELECT count() AS n FROM {} WHERE {} = $record GROUP ALL;",
+                child.table, child.inverse_column
+            ))
+            .bind((
+                "record",
+                format!(
+                    "{}:{}",
+                    grant.table,
+                    strip_table_prefix(&req.id, &grant.table)
+                ),
+            ))
             .await?;
         let counted: Vec<JsonValue> = response.take(0)?;
-        let total = counted.first().and_then(|row| row.get("n")).and_then(JsonValue::as_u64).unwrap_or(0) as usize;
+        let total = counted
+            .first()
+            .and_then(|row| row.get("n"))
+            .and_then(JsonValue::as_u64)
+            .unwrap_or(0) as usize;
         if total > visible.len() {
-            return Err(invalid(format!("`{}` has rows you may not see, so the record cannot be deleted", child.field)));
+            return Err(invalid(format!(
+                "`{}` has rows you may not see, so the record cannot be deleted",
+                child.field
+            )));
         }
         for id in visible {
-            let options = Options { skip_parent_refresh: true, ..Options::default() };
+            let options = Options {
+                skip_parent_refresh: true,
+                ..Options::default()
+            };
             plans.push(plan_delete_with(ctx, child.model.clone(), id, options).await?);
         }
     }
@@ -256,7 +397,9 @@ pub(super) async fn delete(ctx: &PluginHostContext, req: &DeleteRequest) -> Resu
     }
     plans.push(plan_delete_with(ctx, req.model.clone(), req.id.clone(), Options::default()).await?);
     let mut results = run_composed(ctx, &plans).await?;
-    Ok(Some(json!({ "ok": true, "data": results.pop().unwrap_or(JsonValue::Null) })))
+    Ok(Some(
+        json!({ "ok": true, "data": results.pop().unwrap_or(JsonValue::Null) }),
+    ))
 }
 
 /// Put the rows of the named child fields into already-read records.
@@ -267,9 +410,17 @@ pub(super) async fn expand(
     names: &[String],
 ) -> Result<(), HostError> {
     for name in names {
-        let child = schema.child(name).ok_or_else(|| invalid(format!("`{name}` is not a child field of `{}`", schema.name)))?;
-        let ids: Vec<String> =
-            records.iter().filter_map(|record| record.get("id").and_then(JsonValue::as_str)).map(str::to_string).collect();
+        let child = schema.child(name).ok_or_else(|| {
+            invalid(format!(
+                "`{name}` is not a child field of `{}`",
+                schema.name
+            ))
+        })?;
+        let ids: Vec<String> = records
+            .iter()
+            .filter_map(|record| record.get("id").and_then(JsonValue::as_str))
+            .map(str::to_string)
+            .collect();
         let mut by_record: HashMap<String, Vec<JsonValue>> = HashMap::new();
         for chunk in ids.chunks(EXPAND_CHUNK) {
             let mut payload = json!({
@@ -281,9 +432,15 @@ pub(super) async fn expand(
                 payload["order"] = JsonValue::String(order.clone());
             }
             let reply = super::db::find_records(ctx, &payload).await?;
-            let rows = reply.get("data").and_then(JsonValue::as_array).cloned().unwrap_or_default();
+            let rows = reply
+                .get("data")
+                .and_then(JsonValue::as_array)
+                .cloned()
+                .unwrap_or_default();
             if rows.len() >= MAX_EXISTING {
-                return Err(invalid(format!("`{name}` has too many rows to expand for this many records")));
+                return Err(invalid(format!(
+                    "`{name}` has too many rows to expand for this many records"
+                )));
             }
             for row in rows {
                 if let Some(owner) = row.get(&child.inverse_field).and_then(JsonValue::as_str) {
@@ -292,7 +449,11 @@ pub(super) async fn expand(
             }
         }
         for record in records.iter_mut() {
-            let rows = record.get("id").and_then(JsonValue::as_str).and_then(|id| by_record.remove(id)).unwrap_or_default();
+            let rows = record
+                .get("id")
+                .and_then(JsonValue::as_str)
+                .and_then(|id| by_record.remove(id))
+                .unwrap_or_default();
             if let Some(object) = record.as_object_mut() {
                 object.insert(name.clone(), JsonValue::Array(rows));
             }

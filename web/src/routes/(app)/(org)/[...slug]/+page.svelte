@@ -1,12 +1,11 @@
 <script lang="ts">
-	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { buildPage } from '$lib/dsl';
 	import PageRenderer from '$lib/components/widgets/PageRenderer.svelte';
 	import SpinnerWidget from '$lib/components/widgets/SpinnerWidget.svelte';
 	import ErrorPage from '$lib/components/errors/ErrorPage.svelte';
 	import { authSession } from '$lib/auth/session.svelte';
-	import { gotoLogin, landingPath } from '$lib/auth/landing';
+	import { gotoLanding, gotoLogin } from '$lib/auth/landing';
 	import { orgStore } from '$lib/org/orgStore.svelte';
 	import { PageState, setPageState } from '$lib/pages/pageContext.svelte';
 
@@ -39,7 +38,7 @@
 		if (data.status === 401 && !atRoot) {
 			void gotoLogin(`/${params.slug}`);
 		} else if (data.status === 404 && atRoot && authSession.isUser) {
-			void goto(resolve(landingPath(authSession.me?.user)));
+			void gotoLanding(authSession.me?.user);
 		} else if (data.status === 409) {
 			void orgStore.requireSelection();
 		}
@@ -83,7 +82,7 @@
 {:else if pageNode}
 	{#if built?.warnings.length && import.meta.env.DEV}
 		<div
-			class="border-b border-amber-500/30 bg-amber-500/5 px-4 py-2 text-xs text-amber-800 dark:text-amber-200"
+			class="border-b border-warning/40 bg-warning/10 px-4 py-2 text-xs text-foreground"
 		>
 			DSL warnings: {built.warnings.join('; ')}
 		</div>

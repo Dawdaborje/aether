@@ -8,7 +8,11 @@
 
 use axum_extra::extract::cookie::{Cookie, SameSite};
 use rand::RngExt;
-use surrealdb::{Surreal, engine::remote::ws::Client, types::{RecordId, SurrealValue, ToSql}};
+use surrealdb::{
+    Surreal,
+    engine::remote::ws::Client,
+    types::{RecordId, SurrealValue, ToSql},
+};
 
 use crate::plugin_manager::catalog::sha256_hex;
 
@@ -64,7 +68,10 @@ impl From<VisitorRow> for Visitor {
 }
 
 /// Find the visitor for a raw cookie token. `db` must be on the organization's database.
-pub async fn find(db: &Surreal<Client>, raw_token: &str) -> Result<Option<Visitor>, surrealdb::Error> {
+pub async fn find(
+    db: &Surreal<Client>,
+    raw_token: &str,
+) -> Result<Option<Visitor>, surrealdb::Error> {
     let mut response = db
         .query("SELECT id, linked_user FROM visitors WHERE token_hash = $hash LIMIT 1;")
         .bind(("hash", hash_token(raw_token)))

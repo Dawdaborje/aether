@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use aether_storage::MediaBackend;
 use thiserror::Error;
@@ -10,8 +10,8 @@ use surrealdb::{Surreal, engine::remote::ws::Client as SurrealClient};
 use crate::access::{ip::IpPolicy, ratelimit::RateLimiter};
 use crate::config_manager::models::AetherConfig;
 use crate::media::{MediaError, build_media_backend};
-use crate::plugin_manager::runtime::PluginRuntime;
 use crate::notifications::NotificationHub;
+use crate::plugin_manager::runtime::PluginRuntime;
 use crate::secrets::{SecretBox, SecretError};
 
 #[derive(Debug, Error)]
@@ -66,6 +66,9 @@ impl SessionPool {
 pub struct AppState {
     pool: SessionPool,
     pub config: Arc<AetherConfig>,
+    /// Absolute path of the `aether.toml` this process was started with, when known.
+    /// Used to re-read `plugin_paths` for Desk Apps catalog reload.
+    pub config_path: Option<PathBuf>,
     pub cache: Cache,
     pub notifications: NotificationHub,
     pub plugin_runtime: PluginRuntime,
@@ -89,9 +92,15 @@ impl AppState {
         config: AetherConfig,
         namespace: impl Into<String>,
         core_database: impl Into<String>,
+        config_path: Option<PathBuf>,
     ) -> Result<Self, AppStateError> {
         let namespace = namespace.into();
         let cache = config.build_cache()?;
+        // Tier A: capability catalog is compile-time; mark it warm at boot.
+        let _ = cache.warm_set_cap_catalog_present();
+        if let Err(error) = aether_security::capabilities::CapabilityCatalog::builtin() {
+            log::warn!("capability catalog warm load: {error}");
+        }
         let media = build_media_backend(&config.media).await?;
         let ip_policy = IpPolicy::from_config(&config.audit);
         let visitor_limiter = RateLimiter::new(config.public.max_new_visitors_per_ip_per_minute);
@@ -103,9 +112,20 @@ impl AppState {
             namespace: namespace.clone(),
             sessions: Arc::default(),
         };
-        Ok(Self {
+        let heat = cache.heat();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(crate::cache::HeatLedger::flush_interval());
+            loop {
+                ticker.tick().await;
+                if let Err(error) = heat.flush_dirty() {
+                    log::debug!("mantle heat flush: {error}");
+                }
+            }
+        });
+        let state = Self {
             pool,
             config: Arc::new(config),
+            config_path,
             cache,
             notifications: NotificationHub::default(),
             plugin_runtime,
@@ -117,14 +137,23 @@ impl AppState {
             core_database: core_database.into(),
             secrets: Arc::default(),
             scheduler: crate::scheduler::SchedulerLink::default(),
-        })
+        };
+        // Tier A: org registry for identify(); CLI create still refreshes on miss.
+        crate::access::org_databases::warm_at_boot(&state).await;
+        // CLI `--load-plugins` / `--upgrade-plugin` write signals; LIVE SELECT applies them.
+        let _ = crate::plugin_manager::mantle_signals::spawn_listener(state.clone());
+        Ok(state)
     }
 
     /// The box that encrypts and decrypts secret settings. Fails (with the reason) when no key
     /// can be found or created; everything else keeps working.
     pub fn secrets(&self) -> Result<&SecretBox, SecretError> {
         let loaded = self.secrets.get_or_init(|| {
-            SecretBox::load(self.config.security.secret_key.as_deref(), &self.config.app_dir).map_err(|e| e.to_string())
+            SecretBox::load(
+                self.config.security.secret_key.as_deref(),
+                &self.config.app_dir,
+            )
+            .map_err(|e| e.to_string())
         });
         match loaded {
             Ok(secrets) => Ok(secrets),
@@ -134,7 +163,10 @@ impl AppState {
 
     /// The media backend as one organization sees it: every key lives under
     /// `orgs/<organization>/`, so it cannot reach another organization's files.
-    pub fn org_media(&self, organization: &str) -> Result<Arc<dyn MediaBackend>, aether_storage::StorageError> {
+    pub fn org_media(
+        &self,
+        organization: &str,
+    ) -> Result<Arc<dyn MediaBackend>, aether_storage::StorageError> {
         Ok(Arc::new(aether_storage::PrefixedBackend::for_organization(
             self.media.clone(),
             organization,

@@ -72,7 +72,9 @@ impl ScriptKind {
 
     /// The language of the script at `path`, if it is a script at all.
     pub fn of_path(path: &Path) -> Option<Self> {
-        path.extension().and_then(|extension| extension.to_str()).and_then(Self::from_extension)
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .and_then(Self::from_extension)
     }
 
     pub fn label(self) -> &'static str {
@@ -144,9 +146,13 @@ pub(crate) fn kernel_data(
     command: &str,
     payload: Value,
 ) -> Result<Value, String> {
-    let answer = runtime.block_on(kernel_command(context, command, payload)).map_err(|error| error.to_string())?;
+    let answer = runtime
+        .block_on(kernel_command(context, command, payload))
+        .map_err(|error| error.to_string())?;
     Ok(match answer {
-        Value::Object(mut object) if object.contains_key("data") => object.remove("data").unwrap_or(Value::Null),
+        Value::Object(mut object) if object.contains_key("data") => {
+            object.remove("data").unwrap_or(Value::Null)
+        }
         other => other,
     })
 }

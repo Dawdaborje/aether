@@ -4,10 +4,14 @@
 //! visibility, there is no page table in `plugin.toml`.
 //!
 //! ```xml
-//! <page route="/messages" public="true" title="Messages" model="message">
+//! <page route="/messages" public="true" title="Messages" model="message"
+//!       roles="moderator,admin">
 //!   ...
 //! </page>
 //! ```
+//!
+//! `roles` is a comma-separated list (OR). Short names become `<plugin>.<name>`
+//! when the plugin is loaded; omit the attribute so any member may open the page.
 //!
 //! Pages are parsed when a plugin is loaded, so mistakes surface immediately
 //! and the catalog always knows which routes are public.
@@ -53,6 +57,9 @@ pub enum PageError {
         reason: &'static str,
     },
 
+    #[error("{path}: {reason}")]
+    InvalidPatch { path: PathBuf, reason: String },
+
     #[error("{path}: `{attribute}` must be \"true\" or \"false\", not `{value}`")]
     InvalidBoolean {
         path: PathBuf,
@@ -60,8 +67,27 @@ pub enum PageError {
         value: String,
     },
 
-    #[error("{path}: invalid layout `{layout}`: use lowercase letters, digits, `-` and `_`, starting with a letter")]
+    #[error("{path}: `{attribute}` must be an integer, not `{value}`")]
+    InvalidInteger {
+        path: PathBuf,
+        attribute: &'static str,
+        value: String,
+    },
+
+    #[error(
+        "{path}: invalid role `{role}` in `roles` (use letters, digits, `_`, `-`, or a dotted name)"
+    )]
+    InvalidRole { path: PathBuf, role: String },
+
+    #[error(
+        "{path}: invalid layout `{layout}`: use lowercase letters, digits, `-` and `_`, starting with a letter"
+    )]
     InvalidLayout { path: PathBuf, layout: String },
+
+    #[error(
+        "{path}: invalid icon `{icon}`: use a lucide icon name (lowercase letters, digits and `-`)"
+    )]
+    InvalidIcon { path: PathBuf, icon: String },
 
     #[error("{path}: invalid wrap `{wrap}`: {reason}")]
     InvalidWrap {
@@ -70,7 +96,9 @@ pub enum PageError {
         reason: String,
     },
 
-    #[error("route `{route}` is declared by both {first} and {second} (routes that differ only in parameter names match the same URLs)")]
+    #[error(
+        "route `{route}` is declared by both {first} and {second} (routes that differ only in parameter names match the same URLs)"
+    )]
     DuplicateRoute {
         route: String,
         first: PathBuf,
@@ -86,6 +114,10 @@ pub enum PageError {
     #[error("failed to serialize compiled page: {0}")]
     Serialize(#[from] serde_json::Error),
 }
+
+/// Routes made up for pages that `extends` another page start with this. They are never
+/// served, so several plugins may contribute a tab with the same title to the same page.
+pub const EXTENSION_ROUTE_PREFIX: &str = "/_ext";
 
 /// One parsed page.
 #[derive(Debug, Clone, PartialEq)]
@@ -107,6 +139,17 @@ pub struct PageDocument {
     pub wrap: Option<String>,
     /// Whether anonymous visitors may open the page.
     pub public: bool,
+    /// Whether the page appears in the app's top-bar menus (`menu="false"` hides it).
+    pub menu_visible: bool,
+    /// Optional Lucide icon id for menu entries.
+    pub icon: Option<String>,
+    /// Sidebar section label (Frappe-style collapsible group). Empty = ungrouped.
+    pub menu_group: Option<String>,
+    /// Sort key among menu entries (lower first). Default 0.
+    pub sort_order: i64,
+    /// Roles that may open this page (OR). Empty = any member. Short names are
+    /// qualified with the plugin name when the catalog stores the page.
+    pub roles: Vec<String>,
     /// The root `model` attribute, if any.
     pub model: Option<String>,
     /// Every model named by any element of the page (`model="..."`).
@@ -124,9 +167,41 @@ pub fn parse_page(xml: &str, source: &Path) -> Result<PageDocument, PageError> {
         return Err(PageError::NotAPage(source.to_path_buf()));
     }
 
-    let route = root
-        .attribute("route")
-        .ok_or_else(|| PageError::MissingRoute(source.to_path_buf()))?;
+    // A page with `extends="/some/{route}"` is a contribution: its body is added as a tab to
+    // the page that owns that route when it is served. It needs no route of its own; one is
+    // made up from the target and the title so it stays unique and out of the menu.
+    // Several pages may be named, separated by commas: `extends="/hr/employees/{id}, /hr/me"`.
+    let extends = root
+        .attribute("extends")
+        .filter(|target| !target.is_empty());
+    for target in extends.iter().flat_map(|raw| raw.split(',')) {
+        let target = target.trim();
+        RoutePattern::parse(target).map_err(|reason| PageError::InvalidRoute {
+            path: source.to_path_buf(),
+            route: target.to_string(),
+            reason,
+        })?;
+    }
+    let generated;
+    let route = match (root.attribute("route"), extends) {
+        (Some(route), _) => route,
+        (None, Some(raw)) => {
+            let target = raw.split(',').next().unwrap_or_default().trim();
+            let slug: String = root
+                .attribute("title")
+                .unwrap_or("tab")
+                .to_ascii_lowercase()
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+                .collect();
+            generated = format!(
+                "{EXTENSION_ROUTE_PREFIX}{}/{slug}",
+                target.trim_end_matches('/')
+            );
+            generated.as_str()
+        }
+        (None, None) => return Err(PageError::MissingRoute(source.to_path_buf())),
+    };
     let pattern = RoutePattern::parse(route).map_err(|reason| PageError::InvalidRoute {
         path: source.to_path_buf(),
         route: route.to_string(),
@@ -143,6 +218,61 @@ pub fn parse_page(xml: &str, source: &Path) -> Result<PageDocument, PageError> {
                 attribute: "public",
                 value: other.to_string(),
             });
+        }
+    };
+    // Default true: only `menu="false"` hides a page from the app top bar.
+    let menu_visible = if extends.is_some() {
+        false
+    } else {
+        match root.attribute("menu") {
+            None | Some("true") => true,
+            Some("false") => false,
+            Some(other) => {
+                return Err(PageError::InvalidBoolean {
+                    path: source.to_path_buf(),
+                    attribute: "menu",
+                    value: other.to_string(),
+                });
+            }
+        }
+    };
+    let icon = match root.attribute("icon") {
+        None | Some("") => None,
+        Some(icon) if super::themes::is_identifier(icon) => Some(icon.to_string()),
+        Some(icon) => {
+            return Err(PageError::InvalidIcon {
+                path: source.to_path_buf(),
+                icon: icon.to_string(),
+            });
+        }
+    };
+    let menu_group = root
+        .attribute("menu_group")
+        .or_else(|| root.attribute("menuGroup"))
+        .filter(|group| !group.is_empty())
+        .map(str::to_string);
+    let sort_order = match root.attribute("sort") {
+        None | Some("") => 0,
+        Some(raw) => raw.parse::<i64>().map_err(|_| PageError::InvalidInteger {
+            path: source.to_path_buf(),
+            attribute: "sort",
+            value: raw.to_string(),
+        })?,
+    };
+    let roles = match root.attribute("roles") {
+        None | Some("") => Vec::new(),
+        Some(raw) => {
+            let mut roles = Vec::new();
+            for part in crate::roles::parse_roles_list(raw) {
+                if !role_name_ok(&part) {
+                    return Err(PageError::InvalidRole {
+                        path: source.to_path_buf(),
+                        role: part,
+                    });
+                }
+                roles.push(part);
+            }
+            roles
         }
     };
 
@@ -181,19 +311,40 @@ pub fn parse_page(xml: &str, source: &Path) -> Result<PageDocument, PageError> {
     let mut models = BTreeSet::new();
     root.collect_models(&mut models);
 
+    let tree = root.into_json();
+    // A patch is checked now, so a mistake is reported when the plugin is loaded rather
+    // than as a silently ignored edit on a page someone opens.
+    super::page_patch::validate(&tree).map_err(|reason| PageError::InvalidPatch {
+        path: source.to_path_buf(),
+        reason,
+    })?;
+
     Ok(PageDocument {
         is_pattern: pattern.is_pattern(),
         shape: pattern.shape(),
         route,
         title,
         public,
+        menu_visible,
+        icon,
+        menu_group,
+        sort_order,
+        roles,
         layout,
         wrap,
         model,
         models,
-        tree: root.into_json(),
+        tree,
         source: source.to_path_buf(),
     })
+}
+
+fn role_name_ok(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 96
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
 }
 
 /// Find and parse every `*.xml` under `<package_dir>/pages`, rejecting
@@ -205,7 +356,9 @@ pub async fn discover_pages(package_dir: &Path) -> Result<Vec<PageDocument>, Pag
     while let Some(directory) = pending.pop() {
         let mut entries = match tokio::fs::read_dir(&directory).await {
             Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound && directory == pages_dir => {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound && directory == pages_dir =>
+            {
                 return Ok(Vec::new());
             }
             Err(source) => {
@@ -238,7 +391,10 @@ pub async fn discover_pages(package_dir: &Path) -> Result<Vec<PageDocument>, Pag
 
     let mut pages: Vec<PageDocument> = Vec::with_capacity(files.len());
     for file in files {
-        let relative = file.strip_prefix(package_dir).unwrap_or(&file).to_path_buf();
+        let relative = file
+            .strip_prefix(package_dir)
+            .unwrap_or(&file)
+            .to_path_buf();
         let xml = tokio::fs::read_to_string(&file)
             .await
             .map_err(|source| PageError::Io {
@@ -348,13 +504,20 @@ impl RoutePattern {
             if segment.is_empty() {
                 return Err("has an empty path segment");
             }
-            if let Some(name) = segment.strip_prefix('{').and_then(|rest| rest.strip_suffix('}')) {
+            if let Some(name) = segment
+                .strip_prefix('{')
+                .and_then(|rest| rest.strip_suffix('}'))
+            {
                 let mut characters = name.chars();
-                let valid = characters.next().is_some_and(|first| first.is_ascii_lowercase())
+                let valid = characters
+                    .next()
+                    .is_some_and(|first| first.is_ascii_lowercase())
                     && characters.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
                     && name.len() <= 32;
                 if !valid {
-                    return Err("parameter names are lowercase letters, digits and `_`, starting with a letter");
+                    return Err(
+                        "parameter names are lowercase letters, digits and `_`, starting with a letter",
+                    );
                 }
                 if names.contains(&name) {
                     return Err("repeats a parameter name");
@@ -367,7 +530,9 @@ impl RoutePattern {
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
             {
-                return Err("may only contain letters, digits and `/ - _ .` (and `{param}` segments)");
+                return Err(
+                    "may only contain letters, digits and `/ - _ .` (and `{param}` segments)",
+                );
             } else if segment == "." || segment == ".." {
                 return Err("has a `.` or `..` path segment");
             } else {
@@ -404,7 +569,9 @@ impl RoutePattern {
     }
 
     pub fn is_pattern(&self) -> bool {
-        self.segments.iter().any(|segment| matches!(segment, Segment::Param(_)))
+        self.segments
+            .iter()
+            .any(|segment| matches!(segment, Segment::Param(_)))
     }
 
     /// How many literal segments the route has; among patterns that match a
@@ -466,12 +633,43 @@ mod tests {
         )?;
         assert_eq!(page.route, "/messages");
         assert!(page.public);
+        assert!(page.menu_visible);
+        assert_eq!(page.sort_order, 0);
         assert_eq!(page.title, "Messages");
         assert_eq!(page.model.as_deref(), Some("message"));
         assert_eq!(
             page.models.iter().map(String::as_str).collect::<Vec<_>>(),
             ["channel", "message"]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn reads_menu_icon_and_sort() -> Result<(), PageError> {
+        let page = parse(
+            r#"<page route="/crm/sources" title="Sources" menu="false" icon="tag" sort="40" menu_group="Setup" />"#,
+        )?;
+        assert!(!page.menu_visible);
+        assert_eq!(page.icon.as_deref(), Some("tag"));
+        assert_eq!(page.menu_group.as_deref(), Some("Setup"));
+        assert_eq!(page.sort_order, 40);
+        assert!(page.roles.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_an_icon_that_is_not_a_lucide_name() {
+        let error = parse(r#"<page route="/crm/sources" title="Sources" icon="Not An Icon" />"#)
+            .expect_err("icon must be a lucide id");
+        assert!(matches!(error, PageError::InvalidIcon { .. }));
+    }
+
+    #[test]
+    fn reads_roles_attribute() -> Result<(), PageError> {
+        let page = parse(
+            r#"<page route="/hr/employees" title="Employees" roles="hr_user, hr.hr_manager" />"#,
+        )?;
+        assert_eq!(page.roles, ["hr_user", "hr.hr_manager"]);
         Ok(())
     }
 
@@ -540,15 +738,32 @@ mod tests {
     #[test]
     fn patterns_match_one_segment_per_parameter() -> Result<(), &'static str> {
         let pattern = RoutePattern::parse("/chat/{channel}/messages/{id}")?;
-        let params = pattern.matches("/chat/general/messages/42").ok_or("should match")?;
+        let params = pattern
+            .matches("/chat/general/messages/42")
+            .ok_or("should match")?;
         assert_eq!(params["channel"], "general");
         assert_eq!(params["id"], "42");
 
-        assert!(pattern.matches("/chat/general/messages").is_none(), "too short");
-        assert!(pattern.matches("/chat/general/messages/42/x").is_none(), "too long");
-        assert!(pattern.matches("/chat//messages/42").is_none(), "empty parameter");
-        assert!(pattern.matches("/room/general/messages/42").is_none(), "literal differs");
-        assert!(pattern.matches("/chat/general/messages/42/").is_some(), "trailing slash ignored");
+        assert!(
+            pattern.matches("/chat/general/messages").is_none(),
+            "too short"
+        );
+        assert!(
+            pattern.matches("/chat/general/messages/42/x").is_none(),
+            "too long"
+        );
+        assert!(
+            pattern.matches("/chat//messages/42").is_none(),
+            "empty parameter"
+        );
+        assert!(
+            pattern.matches("/room/general/messages/42").is_none(),
+            "literal differs"
+        );
+        assert!(
+            pattern.matches("/chat/general/messages/42/").is_some(),
+            "trailing slash ignored"
+        );
         assert!(
             pattern.matches("/chat/{channel}/messages/42").is_none(),
             "the pattern's own text is not a value"
@@ -563,7 +778,12 @@ mod tests {
 
     #[test]
     fn a_page_may_name_its_layout() -> Result<(), PageError> {
-        assert_eq!(parse(r#"<page route="/" layout="bare" />"#)?.layout.as_deref(), Some("bare"));
+        assert_eq!(
+            parse(r#"<page route="/" layout="bare" />"#)?
+                .layout
+                .as_deref(),
+            Some("bare")
+        );
         assert_eq!(parse(r#"<page route="/" />"#)?.layout, None);
         assert!(matches!(
             parse(r#"<page route="/" layout="Not Valid" />"#),
@@ -575,11 +795,15 @@ mod tests {
     #[test]
     fn a_page_may_name_its_wrap() -> Result<(), PageError> {
         assert_eq!(
-            parse(r#"<page route="/" wrap="notes_shell" />"#)?.wrap.as_deref(),
+            parse(r#"<page route="/" wrap="notes_shell" />"#)?
+                .wrap
+                .as_deref(),
             Some("notes_shell")
         );
         assert_eq!(
-            parse(r#"<page route="/" wrap="notes.shell" />"#)?.wrap.as_deref(),
+            parse(r#"<page route="/" wrap="notes.shell" />"#)?
+                .wrap
+                .as_deref(),
             Some("notes.shell")
         );
         assert_eq!(parse(r#"<page route="/" />"#)?.wrap, None);
@@ -591,6 +815,31 @@ mod tests {
     }
 
     #[test]
+    fn an_extending_page_needs_no_route_and_stays_out_of_the_menu()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let page = parse_page(
+            r#"<page extends="/hr/employees/{id}" title="Documents"><view type="list"/></page>"#,
+            Path::new("pages/documents.xml"),
+        )?;
+        assert_eq!(page.route, "/_ext/hr/employees/{id}/documents");
+        assert!(!page.menu_visible);
+        assert_eq!(page.tree["extends"], "/hr/employees/{id}");
+        let many = parse_page(
+            r#"<page extends="/hr/me, /hr/employees/{id}" title="Docs"/>"#,
+            Path::new("pages/many.xml"),
+        )?;
+        assert_eq!(many.route, "/_ext/hr/me/docs");
+        assert!(
+            parse_page(
+                r#"<page extends="nope" title="X"/>"#,
+                Path::new("pages/x.xml")
+            )
+            .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
     fn root_route_is_allowed() -> Result<(), PageError> {
         assert_eq!(parse(r#"<page route="/" />"#)?.route, "/");
         Ok(())
@@ -598,10 +847,14 @@ mod tests {
 
     #[test]
     fn rejects_bad_pages() {
-        assert!(matches!(parse("<view route=\"/x\" />"), Err(PageError::NotAPage(_))));
+        assert!(matches!(
+            parse("<view route=\"/x\" />"),
+            Err(PageError::NotAPage(_))
+        ));
         assert!(matches!(parse("<page />"), Err(PageError::MissingRoute(_))));
         for route in [
-            "x", "/a b", "/a//b", "/a/../b", "/a?b", "/a{b}", "/{}", "/{Id}", "/{1a}", "/{a}/{a}", "/{a-b}",
+            "x", "/a b", "/a//b", "/a/../b", "/a?b", "/a{b}", "/{}", "/{Id}", "/{1a}", "/{a}/{a}",
+            "/{a-b}",
         ] {
             let xml = format!(r#"<page route="{route}" />"#);
             assert!(
@@ -616,7 +869,10 @@ mod tests {
                 "{value:?}"
             );
         }
-        assert!(matches!(parse("<page route=\"/x\">"), Err(PageError::Xml(_))));
+        assert!(matches!(
+            parse("<page route=\"/x\">"),
+            Err(PageError::Xml(_))
+        ));
         assert!(matches!(
             parse("<page route=\"/x\" /><page route=\"/y\" />"),
             Err(PageError::Xml(_))
@@ -624,13 +880,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn discovers_pages_recursively_and_rejects_duplicates() -> Result<(), Box<dyn std::error::Error>>
-    {
+    async fn discovers_pages_recursively_and_rejects_duplicates()
+    -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
         let package = root.path();
         tokio::fs::create_dir_all(package.join("pages/admin")).await?;
-        tokio::fs::write(package.join("pages/home.xml"), r#"<page route="/" public="true" />"#).await?;
-        tokio::fs::write(package.join("pages/admin/users.xml"), r#"<page route="/admin/users" />"#).await?;
+        tokio::fs::write(
+            package.join("pages/home.xml"),
+            r#"<page route="/" public="true" />"#,
+        )
+        .await?;
+        tokio::fs::write(
+            package.join("pages/admin/users.xml"),
+            r#"<page route="/admin/users" />"#,
+        )
+        .await?;
         tokio::fs::write(package.join("pages/notes.txt"), "ignored").await?;
 
         let pages = discover_pages(package).await?;
@@ -640,7 +904,11 @@ mod tests {
         );
         assert_eq!(pages[0].source, Path::new("pages/admin/users.xml"));
 
-        tokio::fs::write(package.join("pages/again.xml"), r#"<page route="/admin/users/" />"#).await?;
+        tokio::fs::write(
+            package.join("pages/again.xml"),
+            r#"<page route="/admin/users/" />"#,
+        )
+        .await?;
         assert!(matches!(
             discover_pages(package).await,
             Err(PageError::DuplicateRoute { .. })
@@ -648,8 +916,16 @@ mod tests {
 
         // Routes that differ only in parameter names match the same URLs.
         tokio::fs::remove_file(package.join("pages/again.xml")).await?;
-        tokio::fs::write(package.join("pages/a.xml"), r#"<page route="/chat/{channel}" />"#).await?;
-        tokio::fs::write(package.join("pages/b.xml"), r#"<page route="/chat/{room}" />"#).await?;
+        tokio::fs::write(
+            package.join("pages/a.xml"),
+            r#"<page route="/chat/{channel}" />"#,
+        )
+        .await?;
+        tokio::fs::write(
+            package.join("pages/b.xml"),
+            r#"<page route="/chat/{room}" />"#,
+        )
+        .await?;
         assert!(matches!(
             discover_pages(package).await,
             Err(PageError::DuplicateRoute { .. })

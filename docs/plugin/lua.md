@@ -51,7 +51,7 @@ Numbers are Lua numbers; a whole number goes back to the kernel as an integer.
 | `scheduler.enqueue(function[, payload[, options]])`, `scheduler.job(id)`, `scheduler.cancel_job(id)`, `scheduler.register(table)`, `scheduler.cancel(name)` | `scheduler::*` |
 | `plugins.call(plugin, function[, input])` (also `plugins.invoke`) | `plugins::call` (the plugin must be in `dependencies`) |
 | `notify.send(table)` | `notify::send` |
-| `context.get()` | `context::get` (`actor`, `organization`, `now`, ...) |
+| `context.get()` | `context::get` (`actor`, `organization`, `company`, `now`, ...) |
 | `fail("message")` | stops the call; the message is shown to the caller |
 | `log.info/warn/error(text)`, `print(...)` | the kernel log |
 

@@ -181,7 +181,10 @@ pub async fn purge_expired(
 ) -> Result<PurgeReport, AuditError> {
     db.use_ns(namespace).await?;
     db.use_db(core_database).await?;
-    let mut response = db.query("SELECT db_name FROM org_databases;").await?.check()?;
+    let mut response = db
+        .query("SELECT db_name FROM org_databases;")
+        .await?
+        .check()?;
     let organizations: Vec<OrgDatabaseName> = response.take(0)?;
 
     let mut report = PurgeReport::default();

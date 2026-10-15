@@ -48,7 +48,9 @@ pub fn safe_relative(path: &str) -> Result<String, PathError> {
 /// then its nearest existing parent is checked instead.
 pub async fn resolve(root: &Path, relative: &str) -> Result<PathBuf, PathError> {
     let relative = safe_relative(relative)?;
-    let real_root = tokio::fs::canonicalize(root).await.map_err(|e| PathError::Folder(e.to_string()))?;
+    let real_root = tokio::fs::canonicalize(root)
+        .await
+        .map_err(|e| PathError::Folder(e.to_string()))?;
     let wanted = real_root.join(&relative);
     // Walk up to the nearest part that exists, resolve it, and put the rest back.
     let mut existing = wanted.clone();
@@ -56,7 +58,10 @@ pub async fn resolve(root: &Path, relative: &str) -> Result<PathBuf, PathError> 
     let resolved = loop {
         match tokio::fs::canonicalize(&existing).await {
             Ok(real) => break real,
-            Err(_) => match (existing.file_name().map(ToOwned::to_owned), existing.parent().map(Path::to_path_buf)) {
+            Err(_) => match (
+                existing.file_name().map(ToOwned::to_owned),
+                existing.parent().map(Path::to_path_buf),
+            ) {
                 (Some(name), Some(parent)) => {
                     missing.push(name);
                     existing = parent;
@@ -97,7 +102,17 @@ mod tests {
         assert_eq!(safe_relative(""), Ok(String::new()));
         assert_eq!(safe_relative("inbox/a.csv"), Ok("inbox/a.csv".into()));
         assert_eq!(safe_relative("./inbox/./a.csv"), Ok("inbox/a.csv".into()));
-        for bad in ["/etc/passwd", "../x", "a/../../b", "a/..", "a//b", "a\\b", "a/\u{1}b", "a/", &"x/".repeat(300)] {
+        for bad in [
+            "/etc/passwd",
+            "../x",
+            "a/../../b",
+            "a/..",
+            "a//b",
+            "a\\b",
+            "a/\u{1}b",
+            "a/",
+            &"x/".repeat(300),
+        ] {
             assert!(safe_relative(bad).is_err(), "{bad:?}");
         }
     }
@@ -114,19 +129,31 @@ mod tests {
 
         // Existing and not-yet-existing paths resolve under the real root.
         let real_root = std::fs::canonicalize(&root)?;
-        assert_eq!(resolve(&root, "inbox/a.txt").await?, real_root.join("inbox/a.txt"));
-        assert_eq!(resolve(&root, "inbox/new/deeper.txt").await?, real_root.join("inbox/new/deeper.txt"));
+        assert_eq!(
+            resolve(&root, "inbox/a.txt").await?,
+            real_root.join("inbox/a.txt")
+        );
+        assert_eq!(
+            resolve(&root, "inbox/new/deeper.txt").await?,
+            real_root.join("inbox/new/deeper.txt")
+        );
         assert_eq!(resolve(&root, "").await?, real_root);
 
         // `..` and absolute paths are refused outright.
-        assert!(matches!(resolve(&root, "../secret/key").await, Err(PathError::Unsafe(_))));
+        assert!(matches!(
+            resolve(&root, "../secret/key").await,
+            Err(PathError::Unsafe(_))
+        ));
         // A symbolic link out of the folder is refused, to a file or to a folder, existing or to be created.
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(outside.join("key"), root.join("inbox/link"))?;
             std::os::unix::fs::symlink(&outside, root.join("inbox/dir_link"))?;
             for escape in ["inbox/link", "inbox/dir_link/key", "inbox/dir_link/new.txt"] {
-                assert!(matches!(resolve(&root, escape).await, Err(PathError::Escapes(_))), "{escape}");
+                assert!(
+                    matches!(resolve(&root, escape).await, Err(PathError::Escapes(_))),
+                    "{escape}"
+                );
             }
             // A link that stays inside is fine.
             std::os::unix::fs::symlink(root.join("inbox/a.txt"), root.join("inbox/inside"))?;
@@ -138,8 +165,14 @@ mod tests {
     #[test]
     fn paths_are_reported_relative_to_the_folder() {
         let root = Path::new("/srv/plugin");
-        assert_eq!(relative_to(root, Path::new("/srv/plugin/in/a.csv")), Some("in/a.csv".into()));
-        assert_eq!(relative_to(root, Path::new("/srv/plugin")), Some(String::new()));
+        assert_eq!(
+            relative_to(root, Path::new("/srv/plugin/in/a.csv")),
+            Some("in/a.csv".into())
+        );
+        assert_eq!(
+            relative_to(root, Path::new("/srv/plugin")),
+            Some(String::new())
+        );
         assert_eq!(relative_to(root, Path::new("/srv/other/a.csv")), None);
     }
 }

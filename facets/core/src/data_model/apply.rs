@@ -29,7 +29,10 @@ pub enum ApplyError {
     #[error("database error: {0}")]
     Database(#[from] surrealdb::Error),
     #[error("model `{model}` cannot be applied: {problems}", problems = .problems.join("; "))]
-    Blocked { model: String, problems: Vec<String> },
+    Blocked {
+        model: String,
+        problems: Vec<String>,
+    },
     #[error("the applied schema of `{model}` could not be read: {source}")]
     Snapshot {
         model: String,
@@ -80,19 +83,54 @@ pub struct AppliedModel {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Op {
-    CreateTable { table: String, comment: String },
-    DefineField { table: String, field: String, surql_type: String, comment: String },
-    DefineIndex { table: String, field: String, unique: bool },
-    RemoveIndex { table: String, field: String },
+    CreateTable {
+        table: String,
+        comment: String,
+    },
+    DefineField {
+        table: String,
+        field: String,
+        surql_type: String,
+        comment: String,
+    },
+    DefineIndex {
+        table: String,
+        field: String,
+        unique: bool,
+    },
+    RemoveIndex {
+        table: String,
+        field: String,
+    },
     /// A graph edge table: from this model's records to `to` (any table when none).
-    DefineEdge { edge: String, from: String, to: Option<String> },
+    DefineEdge {
+        edge: String,
+        from: String,
+        to: Option<String>,
+    },
     /// Rebuild a hierarchy's edges from its parent column (the link was just made a hierarchy).
-    RebuildEdges { table: String, edge: String, column: String },
+    RebuildEdges {
+        table: String,
+        edge: String,
+        column: String,
+    },
     /// An index over several fields (given by id, in order), named after its own id.
-    DefineCompositeIndex { table: String, index: String, fields: Vec<String>, unique: bool },
-    RemoveCompositeIndex { table: String, index: String },
+    DefineCompositeIndex {
+        table: String,
+        index: String,
+        fields: Vec<String>,
+        unique: bool,
+    },
+    RemoveCompositeIndex {
+        table: String,
+        index: String,
+    },
     /// Give records that lack a value the field's default.
-    Backfill { table: String, field: String, default: Value },
+    Backfill {
+        table: String,
+        field: String,
+        default: Value,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -117,18 +155,32 @@ impl Plan {
 
 fn base_type(kind: FieldType) -> &'static str {
     match kind {
-        FieldType::String | FieldType::Text | FieldType::Select | FieldType::Link
-        | FieldType::Date | FieldType::Datetime => "string",
+        FieldType::String
+        | FieldType::Text
+        | FieldType::Select
+        | FieldType::Link
+        | FieldType::Date
+        | FieldType::Datetime => "string",
         FieldType::Int | FieldType::Decimal => "int",
         FieldType::Float => "number",
         FieldType::Bool => "bool",
-        FieldType::Json | FieldType::Many2many | FieldType::Child => "any",
+        // A file is an object (or a list of them); a record from before the field was an
+        // image may still hold text, so the column takes anything.
+        FieldType::Json
+        | FieldType::Many2many
+        | FieldType::Child
+        | FieldType::Image
+        | FieldType::File => "any",
     }
 }
 
 fn surql_type(kind: FieldType, required: bool) -> String {
     let base = base_type(kind);
-    if required || base == "any" { base.to_string() } else { format!("option<{base}>") }
+    if required || base == "any" {
+        base.to_string()
+    } else {
+        format!("option<{base}>")
+    }
 }
 
 /// Changes that lose nothing: the stored values are valid as the new type.
@@ -137,16 +189,24 @@ fn widens(from: FieldType, to: FieldType) -> bool {
     from == to
         || matches!(
             (from, to),
-            (Int, Float) | (String, Text) | (Select, String | Text) | (Date | Datetime | Link, String | Text)
+            (Int, Float)
+                | (String, Text)
+                | (Select, String | Text)
+                | (Date | Datetime | Link, String | Text)
+                // The old text stays readable; the web app shows it and replaces it on edit.
+                | (String | Text, Image | File)
         )
 }
 
 /// A default as the database keeps it (a decimal is a whole number of its smallest unit).
 fn stored_default(field: &FieldDef, default: &Value) -> Value {
     match field.kind {
-        FieldType::Decimal => super::decimal::to_scaled(default, field.scale.unwrap_or(super::decimal::DEFAULT_SCALE))
-            .map(Value::from)
-            .unwrap_or_else(|_| default.clone()),
+        FieldType::Decimal => super::decimal::to_scaled(
+            default,
+            field.scale.unwrap_or(super::decimal::DEFAULT_SCALE),
+        )
+        .map(Value::from)
+        .unwrap_or_else(|_| default.clone()),
         _ => default.clone(),
     }
 }
@@ -158,12 +218,20 @@ fn field_snapshot(field: &FieldDef) -> AppliedField {
         required: field.required && !field.deprecated,
         index: field.index,
         deprecated: field.deprecated,
-        scale: (field.kind == FieldType::Decimal).then(|| field.scale.unwrap_or(super::decimal::DEFAULT_SCALE)),
+        scale: (field.kind == FieldType::Decimal)
+            .then(|| field.scale.unwrap_or(super::decimal::DEFAULT_SCALE)),
         hierarchy: field.hierarchy,
     }
 }
 
-fn define_field(table: &str, model: &str, id: &str, name: &str, kind: FieldType, required: bool) -> Op {
+fn define_field(
+    table: &str,
+    model: &str,
+    id: &str,
+    name: &str,
+    kind: FieldType,
+    required: bool,
+) -> Op {
     Op::DefineField {
         table: table.to_string(),
         field: id.to_string(),
@@ -182,7 +250,10 @@ pub fn plan(plugin: &str, def: &ModelDef, applied: Option<&AppliedModel>, row_co
     let mut notes = Vec::new();
 
     if applied.is_none() {
-        ops.push(Op::CreateTable { table: table.clone(), comment: format!("{plugin}.{model}") });
+        ops.push(Op::CreateTable {
+            table: table.clone(),
+            comment: format!("{plugin}.{model}"),
+        });
     }
     let rows = if applied.is_some() { row_count } else { 0 };
     let mut snapshot = AppliedModel {
@@ -195,7 +266,9 @@ pub fn plan(plugin: &str, def: &ModelDef, applied: Option<&AppliedModel>, row_co
     };
 
     for field in &def.fields {
-        let Some(id) = field.id.as_deref() else { continue };
+        let Some(id) = field.id.as_deref() else {
+            continue;
+        };
         let now = field_snapshot(field);
         let before = applied.and_then(|a| a.fields.get(id));
         let name = &field.name;
@@ -219,7 +292,10 @@ pub fn plan(plugin: &str, def: &ModelDef, applied: Option<&AppliedModel>, row_co
                 if before.name != *name {
                     // Only the column's readable comment is refreshed; no value moves.
                     redefine = true;
-                    notes.push(format!("`{model}`: field `{}` is now called `{name}` (no data changes)", before.name));
+                    notes.push(format!(
+                        "`{model}`: field `{}` is now called `{name}` (no data changes)",
+                        before.name
+                    ));
                 }
                 if before.kind != now.kind {
                     if widens(before.kind, now.kind) || rows == 0 {
@@ -261,7 +337,14 @@ pub fn plan(plugin: &str, def: &ModelDef, applied: Option<&AppliedModel>, row_co
             }
         }
         if redefine && field.kind.has_column() {
-            ops.push(define_field(&table, &model, id, name, field.kind, now.required));
+            ops.push(define_field(
+                &table,
+                &model,
+                id,
+                name,
+                field.kind,
+                now.required,
+            ));
         }
         ops.extend(backfill);
 
@@ -270,10 +353,17 @@ pub fn plan(plugin: &str, def: &ModelDef, applied: Option<&AppliedModel>, row_co
         let had = before.and_then(|b| if b.deprecated { None } else { b.index });
         if wanted != had {
             if had.is_some() {
-                ops.push(Op::RemoveIndex { table: table.clone(), field: id.to_string() });
+                ops.push(Op::RemoveIndex {
+                    table: table.clone(),
+                    field: id.to_string(),
+                });
             }
             if let Some(kind) = wanted {
-                ops.push(Op::DefineIndex { table: table.clone(), field: id.to_string(), unique: kind == IndexKind::Unique });
+                ops.push(Op::DefineIndex {
+                    table: table.clone(),
+                    field: id.to_string(),
+                    unique: kind == IndexKind::Unique,
+                });
             }
         }
         snapshot.fields.insert(id.to_string(), now);
@@ -290,12 +380,25 @@ pub fn plan(plugin: &str, def: &ModelDef, applied: Option<&AppliedModel>, row_co
             hidden.required = false;
             hidden.index = None;
             if !before.deprecated {
-                notes.push(format!("`{model}.{}` was removed: it is hidden and its data is kept", before.name));
+                notes.push(format!(
+                    "`{model}.{}` was removed: it is hidden and its data is kept",
+                    before.name
+                ));
                 if before.kind.has_column() {
-                    ops.push(define_field(&table, &model, id, &before.name, before.kind, false));
+                    ops.push(define_field(
+                        &table,
+                        &model,
+                        id,
+                        &before.name,
+                        before.kind,
+                        false,
+                    ));
                 }
                 if before.index.is_some() {
-                    ops.push(Op::RemoveIndex { table: table.clone(), field: id.clone() });
+                    ops.push(Op::RemoveIndex {
+                        table: table.clone(),
+                        field: id.clone(),
+                    });
                 }
             }
             snapshot.fields.insert(id.clone(), hidden);
@@ -303,19 +406,41 @@ pub fn plan(plugin: &str, def: &ModelDef, applied: Option<&AppliedModel>, row_co
     }
 
     plan_edges(def, applied, &table, &mut ops, &mut snapshot);
-    plan_indexes(def, applied, &snapshot.fields.clone(), &table, &mut ops, &mut snapshot);
-    Plan { model, table, ops, blockers, notes, snapshot }
+    plan_indexes(
+        def,
+        applied,
+        &snapshot.fields.clone(),
+        &table,
+        &mut ops,
+        &mut snapshot,
+    );
+    Plan {
+        model,
+        table,
+        ops,
+        blockers,
+        notes,
+        snapshot,
+    }
 }
 
 /// Graph edge tables for hierarchy links and many2many fields. A table is defined once and kept
 /// when its field goes away (the data stays, like a hidden column). A link that becomes a
 /// hierarchy over existing records has its edges built from the parent column.
-fn plan_edges(def: &ModelDef, applied: Option<&AppliedModel>, table: &str, ops: &mut Vec<Op>, snapshot: &mut AppliedModel) {
+fn plan_edges(
+    def: &ModelDef,
+    applied: Option<&AppliedModel>,
+    table: &str,
+    ops: &mut Vec<Op>,
+    snapshot: &mut AppliedModel,
+) {
     if let Some(applied) = applied {
         snapshot.edges = applied.edges.clone();
     }
     for field in def.live_fields() {
-        let Some(id) = field.id.as_deref() else { continue };
+        let Some(id) = field.id.as_deref() else {
+            continue;
+        };
         let edge = super::runtime::edge_table(table, id);
         let to = match (field.kind, field.hierarchy) {
             (FieldType::Many2many, _) => None,
@@ -325,12 +450,20 @@ fn plan_edges(def: &ModelDef, applied: Option<&AppliedModel>, table: &str, ops: 
         let before = applied.and_then(|a| a.fields.get(id));
         let had_edges = snapshot.edges.contains(&edge);
         if !had_edges {
-            ops.push(Op::DefineEdge { edge: edge.clone(), from: table.to_string(), to });
+            ops.push(Op::DefineEdge {
+                edge: edge.clone(),
+                from: table.to_string(),
+                to,
+            });
             snapshot.edges.insert(edge.clone());
         }
         // Turned on for a link that already holds parents: build the edges from the column.
         if field.hierarchy && before.is_some_and(|b| !b.hierarchy) {
-            ops.push(Op::RebuildEdges { table: table.to_string(), edge, column: id.to_string() });
+            ops.push(Op::RebuildEdges {
+                table: table.to_string(),
+                edge,
+                column: id.to_string(),
+            });
         }
     }
 }
@@ -345,29 +478,54 @@ fn plan_indexes(
     ops: &mut Vec<Op>,
     snapshot: &mut AppliedModel,
 ) {
-    let id_of = |name: &str| def.fields.iter().find(|f| f.name == name).and_then(|f| f.id.clone());
+    let id_of = |name: &str| {
+        def.fields
+            .iter()
+            .find(|f| f.name == name)
+            .and_then(|f| f.id.clone())
+    };
     for index in &def.indexes {
-        let Some(index_id) = index.id.clone() else { continue };
+        let Some(index_id) = index.id.clone() else {
+            continue;
+        };
         let ids: Vec<String> = index.fields.iter().filter_map(|name| id_of(name)).collect();
         // A field that is hidden takes its indexes with it, and one that is missing is a
         // definition error reported elsewhere.
-        if ids.len() != index.fields.len() || ids.iter().any(|id| fields.get(id).is_none_or(|f| f.deprecated)) {
+        if ids.len() != index.fields.len()
+            || ids
+                .iter()
+                .any(|id| fields.get(id).is_none_or(|f| f.deprecated))
+        {
             continue;
         }
-        let now = AppliedIndex { fields: ids.clone(), unique: index.unique };
+        let now = AppliedIndex {
+            fields: ids.clone(),
+            unique: index.unique,
+        };
         let before = applied.and_then(|a| a.indexes.get(&index_id));
         if before != Some(&now) {
             if before.is_some() {
-                ops.push(Op::RemoveCompositeIndex { table: table.to_string(), index: index_id.clone() });
+                ops.push(Op::RemoveCompositeIndex {
+                    table: table.to_string(),
+                    index: index_id.clone(),
+                });
             }
-            ops.push(Op::DefineCompositeIndex { table: table.to_string(), index: index_id.clone(), fields: ids, unique: index.unique });
+            ops.push(Op::DefineCompositeIndex {
+                table: table.to_string(),
+                index: index_id.clone(),
+                fields: ids,
+                unique: index.unique,
+            });
         }
         snapshot.indexes.insert(index_id, now);
     }
     if let Some(applied) = applied {
         for index_id in applied.indexes.keys() {
             if !snapshot.indexes.contains_key(index_id) {
-                ops.push(Op::RemoveCompositeIndex { table: table.to_string(), index: index_id.clone() });
+                ops.push(Op::RemoveCompositeIndex {
+                    table: table.to_string(),
+                    index: index_id.clone(),
+                });
             }
         }
     }
@@ -421,7 +579,11 @@ pub async fn plan_models(
     for def in models {
         let table = def.model_id.clone().unwrap_or_default();
         let applied = read_applied(db, &table, &def.name).await?;
-        let rows = if applied.is_some() { count_rows(db, &table).await? } else { 0 };
+        let rows = if applied.is_some() {
+            count_rows(db, &table).await?
+        } else {
+            0
+        };
         plans.push((plan(plugin, def, applied.as_ref(), rows), applied));
     }
     Ok(plans)
@@ -438,7 +600,10 @@ pub fn blockers(plans: &[(Plan, Option<AppliedModel>)]) -> Vec<(String, Vec<Stri
 
 /// Apply the plans (all of them are checked first: one blocked model blocks the lot). Each
 /// model's change is one transaction.
-pub async fn apply_plans(db: &Surreal<Client>, plans: &[(Plan, Option<AppliedModel>)]) -> Result<(), ApplyError> {
+pub async fn apply_plans(
+    db: &Surreal<Client>,
+    plans: &[(Plan, Option<AppliedModel>)],
+) -> Result<(), ApplyError> {
     if let Some((model, problems)) = blockers(plans).into_iter().next() {
         return Err(ApplyError::Blocked { model, problems });
     }
@@ -459,7 +624,13 @@ pub async fn apply_plans(db: &Surreal<Client>, plans: &[(Plan, Option<AppliedMod
             .bind(("table", plan.table.clone()))
             .bind(("plugin", plan.snapshot.plugin.clone()))
             .bind(("name", plan.model.clone()))
-            .bind(("snapshot", serde_json::to_value(&plan.snapshot).map_err(|source| ApplyError::Snapshot { model: plan.model.clone(), source })?));
+            .bind((
+                "snapshot",
+                serde_json::to_value(&plan.snapshot).map_err(|source| ApplyError::Snapshot {
+                    model: plan.model.clone(),
+                    source,
+                })?,
+            ));
         let mut index = 0;
         for op in &plan.ops {
             if let Op::Backfill { default, .. } = op {
@@ -472,7 +643,11 @@ pub async fn apply_plans(db: &Surreal<Client>, plans: &[(Plan, Option<AppliedMod
     Ok(())
 }
 
-async fn read_applied(db: &Surreal<Client>, table: &str, model: &str) -> Result<Option<AppliedModel>, ApplyError> {
+async fn read_applied(
+    db: &Surreal<Client>,
+    table: &str,
+    model: &str,
+) -> Result<Option<AppliedModel>, ApplyError> {
     let mut response = db
         .query("SELECT VALUE snapshot FROM model_schema WHERE model_id = $table;")
         .bind(("table", table.to_string()))
@@ -483,7 +658,10 @@ async fn read_applied(db: &Surreal<Client>, table: &str, model: &str) -> Result<
         .into_iter()
         .next()
         .map(|snapshot| {
-            serde_json::from_value(snapshot).map_err(|source| ApplyError::Snapshot { model: model.to_string(), source })
+            serde_json::from_value(snapshot).map_err(|source| ApplyError::Snapshot {
+                model: model.to_string(),
+                source,
+            })
         })
         .transpose()
 }
@@ -495,7 +673,11 @@ async fn count_rows(db: &Surreal<Client>, table: &str) -> Result<u64, ApplyError
         .await?
         .check()?;
     let rows: Vec<Value> = response.take(0)?;
-    Ok(rows.first().and_then(|row| row.get("count")).and_then(Value::as_u64).unwrap_or(0))
+    Ok(rows
+        .first()
+        .and_then(|row| row.get("count"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0))
 }
 
 #[cfg(test)]
@@ -505,7 +687,9 @@ mod tests {
     use serde_json::json;
 
     fn model(fields: Value) -> ModelDef {
-        let mut model: ModelDef = serde_json::from_value(json!({ "name": "note", "fields": fields })).unwrap_or_else(|e| panic!("{e}"));
+        let mut model: ModelDef =
+            serde_json::from_value(json!({ "name": "note", "fields": fields }))
+                .unwrap_or_else(|e| panic!("{e}"));
         sync_ids(&mut model);
         model
     }
@@ -528,9 +712,18 @@ mod tests {
         let plan = plan("notes", &def, None, 0);
         let sql = ops_of(&plan).join("\n");
         assert!(plan.blockers.is_empty());
-        assert!(sql.contains(&format!("DEFINE TABLE IF NOT EXISTS {} SCHEMAFULL COMMENT 'notes.note'", def.model_id.clone().unwrap())));
-        assert!(sql.contains("TYPE string COMMENT 'note.title'"), "required: not optional\n{sql}");
-        assert!(sql.contains("TYPE option<int> COMMENT 'note.pages'"), "{sql}");
+        assert!(sql.contains(&format!(
+            "DEFINE TABLE IF NOT EXISTS {} SCHEMAFULL COMMENT 'notes.note'",
+            def.model_id.clone().unwrap()
+        )));
+        assert!(
+            sql.contains("TYPE string COMMENT 'note.title'"),
+            "required: not optional\n{sql}"
+        );
+        assert!(
+            sql.contains("TYPE option<int> COMMENT 'note.pages'"),
+            "{sql}"
+        );
         assert!(sql.contains("UNIQUE"), "{sql}");
         assert_eq!(plan.snapshot.fields.len(), 3);
     }
@@ -546,10 +739,20 @@ mod tests {
         after.label = Some("Renamed model".into());
         let plan = plan("notes", &after, Some(&applied), 10_000);
         // Only the renamed column's comment is refreshed: no table, no backfill, no index, no data.
-        assert!(plan.ops.iter().all(|op| matches!(op, Op::DefineField { .. })), "{:?}", plan.ops);
+        assert!(
+            plan.ops
+                .iter()
+                .all(|op| matches!(op, Op::DefineField { .. })),
+            "{:?}",
+            plan.ops
+        );
         assert_eq!(plan.ops.len(), 1);
         assert!(plan.blockers.is_empty());
-        assert!(plan.notes.iter().any(|n| n.contains("heading")), "the rename is noted: {:?}", plan.notes);
+        assert!(
+            plan.notes.iter().any(|n| n.contains("heading")),
+            "the rename is noted: {:?}",
+            plan.notes
+        );
     }
 
     #[test]
@@ -557,11 +760,15 @@ mod tests {
         let before = first();
         let applied = plan("notes", &before, None, 0).snapshot;
         let mut after = before.clone();
-        after.fields.push(serde_json::from_value(json!({ "name": "tag", "type": "string" })).unwrap());
+        after
+            .fields
+            .push(serde_json::from_value(json!({ "name": "tag", "type": "string" })).unwrap());
         sync_ids(&mut after);
         let plan = plan("notes", &after, Some(&applied), 5_000);
         assert_eq!(plan.ops.len(), 1);
-        assert!(matches!(&plan.ops[0], Op::DefineField { surql_type, .. } if surql_type == "option<string>"));
+        assert!(
+            matches!(&plan.ops[0], Op::DefineField { surql_type, .. } if surql_type == "option<string>")
+        );
     }
 
     #[test]
@@ -569,20 +776,45 @@ mod tests {
         let before = first();
         let applied = plan("notes", &before, None, 0).snapshot;
         let mut after = before.clone();
-        after.fields.push(serde_json::from_value(json!({ "name": "owner", "type": "string", "required": true })).unwrap());
+        after.fields.push(
+            serde_json::from_value(json!({ "name": "owner", "type": "string", "required": true }))
+                .unwrap(),
+        );
         sync_ids(&mut after);
         let blocked = plan("notes", &after, Some(&applied), 3);
-        assert!(blocked.blockers.iter().any(|b| b.contains("`note.owner`") && b.contains("default")), "{:?}", blocked.blockers);
+        assert!(
+            blocked
+                .blockers
+                .iter()
+                .any(|b| b.contains("`note.owner`") && b.contains("default")),
+            "{:?}",
+            blocked.blockers
+        );
 
         // With no records it is fine; with a default the records are filled in.
         assert!(plan("notes", &after, Some(&applied), 0).blockers.is_empty());
         after.fields[3].default = Some(json!("nobody"));
         let filled = plan("notes", &after, Some(&applied), 3);
         assert!(filled.blockers.is_empty());
-        assert!(filled.ops.iter().any(|op| matches!(op, Op::Backfill { default, .. } if default == "nobody")));
-        let define = filled.ops.iter().position(|op| matches!(op, Op::DefineField { .. }));
-        let fill = filled.ops.iter().position(|op| matches!(op, Op::Backfill { .. }));
-        assert!(define < fill, "the column must exist before it is filled: {:?}", filled.ops);
+        assert!(
+            filled
+                .ops
+                .iter()
+                .any(|op| matches!(op, Op::Backfill { default, .. } if default == "nobody"))
+        );
+        let define = filled
+            .ops
+            .iter()
+            .position(|op| matches!(op, Op::DefineField { .. }));
+        let fill = filled
+            .ops
+            .iter()
+            .position(|op| matches!(op, Op::Backfill { .. }));
+        assert!(
+            define < fill,
+            "the column must exist before it is filled: {:?}",
+            filled.ops
+        );
     }
 
     #[test]
@@ -595,9 +827,15 @@ mod tests {
         let plan = plan("notes", &after, Some(&applied), 100);
         assert!(plan.blockers.is_empty());
         assert!(plan.ops.iter().all(|op| !matches!(op, Op::Backfill { .. })));
-        assert!(plan.snapshot.fields[&pages_id].deprecated, "still known, so the id is never reused");
+        assert!(
+            plan.snapshot.fields[&pages_id].deprecated,
+            "still known, so the id is never reused"
+        );
         assert!(plan.notes.iter().any(|n| n.contains("hidden")));
-        assert!(ops_of(&plan).iter().all(|s| !s.contains("REMOVE FIELD")), "the column is never dropped");
+        assert!(
+            ops_of(&plan).iter().all(|s| !s.contains("REMOVE FIELD")),
+            "the column is never dropped"
+        );
 
         // Bringing it back (same id) restores it.
         let mut again = before.clone();
@@ -612,12 +850,29 @@ mod tests {
         let applied = plan("notes", &before, None, 0).snapshot;
         let mut widened = before.clone();
         widened.fields[1].kind = FieldType::Float;
-        assert!(plan("notes", &widened, Some(&applied), 100).blockers.is_empty(), "int to float loses nothing");
+        assert!(
+            plan("notes", &widened, Some(&applied), 100)
+                .blockers
+                .is_empty(),
+            "int to float loses nothing"
+        );
         let mut narrowed = before.clone();
         narrowed.fields[1].kind = FieldType::String;
         let blocked = plan("notes", &narrowed, Some(&applied), 100);
-        assert!(blocked.blockers.iter().any(|b| b.contains("int to string") && b.contains("migration")), "{:?}", blocked.blockers);
-        assert!(plan("notes", &narrowed, Some(&applied), 0).blockers.is_empty(), "an empty table can change type");
+        assert!(
+            blocked
+                .blockers
+                .iter()
+                .any(|b| b.contains("int to string") && b.contains("migration")),
+            "{:?}",
+            blocked.blockers
+        );
+        assert!(
+            plan("notes", &narrowed, Some(&applied), 0)
+                .blockers
+                .is_empty(),
+            "an empty table can change type"
+        );
     }
 
     #[test]
@@ -628,14 +883,21 @@ mod tests {
         after.fields[0].index = Some(IndexKind::Plain);
         after.fields[2].index = None;
         let ops = plan("notes", &after, Some(&applied), 1).ops;
-        assert!(ops.iter().any(|op| matches!(op, Op::DefineIndex { unique: false, .. })));
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, Op::DefineIndex { unique: false, .. }))
+        );
         assert!(ops.iter().any(|op| matches!(op, Op::RemoveIndex { .. })));
     }
 
     #[test]
     fn multi_field_indexes_are_planned_rebuilt_and_dropped() {
         let mut def = first();
-        def.indexes.push(super::super::definition::IndexDef { id: Some("idx_abcdef".into()), fields: vec!["title".into(), "pages".into()], unique: false });
+        def.indexes.push(super::super::definition::IndexDef {
+            id: Some("idx_abcdef".into()),
+            fields: vec!["title".into(), "pages".into()],
+            unique: false,
+        });
         let first_plan = plan("notes", &def, None, 0);
         assert!(first_plan.ops.iter().any(|op| matches!(op, Op::DefineCompositeIndex { fields, unique: false, .. } if fields.len() == 2)));
         let applied = first_plan.snapshot;
@@ -645,17 +907,36 @@ mod tests {
         let mut renamed = def.clone();
         renamed.fields[0].name = "heading".into();
         renamed.indexes[0].fields[0] = "heading".into();
-        assert!(!plan("notes", &renamed, Some(&applied), 5).ops.iter().any(|op| matches!(op, Op::DefineCompositeIndex { .. } | Op::RemoveCompositeIndex { .. })));
+        assert!(
+            !plan("notes", &renamed, Some(&applied), 5)
+                .ops
+                .iter()
+                .any(|op| matches!(
+                    op,
+                    Op::DefineCompositeIndex { .. } | Op::RemoveCompositeIndex { .. }
+                ))
+        );
 
         // Making it unique rebuilds it; removing it drops it.
         let mut unique = def.clone();
         unique.indexes[0].unique = true;
         let ops = plan("notes", &unique, Some(&applied), 5).ops;
-        assert!(ops.iter().any(|op| matches!(op, Op::RemoveCompositeIndex { .. })));
-        assert!(ops.iter().any(|op| matches!(op, Op::DefineCompositeIndex { unique: true, .. })));
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, Op::RemoveCompositeIndex { .. }))
+        );
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, Op::DefineCompositeIndex { unique: true, .. }))
+        );
         let mut gone = def;
         gone.indexes.clear();
-        assert!(plan("notes", &gone, Some(&applied), 5).ops.iter().any(|op| matches!(op, Op::RemoveCompositeIndex { .. })));
+        assert!(
+            plan("notes", &gone, Some(&applied), 5)
+                .ops
+                .iter()
+                .any(|op| matches!(op, Op::RemoveCompositeIndex { .. }))
+        );
     }
 
     #[test]
@@ -670,7 +951,10 @@ mod tests {
     fn a_decimal_scale_is_fixed_once_records_exist() {
         let mut def = model(json!([{ "name": "pay", "type": "decimal" }]));
         let applied = plan("hr", &def, None, 0).snapshot;
-        assert_eq!(applied.fields.values().next().and_then(|f| f.scale), Some(2));
+        assert_eq!(
+            applied.fields.values().next().and_then(|f| f.scale),
+            Some(2)
+        );
         def.fields[0].scale = Some(3);
         assert!(!plan("hr", &def, Some(&applied), 4).blockers.is_empty());
         assert!(plan("hr", &def, Some(&applied), 0).blockers.is_empty());

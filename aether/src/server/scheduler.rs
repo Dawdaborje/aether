@@ -42,7 +42,7 @@ pub async fn run_scheduler(
     let scheduler = config.scheduler.clone();
     let bind = bind.map_or_else(|| scheduler.bind.clone(), str::to_string);
 
-    let state = AppState::new(db_conn.clone(), config, namespace, "core").await?;
+    let state = AppState::new(db_conn.clone(), config, namespace, "core", None).await?;
     let core = state.core().await?;
     state.plugin_runtime.load_catalog(&core).await?;
 

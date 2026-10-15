@@ -51,7 +51,10 @@ mod tests {
         assert!(limiter.allow(Some(one)));
         assert!(limiter.allow(Some(one)));
         assert!(!limiter.allow(Some(one)));
-        assert!(limiter.allow(Some(two)), "other addresses have their own budget");
+        assert!(
+            limiter.allow(Some(two)),
+            "other addresses have their own budget"
+        );
     }
 
     #[test]

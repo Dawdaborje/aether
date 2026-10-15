@@ -9,6 +9,9 @@ pub struct MediaObject {
     pub key: String,
     pub size: u64,
     pub e_tag: Option<String>,
+    /// When the object was last written, in seconds since the Unix epoch, if the backend
+    /// says (a `put` answers `None`: it is "now").
+    pub last_modified: Option<i64>,
 }
 
 /// Operations the framework needs from a media storage integration.

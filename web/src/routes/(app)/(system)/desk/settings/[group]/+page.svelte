@@ -4,6 +4,7 @@
 	import SettingField from '$lib/components/pages/settings/SettingField.svelte';
 	import { getContext } from 'svelte';
 	import type { CatalogGroup, CatalogItem } from '$lib/settings/api';
+	import { settingsSections } from '$lib/settings/sections';
 
 	type SettingsCtx = {
 		groups: CatalogGroup[];
@@ -15,7 +16,7 @@
 	const group = $derived(ctx?.groups?.find((g) => g.slug === page.params.group) ?? null);
 
 	let query = $state('');
-	const items = $derived(
+	const filtered = $derived(
 		(group?.items ?? []).filter((item) => {
 			const needle = query.trim().toLowerCase();
 			if (!needle) return true;
@@ -24,6 +25,7 @@
 			);
 		})
 	);
+	const sections = $derived(group ? settingsSections(group.slug, filtered) : []);
 
 	function onSaved(updated: CatalogItem) {
 		if (!ctx || !group) return;
@@ -80,12 +82,21 @@
 			<p class="rounded-md border border-dashed border-border bg-card p-8 text-center text-sm text-muted-foreground">
 				No settings in this group yet.
 			</p>
-		{:else if items.length === 0}
+		{:else if filtered.length === 0}
 			<p class="text-sm text-muted-foreground">Nothing matches “{query}”.</p>
 		{:else}
-			<div class="divide-y divide-border rounded-md border border-border bg-card shadow-xs">
-				{#each items as item (item.key)}
-					<SettingField {item} onsaved={onSaved} />
+			<div class="space-y-6">
+				{#each sections as section (section.id)}
+					<section class="space-y-2">
+						{#if section.title}
+							<h3 class="text-sm font-semibold tracking-tight">{section.title}</h3>
+						{/if}
+						<div class="divide-y divide-border rounded-md border border-border bg-card shadow-xs">
+							{#each section.items as item (item.key)}
+								<SettingField {item} onsaved={onSaved} />
+							{/each}
+						</div>
+					</section>
 				{/each}
 			</div>
 		{/if}

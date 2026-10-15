@@ -15,6 +15,8 @@ static DB: LazyLock<Surreal<SurrealClient>> = LazyLock::new(Surreal::init);
 
 pub struct DbContext {
     pub config: AetherConfig,
+    /// Absolute path of the config file when one was used.
+    pub config_path: Option<PathBuf>,
     pub db: &'static Surreal<SurrealClient>,
     pub namespace: String,
     /// Core database name.
@@ -68,6 +70,7 @@ pub async fn get_prerequisites(args: &Args) -> Result<DbContext, String> {
 
     Ok(DbContext {
         config: configuration,
+        config_path: config_file.map(PathBuf::from),
         db,
         namespace,
         database,

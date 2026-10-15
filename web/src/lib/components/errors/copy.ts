@@ -20,12 +20,18 @@ const copy: Record<number, ErrorCopy> = {
 	429: {
 		title: 'Too many requests',
 		message: 'You are going a little fast. Please wait a moment and try again.'
+	},
+	503: {
+		title: 'Server unreachable',
+		message:
+			'Aether’s API did not answer. The process may be stopped, the proxy may be misconfigured, or the database may be down.'
 	}
 };
 
 const serverError: ErrorCopy = {
 	title: 'Something went wrong',
-	message: 'An unexpected error occurred. Please try again, or contact an administrator if it keeps happening.'
+	message:
+		'An unexpected error occurred. Please try again, or contact an administrator if it keeps happening.'
 };
 
 /** The standard title and message for `status`, with any overrides applied. */

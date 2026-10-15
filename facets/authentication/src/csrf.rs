@@ -129,11 +129,7 @@ fn header_str<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 pub fn origin_from_referer(referer: &str) -> Option<String> {
     let url = url::Url::parse(referer).ok()?;
     let origin = url.origin().ascii_serialization();
-    if origin == "null" {
-        None
-    } else {
-        Some(origin)
-    }
+    if origin == "null" { None } else { Some(origin) }
 }
 
 fn default_scheme(host: &str) -> &'static str {
@@ -154,7 +150,8 @@ pub fn request_origin(
 ) -> Option<String> {
     let from_proxy = peer.is_some_and(|p| trusted_proxies.contains(&p));
     let host = if from_proxy {
-        header_str(headers, "x-forwarded-host").or_else(|| header_str(headers, header::HOST.as_str()))
+        header_str(headers, "x-forwarded-host")
+            .or_else(|| header_str(headers, header::HOST.as_str()))
     } else {
         header_str(headers, header::HOST.as_str())
     }?;
@@ -224,11 +221,7 @@ pub fn check_site(
 }
 
 fn csrf_forbidden() -> Response {
-    (
-        StatusCode::FORBIDDEN,
-        Json(json!({ "error": "csrf" })),
-    )
-        .into_response()
+    (StatusCode::FORBIDDEN, Json(json!({ "error": "csrf" }))).into_response()
 }
 
 fn append_cookie(response: &mut Response, cookie: Cookie<'static>) {

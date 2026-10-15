@@ -36,13 +36,17 @@ fn is_id(prefix: &str, text: &str) -> bool {
         .and_then(|rest| rest.strip_prefix('_'))
         .is_some_and(|tail| {
             (6..=32).contains(&tail.len())
-                && tail.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+                && tail
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
         })
 }
 
 /// `plugin.model`: a model of another plugin, as a link names it.
 pub fn foreign_target(target: &str) -> Option<(&str, &str)> {
-    target.split_once('.').filter(|(plugin, model)| is_name(plugin) && is_name(model))
+    target
+        .split_once('.')
+        .filter(|(plugin, model)| is_name(plugin) && is_name(model))
 }
 
 /// A name plugin code and pages use: lowercase letters, digits and `_`, starting with a letter.
@@ -84,6 +88,11 @@ pub enum FieldType {
     Child,
     /// Any JSON.
     Json,
+    /// A picture held in the organization's media storage: an object naming the file (see
+    /// [`super::media`]). A field with `multiple` holds a list of them.
+    Image,
+    /// Any allowed file held in the organization's media storage; same value as `image`.
+    File,
 }
 
 impl FieldType {
@@ -108,6 +117,8 @@ impl FieldType {
             Self::Many2many => "many2many",
             Self::Child => "child",
             Self::Json => "json",
+            Self::Image => "image",
+            Self::File => "file",
         }
     }
 }
@@ -196,6 +207,9 @@ pub struct FieldDef {
     /// Record changes to this field in the record's chatter. Needs the model's chatter on.
     #[serde(default, skip_serializing_if = "is_false")]
     pub track: bool,
+    /// For `image` and `file`: the field holds a list of files rather than one.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub multiple: bool,
     /// For `int`, `float` and `decimal`: the smallest value allowed (a number, or text for a decimal).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min: Option<Value>,
@@ -362,6 +376,11 @@ pub struct ModelDef {
     /// Name of the field that titles a record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title_field: Option<String>,
+    /// How a record is named when one field is not enough: `{first_name} {last_name}`. Each
+    /// `{name}` is a field of the model; it is used instead of `title_field` wherever the kernel
+    /// shows a link as a name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_template: Option<String>,
     pub fields: Vec<FieldDef>,
     /// Indexes over several fields.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -374,6 +393,42 @@ pub struct ModelDef {
     /// Rules every record must satisfy after a write.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub checks: Vec<CheckDef>,
+}
+
+/// The field names a `title_template` uses, in order: `{first} {last}` → `first`, `last`.
+pub fn template_fields(template: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('}') else { break };
+        let name = after[..close].trim();
+        if !name.is_empty() && !names.iter().any(|known| known == name) {
+            names.push(name.to_string());
+        }
+        rest = &after[close + 1..];
+    }
+    names
+}
+
+/// A `title_template` filled from `value(name)`; a field with no value contributes nothing and
+/// the spaces around it collapse.
+pub fn fill_template(template: &str, value: impl Fn(&str) -> Option<String>) -> String {
+    let mut out = String::new();
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('}') else {
+            out.push_str(&rest[open..]);
+            rest = "";
+            break;
+        };
+        out.push_str(&value(after[..close].trim()).unwrap_or_default());
+        rest = &after[close + 1..];
+    }
+    out.push_str(rest);
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 #[derive(Debug, Error)]
@@ -393,7 +448,10 @@ pub enum ModelFileError {
     #[error("{path}: the model is named `{name}`, so the file must be `{name}.json`")]
     WrongFileName { path: PathBuf, name: String },
     #[error("{path}: {problems}", problems = .problems.join("; "))]
-    Invalid { path: PathBuf, problems: Vec<String> },
+    Invalid {
+        path: PathBuf,
+        problems: Vec<String>,
+    },
     #[error("{problems}", problems = .0.join("; "))]
     InvalidSet(Vec<String>),
 }
@@ -420,9 +478,13 @@ impl ModelDef {
             ));
         }
         match self.model_id.as_deref() {
-            None => problems.push(format!("model `{model}` has no `model_id`; run `aether --sync-models`")),
+            None => problems.push(format!(
+                "model `{model}` has no `model_id`; run `aether --sync-models`"
+            )),
             Some(id) if !is_id(MODEL_PREFIX, id) => {
-                problems.push(format!("model `{model}`: `model_id` `{id}` is not like `mdl_k3v9xq2m7a`"));
+                problems.push(format!(
+                    "model `{model}`: `model_id` `{id}` is not like `mdl_k3v9xq2m7a`"
+                ));
             }
             Some(_) => {}
         }
@@ -440,13 +502,19 @@ impl ModelDef {
                 problems.push(format!("{model}: two fields are called `{name}`"));
             }
             match field.id.as_deref() {
-                None => problems.push(format!("{model}.{name} has no `id`; run `aether --sync-models`")),
+                None => problems.push(format!(
+                    "{model}.{name} has no `id`; run `aether --sync-models`"
+                )),
                 Some(id) if !is_id(FIELD_PREFIX, id) => {
-                    problems.push(format!("{model}.{name}: id `{id}` is not like `fld_k3v9xq2m7a`"));
+                    problems.push(format!(
+                        "{model}.{name}: id `{id}` is not like `fld_k3v9xq2m7a`"
+                    ));
                 }
                 Some(id) => {
                     if !ids.insert(id) {
-                        problems.push(format!("{model}.{name}: id `{id}` is used by another field"));
+                        problems.push(format!(
+                            "{model}.{name}: id `{id}` is used by another field"
+                        ));
                     }
                 }
             }
@@ -464,8 +532,15 @@ impl ModelDef {
                     }
                 }
                 for used in expr.fields() {
-                    match self.fields.iter().position(|f| !f.deprecated && f.name == used) {
-                        None => problems.push(format!("{model}.{}: `compute` uses `{used}`, which is not a field", field.name)),
+                    match self
+                        .fields
+                        .iter()
+                        .position(|f| !f.deprecated && f.name == used)
+                    {
+                        None => problems.push(format!(
+                            "{model}.{}: `compute` uses `{used}`, which is not a field",
+                            field.name
+                        )),
                         Some(at) => {
                             let input = &self.fields[at];
                             if !matches!(input.kind, FieldType::Int | FieldType::Decimal) {
@@ -492,7 +567,9 @@ impl ModelDef {
             let label = format!("{model}: index #{}", position + 1);
             match index.id.as_deref() {
                 None => problems.push(format!("{label} has no `id`")),
-                Some(id) if !is_id(INDEX_PREFIX, id) => problems.push(format!("{label}: id `{id}` is not like `idx_k3v9xq2m7a`")),
+                Some(id) if !is_id(INDEX_PREFIX, id) => {
+                    problems.push(format!("{label}: id `{id}` is not like `idx_k3v9xq2m7a`"))
+                }
                 Some(id) => {
                     if !index_ids.insert(id) {
                         problems.push(format!("{label}: id `{id}` is used twice"));
@@ -500,14 +577,18 @@ impl ModelDef {
                 }
             }
             if !(2..=8).contains(&index.fields.len()) {
-                problems.push(format!("{label} needs 2 to 8 fields (one field takes `index` on the field itself)"));
+                problems.push(format!(
+                    "{label} needs 2 to 8 fields (one field takes `index` on the field itself)"
+                ));
             }
             let mut seen = BTreeSet::new();
             for name in &index.fields {
                 match self.live_fields().find(|field| &field.name == name) {
                     None => problems.push(format!("{label}: `{name}` is not a field")),
                     Some(field) if matches!(field.kind, FieldType::Json | FieldType::Text) => {
-                        problems.push(format!("{label}: json and text fields cannot be indexed (`{name}`)"));
+                        problems.push(format!(
+                            "{label}: json and text fields cannot be indexed (`{name}`)"
+                        ));
                     }
                     Some(_) => {}
                 }
@@ -528,7 +609,9 @@ impl ModelDef {
             match super::query::Filter::parse(&check.require) {
                 Err(error) => problems.push(format!("{label}: {error}")),
                 Ok(filter) => {
-                    if let Err(error) = super::query::compile_filter(&filter, &FieldNames(&self.fields), "c") {
+                    if let Err(error) =
+                        super::query::compile_filter(&filter, &FieldNames(&self.fields), "c")
+                    {
                         problems.push(format!("{label}: {error}"));
                     }
                 }
@@ -536,22 +619,50 @@ impl ModelDef {
         }
         if let Some(chatter) = &self.chatter {
             if chatter.visitors != VisitorChatter::None && !chatter.enabled {
-                problems.push(format!("{model}: `chatter.visitors` needs `chatter.enabled`"));
+                problems.push(format!(
+                    "{model}: `chatter.visitors` needs `chatter.enabled`"
+                ));
             }
             if chatter.visitors == VisitorChatter::ReadWrite && !chatter.messages {
-                problems.push(format!("{model}: visitors post messages, so `visitors: read_write` needs `messages`"));
+                problems.push(format!(
+                    "{model}: visitors post messages, so `visitors: read_write` needs `messages`"
+                ));
             }
         }
-        if let Some(tracked) = self.fields.iter().find(|field| field.track && field.kind == FieldType::Json) {
-            problems.push(format!("{model}.{}: json fields cannot be tracked", tracked.name));
+        if let Some(tracked) = self
+            .fields
+            .iter()
+            .find(|field| field.track && field.kind == FieldType::Json)
+        {
+            problems.push(format!(
+                "{model}.{}: json fields cannot be tracked",
+                tracked.name
+            ));
         }
-        if self.fields.iter().any(|field| field.track) && !self.chatter_on().is_some_and(|c| c.track_changes) {
+        if self.fields.iter().any(|field| field.track)
+            && !self.chatter_on().is_some_and(|c| c.track_changes)
+        {
             problems.push(format!("{model}: a field is marked `track` but the model's chatter (with `track_changes`) is not on"));
         }
         if let Some(title) = &self.title_field
             && !self.live_fields().any(|field| &field.name == title)
         {
             problems.push(format!("{model}: `title_field` `{title}` is not a field"));
+        }
+        if let Some(template) = &self.title_template {
+            let names = template_fields(template);
+            if names.is_empty() {
+                problems.push(format!(
+                    "{model}: `title_template` names no field (write `{{field}}` for each)"
+                ));
+            }
+            for name in names {
+                if !self.live_fields().any(|field| field.name == name) {
+                    problems.push(format!(
+                        "{model}: `title_template` uses `{{{name}}}`, which is not a field"
+                    ));
+                }
+            }
         }
         if let Some(view) = &self.view {
             let known = |name: &str| self.live_fields().any(|field| field.name == name);
@@ -562,7 +673,9 @@ impl ModelDef {
                 .chain(view.sort.iter().map(|key| &key.field));
             for name in referenced {
                 if !known(name) {
-                    problems.push(format!("{model}: the view names `{name}`, which is not a field"));
+                    problems.push(format!(
+                        "{model}: the view names `{name}`, which is not a field"
+                    ));
                 }
             }
         }
@@ -578,10 +691,16 @@ struct FieldNames<'a>(&'a [FieldDef]);
 
 impl super::query::Columns for FieldNames<'_> {
     fn column(&self, field: &str) -> Result<String, super::query::QueryError> {
-        if self.0.iter().any(|f| !f.deprecated && f.name == field && f.kind.has_column()) {
+        if self
+            .0
+            .iter()
+            .any(|f| !f.deprecated && f.name == field && f.kind.has_column())
+        {
             Ok(field.to_string())
         } else {
-            Err(super::query::QueryError::Invalid(format!("`{field}` is not a field of this model")))
+            Err(super::query::QueryError::Invalid(format!(
+                "`{field}` is not a field of this model"
+            )))
         }
     }
 
@@ -592,10 +711,15 @@ impl super::query::Columns for FieldNames<'_> {
 
 fn field_problems(model: &str, field: &FieldDef, problems: &mut Vec<String>) {
     let name = &field.name;
-    let numeric = matches!(field.kind, FieldType::Int | FieldType::Float | FieldType::Decimal);
+    let numeric = matches!(
+        field.kind,
+        FieldType::Int | FieldType::Float | FieldType::Decimal
+    );
     let texty = matches!(field.kind, FieldType::String | FieldType::Text);
     if (field.min.is_some() || field.max.is_some()) && !numeric {
-        problems.push(format!("{model}.{name}: `min` and `max` are only for int, float and decimal fields"));
+        problems.push(format!(
+            "{model}.{name}: `min` and `max` are only for int, float and decimal fields"
+        ));
     }
     if numeric {
         let scale = field.scale.unwrap_or(super::decimal::DEFAULT_SCALE);
@@ -614,12 +738,16 @@ fn field_problems(model: &str, field: &FieldDef, problems: &mut Vec<String>) {
         }
     }
     if (field.min_length.is_some() || field.pattern.is_some()) && !texty {
-        problems.push(format!("{model}.{name}: `min_length` and `pattern` are only for string and text fields"));
+        problems.push(format!(
+            "{model}.{name}: `min_length` and `pattern` are only for string and text fields"
+        ));
     }
     if let (Some(min), Some(max)) = (field.min_length, field.max_length)
         && min > max
     {
-        problems.push(format!("{model}.{name}: `min_length` is above `max_length`"));
+        problems.push(format!(
+            "{model}.{name}: `min_length` is above `max_length`"
+        ));
     }
     if let Some(pattern) = &field.pattern
         && let Err(reason) = super::runtime::compile_pattern(pattern)
@@ -628,7 +756,9 @@ fn field_problems(model: &str, field: &FieldDef, problems: &mut Vec<String>) {
     }
     if field.related.is_some() || field.compute.is_some() {
         if field.related.is_some() && field.compute.is_some() {
-            problems.push(format!("{model}.{name}: a field is `related` or `compute`, not both"));
+            problems.push(format!(
+                "{model}.{name}: a field is `related` or `compute`, not both"
+            ));
         }
         if field.required || field.default.is_some() || field.sequence.is_some() {
             problems.push(format!("{model}.{name}: a calculated field cannot be `required`, have a `default` or a `sequence`"));
@@ -636,23 +766,39 @@ fn field_problems(model: &str, field: &FieldDef, problems: &mut Vec<String>) {
     }
     if let Some(compute) = &field.compute {
         if !matches!(field.kind, FieldType::Int | FieldType::Decimal) {
-            problems.push(format!("{model}.{name}: only int and decimal fields can be calculated"));
+            problems.push(format!(
+                "{model}.{name}: only int and decimal fields can be calculated"
+            ));
         }
         if let Err(reason) = super::compute::Expr::parse(compute) {
             problems.push(format!("{model}.{name}: `compute` {reason}"));
         }
     }
     if let Some(related) = &field.related {
-        if matches!(field.kind, FieldType::Link | FieldType::Many2many | FieldType::Child | FieldType::Json | FieldType::Select) {
+        if matches!(
+            field.kind,
+            FieldType::Link
+                | FieldType::Many2many
+                | FieldType::Child
+                | FieldType::Json
+                | FieldType::Select
+        ) {
             problems.push(format!("{model}.{name}: a `related` field cannot be a link, select, many2many or json field"));
         }
-        if related.split_once('.').is_none_or(|(link, target)| !is_name(link) || !is_name(target)) {
-            problems.push(format!("{model}.{name}: `related` is `link_field.field`, such as `customer.name`"));
+        if related
+            .split_once('.')
+            .is_none_or(|(link, target)| !is_name(link) || !is_name(target))
+        {
+            problems.push(format!(
+                "{model}.{name}: `related` is `link_field.field`, such as `customer.name`"
+            ));
         }
     }
     if let Some(sequence) = &field.sequence {
         if field.kind != FieldType::String {
-            problems.push(format!("{model}.{name}: only string fields can have a `sequence`"));
+            problems.push(format!(
+                "{model}.{name}: only string fields can have a `sequence`"
+            ));
         }
         if let Err(reason) = super::sequence::Pattern::parse(&sequence.pattern) {
             problems.push(format!("{model}.{name}: sequence `pattern` {reason}"));
@@ -670,16 +816,24 @@ fn field_problems(model: &str, field: &FieldDef, problems: &mut Vec<String>) {
             let mut ids = BTreeSet::new();
             for option in &field.options {
                 if option.value.trim().is_empty() || !values.insert(option.value.as_str()) {
-                    problems.push(format!("{model}.{name}: option values must be unique and not empty"));
+                    problems.push(format!(
+                        "{model}.{name}: option values must be unique and not empty"
+                    ));
                 }
                 match option.id.as_deref() {
-                    None => problems.push(format!("{model}.{name}: option `{}` has no `id`", option.value)),
+                    None => problems.push(format!(
+                        "{model}.{name}: option `{}` has no `id`",
+                        option.value
+                    )),
                     Some(id) if !is_id(OPTION_PREFIX, id) => {
-                        problems.push(format!("{model}.{name}: option id `{id}` is not like `opt_k3v9xq2m7a`"));
+                        problems.push(format!(
+                            "{model}.{name}: option id `{id}` is not like `opt_k3v9xq2m7a`"
+                        ));
                     }
                     Some(id) => {
                         if !ids.insert(id) {
-                            problems.push(format!("{model}.{name}: option id `{id}` is used twice"));
+                            problems
+                                .push(format!("{model}.{name}: option id `{id}` is used twice"));
                         }
                     }
                 }
@@ -690,14 +844,29 @@ fn field_problems(model: &str, field: &FieldDef, problems: &mut Vec<String>) {
         }
         _ => {}
     }
+    let media = matches!(field.kind, FieldType::Image | FieldType::File);
+    if field.multiple && !media {
+        problems.push(format!(
+            "{model}.{name}: only image and file fields can be `multiple`"
+        ));
+    }
+    if media && (field.index.is_some() || field.default.is_some()) {
+        problems.push(format!(
+            "{model}.{name}: an image or file field cannot be indexed or have a `default`"
+        ));
+    }
     if field.hierarchy {
         if field.kind != FieldType::Link {
             problems.push(format!("{model}.{name}: only a link can be a `hierarchy`"));
         } else if field.target.as_deref() != Some(model) {
-            problems.push(format!("{model}.{name}: a `hierarchy` link must point at its own model (`{model}`)"));
+            problems.push(format!(
+                "{model}.{name}: a `hierarchy` link must point at its own model (`{model}`)"
+            ));
         }
         if field.required {
-            problems.push(format!("{model}.{name}: a `hierarchy` link cannot be required (the root has no parent)"));
+            problems.push(format!(
+                "{model}.{name}: a `hierarchy` link cannot be required (the root has no parent)"
+            ));
         }
     }
     if field.kind == FieldType::Child {
@@ -705,7 +874,9 @@ fn field_problems(model: &str, field: &FieldDef, problems: &mut Vec<String>) {
             problems.push(format!("{model}.{name}: a child field has no column, so it cannot be required, indexed, tracked or have a default"));
         }
         match field.target.as_deref() {
-            None => problems.push(format!("{model}.{name}: a child field needs a `target` model")),
+            None => problems.push(format!(
+                "{model}.{name}: a child field needs a `target` model"
+            )),
             Some(target) if foreign_target(target).is_some() => {
                 problems.push(format!("{model}.{name}: the rows of a child field are a model of this plugin, not `{target}`"));
             }
@@ -716,17 +887,23 @@ fn field_problems(model: &str, field: &FieldDef, problems: &mut Vec<String>) {
             _ => problems.push(format!("{model}.{name}: a child field needs `inverse`, the link of the rows that points back")),
         }
         if field.order.as_deref().is_some_and(|order| !is_name(order)) {
-            problems.push(format!("{model}.{name}: `order` is the name of an int field of the rows"));
+            problems.push(format!(
+                "{model}.{name}: `order` is the name of an int field of the rows"
+            ));
         }
     } else if field.inverse.is_some() || field.order.is_some() {
-        problems.push(format!("{model}.{name}: only child fields have `inverse` and `order`"));
+        problems.push(format!(
+            "{model}.{name}: only child fields have `inverse` and `order`"
+        ));
     }
     if field.kind == FieldType::Many2many {
         if field.required || field.default.is_some() || field.index.is_some() || field.track {
             problems.push(format!("{model}.{name}: a many2many field has no column, so it cannot be required, indexed, tracked or have a default"));
         }
         if field.target.is_none() {
-            problems.push(format!("{model}.{name}: a many2many field needs a `target` model"));
+            problems.push(format!(
+                "{model}.{name}: a many2many field needs a `target` model"
+            ));
         }
     }
     match (field.kind, &field.target) {
@@ -757,27 +934,43 @@ fn field_problems(model: &str, field: &FieldDef, problems: &mut Vec<String>) {
         _ => {}
     }
     if field.max_length.is_some() && !matches!(field.kind, FieldType::String | FieldType::Text) {
-        problems.push(format!("{model}.{name}: `max_length` is only for string and text fields"));
+        problems.push(format!(
+            "{model}.{name}: `max_length` is only for string and text fields"
+        ));
     }
     if field.scale.is_some() && field.kind != FieldType::Decimal {
-        problems.push(format!("{model}.{name}: `scale` is only for decimal fields"));
+        problems.push(format!(
+            "{model}.{name}: `scale` is only for decimal fields"
+        ));
     }
-    if field.scale.is_some_and(|scale| scale > super::decimal::MAX_SCALE) {
-        problems.push(format!("{model}.{name}: `scale` is at most {}", super::decimal::MAX_SCALE));
+    if field
+        .scale
+        .is_some_and(|scale| scale > super::decimal::MAX_SCALE)
+    {
+        problems.push(format!(
+            "{model}.{name}: `scale` is at most {}",
+            super::decimal::MAX_SCALE
+        ));
     }
     if field.max_length == Some(0) {
         problems.push(format!("{model}.{name}: `max_length` must be at least 1"));
     }
     if field.index.is_some() && matches!(field.kind, FieldType::Json | FieldType::Text) {
-        problems.push(format!("{model}.{name}: json and text fields cannot be indexed"));
+        problems.push(format!(
+            "{model}.{name}: json and text fields cannot be indexed"
+        ));
     }
     if field.deprecated && field.required {
-        problems.push(format!("{model}.{name}: a hidden (deprecated) field cannot be required"));
+        problems.push(format!(
+            "{model}.{name}: a hidden (deprecated) field cannot be required"
+        ));
     }
     if let Some(default) = &field.default
         && let Err(reason) = super::runtime::check_value(field, default, None)
     {
-        problems.push(format!("{model}.{name}: the default is not valid: {reason}"));
+        problems.push(format!(
+            "{model}.{name}: the default is not valid: {reason}"
+        ));
     }
 }
 
@@ -831,15 +1024,25 @@ pub fn validate_set(models: &[ModelDef]) -> Result<(), ModelFileError> {
                 && foreign_target(target).is_none()
                 && !names.contains(target.as_str())
             {
-                problems.push(format!("{}.{}: links to `{target}`, which is not a model of this plugin", model.name, field.name));
+                problems.push(format!(
+                    "{}.{}: links to `{target}`, which is not a model of this plugin",
+                    model.name, field.name
+                ));
             }
             if field.kind == FieldType::Child
                 && let Some(target) = field.target.as_deref()
                 && let Some(rows) = models.iter().find(|m| m.name == target)
             {
                 let label = format!("{}.{}", model.name, field.name);
-                match field.inverse.as_deref().and_then(|name| rows.live_fields().find(|f| f.name == name)) {
-                    Some(back) if back.kind == FieldType::Link && !back.hierarchy && back.target.as_deref() == Some(model.name.as_str()) => {}
+                match field
+                    .inverse
+                    .as_deref()
+                    .and_then(|name| rows.live_fields().find(|f| f.name == name))
+                {
+                    Some(back)
+                        if back.kind == FieldType::Link
+                            && !back.hierarchy
+                            && back.target.as_deref() == Some(model.name.as_str()) => {}
                     _ => problems.push(format!(
                         "{label}: `inverse` must be a link of `{target}` that points at `{}`",
                         model.name
@@ -847,12 +1050,21 @@ pub fn validate_set(models: &[ModelDef]) -> Result<(), ModelFileError> {
                 }
                 if let Some(order) = field.order.as_deref() {
                     match rows.live_fields().find(|f| f.name == order) {
-                        Some(f) if f.kind == FieldType::Int && f.related.is_none() && f.compute.is_none() => {}
-                        _ => problems.push(format!("{label}: `order` must be a plain int field of `{target}`")),
+                        Some(f)
+                            if f.kind == FieldType::Int
+                                && f.related.is_none()
+                                && f.compute.is_none() => {}
+                        _ => problems.push(format!(
+                            "{label}: `order` must be a plain int field of `{target}`"
+                        )),
                     }
                 }
             }
-            if let Some(compute) = field.compute.as_deref().and_then(|c| super::compute::Expr::parse(c).ok()) {
+            if let Some(compute) = field
+                .compute
+                .as_deref()
+                .and_then(|c| super::compute::Expr::parse(c).ok())
+            {
                 for rollup in compute.rollups() {
                     let rows = model
                         .live_fields()
@@ -871,7 +1083,10 @@ pub fn validate_set(models: &[ModelDef]) -> Result<(), ModelFileError> {
                 }
             }
             if let Some((link, source)) = field.related.as_deref().and_then(|r| r.split_once('.'))
-                && let Some(target) = model.live_fields().find(|f| f.name == link).and_then(|f| f.target.as_deref())
+                && let Some(target) = model
+                    .live_fields()
+                    .find(|f| f.name == link)
+                    .and_then(|f| f.target.as_deref())
                 && let Some(other) = models.iter().find(|m| m.name == target)
             {
                 match other.live_fields().find(|f| f.name == source) {
@@ -885,7 +1100,11 @@ pub fn validate_set(models: &[ModelDef]) -> Result<(), ModelFileError> {
             }
         }
     }
-    if problems.is_empty() { Ok(()) } else { Err(ModelFileError::InvalidSet(problems)) }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(ModelFileError::InvalidSet(problems))
+    }
 }
 
 /// Read and check every `models/*.json` of a package, in name order. Missing ids are an
@@ -895,7 +1114,12 @@ pub fn read_models(package_dir: &Path) -> Result<Vec<(PathBuf, ModelDef)>, Model
     let entries = match std::fs::read_dir(&directory) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(source) => return Err(ModelFileError::Io { path: directory, source }),
+        Err(source) => {
+            return Err(ModelFileError::Io {
+                path: directory,
+                source,
+            });
+        }
     };
     let mut paths: Vec<PathBuf> = entries
         .flatten()
@@ -906,12 +1130,19 @@ pub fn read_models(package_dir: &Path) -> Result<Vec<(PathBuf, ModelDef)>, Model
 
     let mut models = Vec::with_capacity(paths.len());
     for path in paths {
-        let text = std::fs::read_to_string(&path)
-            .map_err(|source| ModelFileError::Io { path: path.clone(), source })?;
+        let text = std::fs::read_to_string(&path).map_err(|source| ModelFileError::Io {
+            path: path.clone(),
+            source,
+        })?;
         let model = parse_model(&text, &path)?;
         models.push((path, model));
     }
-    validate_set(&models.iter().map(|(_, model)| model.clone()).collect::<Vec<_>>())?;
+    validate_set(
+        &models
+            .iter()
+            .map(|(_, model)| model.clone())
+            .collect::<Vec<_>>(),
+    )?;
     Ok(models)
 }
 
@@ -936,16 +1167,29 @@ pub fn sync_package(package_dir: &Path) -> Result<Vec<Synced>, ModelFileError> {
 pub fn foreign_targets(package_dir: &Path) -> Result<BTreeSet<String>, ModelFileError> {
     let directory = package_dir.join(MODEL_DIR);
     let mut found = BTreeSet::new();
-    let Ok(entries) = std::fs::read_dir(&directory) else { return Ok(found) };
+    let Ok(entries) = std::fs::read_dir(&directory) else {
+        return Ok(found);
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
-        let text = std::fs::read_to_string(&path).map_err(|source| ModelFileError::Io { path: path.clone(), source })?;
-        let model: ModelDef = serde_json::from_str(&text).map_err(|source| ModelFileError::Parse { path: path.clone(), source })?;
+        let text = std::fs::read_to_string(&path).map_err(|source| ModelFileError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        let model: ModelDef =
+            serde_json::from_str(&text).map_err(|source| ModelFileError::Parse {
+                path: path.clone(),
+                source,
+            })?;
         for field in &model.fields {
-            if let Some(target) = field.target.as_deref().filter(|target| foreign_target(target).is_some()) {
+            if let Some(target) = field
+                .target
+                .as_deref()
+                .filter(|target| foreign_target(target).is_some())
+            {
                 found.insert(target.to_string());
             }
         }
@@ -956,10 +1200,16 @@ pub fn foreign_targets(package_dir: &Path) -> Result<BTreeSet<String>, ModelFile
 /// [`sync_package`], also filling in the `target_id` of links to other plugins' models from `foreign`
 /// (`plugin.model` to model id, from the catalog). A link whose model is not in `foreign` is left as
 /// it is and reported by validation.
-pub fn sync_package_with(package_dir: &Path, foreign: &HashMap<String, String>) -> Result<Vec<Synced>, ModelFileError> {
+pub fn sync_package_with(
+    package_dir: &Path,
+    foreign: &HashMap<String, String>,
+) -> Result<Vec<Synced>, ModelFileError> {
     let directory = package_dir.join(MODEL_DIR);
     let mut paths: Vec<PathBuf> = std::fs::read_dir(&directory)
-        .map_err(|source| ModelFileError::Io { path: directory.clone(), source })?
+        .map_err(|source| ModelFileError::Io {
+            path: directory.clone(),
+            source,
+        })?
         .flatten()
         .map(|entry| entry.path())
         .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("json"))
@@ -969,10 +1219,15 @@ pub fn sync_package_with(package_dir: &Path, foreign: &HashMap<String, String>) 
     let mut synced = Vec::new();
     let mut models = Vec::new();
     for path in paths {
-        let text = std::fs::read_to_string(&path)
-            .map_err(|source| ModelFileError::Io { path: path.clone(), source })?;
-        let mut model: ModelDef = serde_json::from_str(&text)
-            .map_err(|source| ModelFileError::Parse { path: path.clone(), source })?;
+        let text = std::fs::read_to_string(&path).map_err(|source| ModelFileError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        let mut model: ModelDef =
+            serde_json::from_str(&text).map_err(|source| ModelFileError::Parse {
+                path: path.clone(),
+                source,
+            })?;
         let mut assigned = sync_ids(&mut model);
         for field in &mut model.fields {
             if field.target_id.is_none()
@@ -983,42 +1238,82 @@ pub fn sync_package_with(package_dir: &Path, foreign: &HashMap<String, String>) 
             }
         }
         if assigned > 0 {
-            let mut written = serde_json::to_string_pretty(&model)
-                .map_err(|source| ModelFileError::Parse { path: path.clone(), source })?;
+            let mut written =
+                serde_json::to_string_pretty(&model).map_err(|source| ModelFileError::Parse {
+                    path: path.clone(),
+                    source,
+                })?;
             written.push('\n');
-            std::fs::write(&path, written).map_err(|source| ModelFileError::Io { path: path.clone(), source })?;
+            std::fs::write(&path, written).map_err(|source| ModelFileError::Io {
+                path: path.clone(),
+                source,
+            })?;
         }
-        synced.push(Synced { path: path.clone(), model: model.name.clone(), assigned });
+        synced.push(Synced {
+            path: path.clone(),
+            model: model.name.clone(),
+            assigned,
+        });
         models.push((path, model));
     }
     // Whatever is still wrong (a bad name, a link to nothing) is reported now, not at load time.
     for (path, model) in &models {
         let problems = model.problems();
         if !problems.is_empty() {
-            return Err(ModelFileError::Invalid { path: path.clone(), problems });
+            return Err(ModelFileError::Invalid {
+                path: path.clone(),
+                problems,
+            });
         }
     }
-    validate_set(&models.iter().map(|(_, model)| model.clone()).collect::<Vec<_>>())?;
+    validate_set(
+        &models
+            .iter()
+            .map(|(_, model)| model.clone())
+            .collect::<Vec<_>>(),
+    )?;
     Ok(synced)
 }
 
 /// Parse one model file's text and check it (including that its ids are assigned).
 pub fn parse_model(text: &str, path: &Path) -> Result<ModelDef, ModelFileError> {
-    let model: ModelDef = serde_json::from_str(text)
-        .map_err(|source| ModelFileError::Parse { path: path.to_path_buf(), source })?;
+    let model: ModelDef = serde_json::from_str(text).map_err(|source| ModelFileError::Parse {
+        path: path.to_path_buf(),
+        source,
+    })?;
     if path.file_stem().and_then(|s| s.to_str()) != Some(model.name.as_str()) {
-        return Err(ModelFileError::WrongFileName { path: path.to_path_buf(), name: model.name });
+        return Err(ModelFileError::WrongFileName {
+            path: path.to_path_buf(),
+            name: model.name,
+        });
     }
     let problems = model.problems();
     if problems.is_empty() {
         Ok(model)
     } else {
-        Err(ModelFileError::Invalid { path: path.to_path_buf(), problems })
+        Err(ModelFileError::Invalid {
+            path: path.to_path_buf(),
+            problems,
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_title_template_names_its_fields_and_fills_in() {
+        assert_eq!(
+            template_fields("{first_name} {last_name} ({code})"),
+            vec!["first_name", "last_name", "code"]
+        );
+        let title = fill_template("{first} {middle} {last}", |name| match name {
+            "first" => Some("Ada".into()),
+            "last" => Some("Lovelace".into()),
+            _ => None,
+        });
+        assert_eq!(title, "Ada Lovelace");
+    }
+
     use super::*;
     use serde_json::json;
 
@@ -1045,8 +1340,18 @@ mod tests {
     fn ids_look_right_and_are_assigned_once() {
         let mut model = note();
         assert!(is_id(MODEL_PREFIX, model.model_id.as_deref().unwrap()));
-        assert!(model.fields.iter().all(|f| is_id(FIELD_PREFIX, f.id.as_deref().unwrap())));
-        assert!(model.fields[2].options.iter().all(|o| is_id(OPTION_PREFIX, o.id.as_deref().unwrap())));
+        assert!(
+            model
+                .fields
+                .iter()
+                .all(|f| is_id(FIELD_PREFIX, f.id.as_deref().unwrap()))
+        );
+        assert!(
+            model.fields[2]
+                .options
+                .iter()
+                .all(|o| is_id(OPTION_PREFIX, o.id.as_deref().unwrap()))
+        );
         assert_eq!(sync_ids(&mut model), 0, "nothing left to assign");
         assert!(model.problems().is_empty(), "{:?}", model.problems());
     }
@@ -1057,7 +1362,10 @@ mod tests {
         model.fields[0].id = None;
         model.model_id = None;
         let problems = model.problems().join("; ");
-        assert!(problems.contains("no `model_id`") && problems.contains("note.title has no `id`"), "{problems}");
+        assert!(
+            problems.contains("no `model_id`") && problems.contains("note.title has no `id`"),
+            "{problems}"
+        );
         sync_ids(&mut model);
         assert!(model.problems().is_empty());
     }
@@ -1070,7 +1378,12 @@ mod tests {
         model.fields[2].options.clear();
         model.fields[3].target = None;
         let problems = model.problems().join("; ");
-        for expected in ["note.Title", "not `id`", "needs `options`", "needs a `target`"] {
+        for expected in [
+            "note.Title",
+            "not `id`",
+            "needs `options`",
+            "needs a `target`",
+        ] {
             assert!(problems.contains(expected), "{expected} in {problems}");
         }
 
@@ -1079,11 +1392,20 @@ mod tests {
         let second_id = duplicate.fields[0].id.clone();
         duplicate.fields[1].id = second_id;
         let problems = duplicate.problems().join("; ");
-        assert!(problems.contains("two fields are called `title`") && problems.contains("used by another field"), "{problems}");
+        assert!(
+            problems.contains("two fields are called `title`")
+                && problems.contains("used by another field"),
+            "{problems}"
+        );
 
         let mut bad_default = note();
         bad_default.fields[2].default = Some(json!("archived"));
-        assert!(bad_default.problems().join(";").contains("default is not valid"));
+        assert!(
+            bad_default
+                .problems()
+                .join(";")
+                .contains("default is not valid")
+        );
         let mut bad_view = note();
         bad_view.view.as_mut().unwrap().list.push("nope".into());
         assert!(bad_view.problems().join(";").contains("`nope`"));
@@ -1095,7 +1417,10 @@ mod tests {
         let mut two = note();
         two.name = "other".into();
         two.model_id = one.model_id.clone();
-        assert!(validate_set(&[one.clone(), two.clone()]).is_err(), "the same model_id twice");
+        assert!(
+            validate_set(&[one.clone(), two.clone()]).is_err(),
+            "the same model_id twice"
+        );
         two.model_id = Some(new_id(MODEL_PREFIX));
         two.fields[3].target = Some("ghost".into());
         let error = validate_set(&[one, two]).unwrap_err().to_string();
@@ -1108,13 +1433,24 @@ mod tests {
         let models = directory.path().join(MODEL_DIR);
         std::fs::create_dir_all(&models).unwrap();
         let model = note();
-        std::fs::write(models.join("note.json"), serde_json::to_string_pretty(&model).unwrap()).unwrap();
+        std::fs::write(
+            models.join("note.json"),
+            serde_json::to_string_pretty(&model).unwrap(),
+        )
+        .unwrap();
         let read = read_models(directory.path()).unwrap();
         assert_eq!(read.len(), 1);
         assert_eq!(read[0].1, model);
 
-        std::fs::write(models.join("wrong.json"), serde_json::to_string(&model).unwrap()).unwrap();
-        assert!(matches!(read_models(directory.path()), Err(ModelFileError::WrongFileName { .. })));
+        std::fs::write(
+            models.join("wrong.json"),
+            serde_json::to_string(&model).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            read_models(directory.path()),
+            Err(ModelFileError::WrongFileName { .. })
+        ));
         std::fs::remove_file(models.join("wrong.json")).unwrap();
         // No models folder at all is fine: a plugin may have no data.
         let empty = tempfile::tempdir().unwrap();
@@ -1126,30 +1462,70 @@ mod tests {
         let mut model = note();
         assert!(model.chatter_on().is_none(), "off by default");
         model.chatter = Some(ChatterDef::default());
-        assert!(model.chatter_on().is_none(), "present but not enabled is still off");
-        model.chatter = Some(ChatterDef { enabled: true, ..ChatterDef::default() });
+        assert!(
+            model.chatter_on().is_none(),
+            "present but not enabled is still off"
+        );
+        model.chatter = Some(ChatterDef {
+            enabled: true,
+            ..ChatterDef::default()
+        });
         assert!(model.chatter_on().is_some());
         assert!(model.problems().is_empty(), "{:?}", model.problems());
 
         // Tracking needs chatter; visitors need it too; json cannot be tracked.
         let mut tracked = note();
         tracked.fields[0].track = true;
-        assert!(tracked.problems().join(";").contains("track"), "chatter is off");
-        tracked.chatter = Some(ChatterDef { enabled: true, ..ChatterDef::default() });
+        assert!(
+            tracked.problems().join(";").contains("track"),
+            "chatter is off"
+        );
+        tracked.chatter = Some(ChatterDef {
+            enabled: true,
+            ..ChatterDef::default()
+        });
         assert!(tracked.problems().is_empty());
-        tracked.chatter = Some(ChatterDef { enabled: true, track_changes: false, ..ChatterDef::default() });
+        tracked.chatter = Some(ChatterDef {
+            enabled: true,
+            track_changes: false,
+            ..ChatterDef::default()
+        });
         assert!(!tracked.problems().is_empty(), "track_changes is off");
 
         let mut visitors = note();
-        visitors.chatter = Some(ChatterDef { visitors: VisitorChatter::Read, ..ChatterDef::default() });
-        assert!(visitors.problems().join(";").contains("visitors"), "not enabled");
-        visitors.chatter = Some(ChatterDef { enabled: true, messages: false, visitors: VisitorChatter::ReadWrite, ..ChatterDef::default() });
+        visitors.chatter = Some(ChatterDef {
+            visitors: VisitorChatter::Read,
+            ..ChatterDef::default()
+        });
+        assert!(
+            visitors.problems().join(";").contains("visitors"),
+            "not enabled"
+        );
+        visitors.chatter = Some(ChatterDef {
+            enabled: true,
+            messages: false,
+            visitors: VisitorChatter::ReadWrite,
+            ..ChatterDef::default()
+        });
         assert!(!visitors.problems().is_empty(), "visitors post messages");
 
         let mut json_field = note();
-        json_field.fields.push(serde_json::from_value(json!({ "id": "fld_jjjjjjjjjj", "name": "extra", "type": "json", "track": true })).unwrap());
-        json_field.chatter = Some(ChatterDef { enabled: true, ..ChatterDef::default() });
-        assert!(json_field.problems().join(";").contains("json fields cannot be tracked"));
+        json_field.fields.push(
+            serde_json::from_value(
+                json!({ "id": "fld_jjjjjjjjjj", "name": "extra", "type": "json", "track": true }),
+            )
+            .unwrap(),
+        );
+        json_field.chatter = Some(ChatterDef {
+            enabled: true,
+            ..ChatterDef::default()
+        });
+        assert!(
+            json_field
+                .problems()
+                .join(";")
+                .contains("json fields cannot be tracked")
+        );
     }
 
     #[test]
@@ -1174,9 +1550,14 @@ mod tests {
         let renamed = text.replace("\"title\"", "\"heading\"");
         std::fs::write(models.join("note.json"), renamed).unwrap();
         sync_package(directory.path()).unwrap();
-        let after: ModelDef = serde_json::from_str(&std::fs::read_to_string(models.join("note.json")).unwrap()).unwrap();
+        let after: ModelDef =
+            serde_json::from_str(&std::fs::read_to_string(models.join("note.json")).unwrap())
+                .unwrap();
         assert_eq!(after.fields[0].name, "heading");
-        assert_eq!(after.fields[0].id, written.fields[0].id, "a rename keeps the column");
+        assert_eq!(
+            after.fields[0].id, written.fields[0].id,
+            "a rename keeps the column"
+        );
         assert_eq!(after.model_id, written.model_id);
     }
 
@@ -1185,8 +1566,15 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let models = directory.path().join(MODEL_DIR);
         std::fs::create_dir_all(&models).unwrap();
-        std::fs::write(models.join("note.json"), r#"{ "name": "note", "fields": [{ "name": "Bad Name", "type": "string" }] }"#).unwrap();
-        assert!(matches!(sync_package(directory.path()), Err(ModelFileError::Invalid { .. })));
+        std::fs::write(
+            models.join("note.json"),
+            r#"{ "name": "note", "fields": [{ "name": "Bad Name", "type": "string" }] }"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            sync_package(directory.path()),
+            Err(ModelFileError::Invalid { .. })
+        ));
     }
 
     #[test]
@@ -1213,10 +1601,22 @@ mod tests {
     #[test]
     fn a_link_to_another_plugins_model_needs_its_id() {
         let problems = invoice_with_foreign_link(None).problems();
-        assert!(problems.iter().any(|p| p.contains("needs its `target_id`") && p.contains("--sync-models")), "{problems:?}");
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("needs its `target_id`") && p.contains("--sync-models")),
+            "{problems:?}"
+        );
         let problems = invoice_with_foreign_link(Some("not an id")).problems();
-        assert!(problems.iter().any(|p| p.contains("is not like")), "{problems:?}");
-        assert!(invoice_with_foreign_link(Some("mdl_k3v9xq2m7a")).problems().is_empty());
+        assert!(
+            problems.iter().any(|p| p.contains("is not like")),
+            "{problems:?}"
+        );
+        assert!(
+            invoice_with_foreign_link(Some("mdl_k3v9xq2m7a"))
+                .problems()
+                .is_empty()
+        );
         // A set does not look for `currency.currency` among its own models.
         let model = invoice_with_foreign_link(Some("mdl_k3v9xq2m7a"));
         assert!(validate_set(&[model]).is_ok());
@@ -1229,8 +1629,18 @@ mod tests {
         }))
         .unwrap_or_else(|error| panic!("{error}"));
         sync_ids(&mut own);
-        assert!(own.problems().iter().any(|p| p.contains("only a link to another plugin's model has a `target_id`")));
-        for target in ["Currency.currency", "a.b.c", "currency.", ".currency", "cur-rency.x"] {
+        assert!(
+            own.problems()
+                .iter()
+                .any(|p| p.contains("only a link to another plugin's model has a `target_id`"))
+        );
+        for target in [
+            "Currency.currency",
+            "a.b.c",
+            "currency.",
+            ".currency",
+            "cur-rency.x",
+        ] {
             let mut model = invoice_with_foreign_link(Some("mdl_k3v9xq2m7a"));
             model.fields[0].target = Some(target.to_string());
             assert!(!model.problems().is_empty(), "{target}");
@@ -1238,7 +1648,8 @@ mod tests {
     }
 
     #[test]
-    fn syncing_fills_a_foreign_links_id_from_what_the_catalog_knows() -> Result<(), Box<dyn std::error::Error>> {
+    fn syncing_fills_a_foreign_links_id_from_what_the_catalog_knows()
+    -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         std::fs::create_dir_all(dir.path().join(MODEL_DIR))?;
         let file = dir.path().join(MODEL_DIR).join("invoice.json");
@@ -1251,25 +1662,50 @@ mod tests {
             .to_string(),
         )?;
         let wanted = foreign_targets(dir.path())?;
-        assert_eq!(wanted.into_iter().collect::<Vec<_>>(), ["currency.currency", "party.party"]);
+        assert_eq!(
+            wanted.into_iter().collect::<Vec<_>>(),
+            ["currency.currency", "party.party"]
+        );
 
         // Only one is known: the other is reported, not guessed.
-        let known: HashMap<String, String> = [("currency.currency".to_string(), "mdl_k3v9xq2m7a".to_string())].into();
-        let refused = sync_package_with(dir.path(), &known).err().map(|e| e.to_string()).unwrap_or_default();
-        assert!(refused.contains("party.party") && refused.contains("--sync-models"), "{refused}");
+        let known: HashMap<String, String> = [(
+            "currency.currency".to_string(),
+            "mdl_k3v9xq2m7a".to_string(),
+        )]
+        .into();
+        let refused = sync_package_with(dir.path(), &known)
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
+        assert!(
+            refused.contains("party.party") && refused.contains("--sync-models"),
+            "{refused}"
+        );
         let written: ModelDef = serde_json::from_str(&std::fs::read_to_string(&file)?)?;
-        assert_eq!(written.fields[0].target_id.as_deref(), Some("mdl_k3v9xq2m7a"));
+        assert_eq!(
+            written.fields[0].target_id.as_deref(),
+            Some("mdl_k3v9xq2m7a")
+        );
 
         let all: HashMap<String, String> = [
-            ("currency.currency".to_string(), "mdl_k3v9xq2m7a".to_string()),
+            (
+                "currency.currency".to_string(),
+                "mdl_k3v9xq2m7a".to_string(),
+            ),
             ("party.party".to_string(), "mdl_p4rty0000a".to_string()),
         ]
         .into();
         sync_package_with(dir.path(), &all)?;
         let written: ModelDef = serde_json::from_str(&std::fs::read_to_string(&file)?)?;
         // The id that was already there is never changed.
-        assert_eq!(written.fields[0].target_id.as_deref(), Some("mdl_k3v9xq2m7a"));
-        assert_eq!(written.fields[1].target_id.as_deref(), Some("mdl_p4rty0000a"));
+        assert_eq!(
+            written.fields[0].target_id.as_deref(),
+            Some("mdl_k3v9xq2m7a")
+        );
+        assert_eq!(
+            written.fields[1].target_id.as_deref(),
+            Some("mdl_p4rty0000a")
+        );
         Ok(())
     }
 
@@ -1281,7 +1717,8 @@ mod tests {
                 { "name": "t", "type": "text" }, { "name": "j", "type": "json" }
             ],
             "indexes": [ { "fields": ["a", "b"], "unique": true } ]
-        })).unwrap_or_else(|e| panic!("{e}"));
+        }))
+        .unwrap_or_else(|e| panic!("{e}"));
         assert!(model.problems().iter().any(|p| p.contains("no `id`")));
         sync_ids(&mut model);
         assert!(model.problems().is_empty(), "{:?}", model.problems());
@@ -1292,7 +1729,39 @@ mod tests {
         model.indexes[0].fields = vec!["a".into(), "zzz".into()];
         assert!(model.problems().iter().any(|p| p.contains("not a field")));
         model.indexes[0].fields = vec!["a".into(), "t".into()];
-        assert!(model.problems().iter().any(|p| p.contains("cannot be indexed")));
+        assert!(
+            model
+                .problems()
+                .iter()
+                .any(|p| p.contains("cannot be indexed"))
+        );
+    }
+
+    #[test]
+    fn image_and_file_fields_are_checked() {
+        let mut model = note();
+        for extra in [
+            json!({ "name": "photo", "type": "image" }),
+            json!({ "name": "scans", "type": "file", "multiple": true }),
+        ] {
+            model.fields.push(serde_json::from_value(extra).unwrap());
+        }
+        sync_ids(&mut model);
+        assert!(model.problems().is_empty(), "{:?}", model.problems());
+        assert_eq!(model.fields[4].kind, FieldType::Image);
+        assert!(model.fields[5].multiple);
+
+        // `multiple` is for files only; a file is not indexed and has no default.
+        let mut bad = note();
+        bad.fields[0].multiple = true;
+        assert!(bad.problems().join(";").contains("multiple"));
+        let mut indexed = note();
+        indexed.fields.push(
+            serde_json::from_value(json!({ "name": "doc", "type": "file", "index": "plain" }))
+                .unwrap(),
+        );
+        sync_ids(&mut indexed);
+        assert!(indexed.problems().join(";").contains("indexed"));
     }
 
     #[test]
@@ -1302,8 +1771,14 @@ mod tests {
         })).unwrap_or_else(|e| panic!("{e}"));
         sync_ids(&mut model);
         let problems = model.problems();
-        assert!(problems.iter().any(|p| p.contains("at most")), "{problems:?}");
-        assert!(problems.iter().any(|p| p.contains("only for decimal")), "{problems:?}");
+        assert!(
+            problems.iter().any(|p| p.contains("at most")),
+            "{problems:?}"
+        );
+        assert!(
+            problems.iter().any(|p| p.contains("only for decimal")),
+            "{problems:?}"
+        );
     }
 }
 
@@ -1311,8 +1786,14 @@ mod tests {
 /// (as a float, enough to compare two bounds).
 fn number_of(kind: FieldType, bound: &Value, scale: u32) -> Result<f64, String> {
     match kind {
-        FieldType::Int => bound.as_i64().map(|n| n as f64).ok_or_else(|| "must be a whole number".to_string()),
-        FieldType::Float => bound.as_f64().filter(|n| n.is_finite()).ok_or_else(|| "must be a number".to_string()),
+        FieldType::Int => bound
+            .as_i64()
+            .map(|n| n as f64)
+            .ok_or_else(|| "must be a whole number".to_string()),
+        FieldType::Float => bound
+            .as_f64()
+            .filter(|n| n.is_finite())
+            .ok_or_else(|| "must be a number".to_string()),
         _ => super::decimal::to_scaled(bound, scale).map(|n| n as f64),
     }
 }

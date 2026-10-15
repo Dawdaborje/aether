@@ -8,6 +8,7 @@
 	import {
 		FIELD_TYPES,
 		isValidName,
+		modelListLabel,
 		planModel,
 		saveModel,
 		type ChatterDef,
@@ -23,11 +24,14 @@
 	let {
 		plugin,
 		model,
+		catalog = [],
 		isNew = false,
 		onsaved
 	}: {
 		plugin: PluginModels;
 		model: ModelDef;
+		/** All plugins in the catalog (for link targets grouped by plugin). */
+		catalog?: PluginModels[];
 		/** The model does not exist yet: saving creates it. */
 		isNew?: boolean;
 		onsaved: (result: SaveResult) => void;
@@ -66,8 +70,23 @@
 	let failure = $state<string | null>(null);
 
 	const organizations = $derived(orgStore.organizations);
-	const siblings = $derived(plugin.models.map((other) => other.name));
 	const fileBlocked = $derived(!plugin.file_available);
+
+	/** Link targets: same-plugin models as bare names; others as `plugin.model`. */
+	const linkTargets = $derived.by(() => {
+		const groups = (catalog.length ? catalog : [plugin]).map((item) => ({
+			plugin: item.name,
+			label: item.label,
+			models: item.models
+				.filter((other) => !(item.name === plugin.name && other.name === model.name))
+				.map((other) => ({
+					value: item.name === plugin.name ? other.name : `${item.name}.${other.name}`,
+					label: modelListLabel(other),
+					name: other.name
+				}))
+		}));
+		return groups.filter((group) => group.models.length > 0);
+	});
 
 	const colors = ['gray', 'teal', 'blue', 'green', 'amber', 'red'];
 
@@ -246,7 +265,7 @@
 		<div class="space-y-1">
 			<p class="text-xs text-muted-foreground">{plugin.label} · version {plugin.version}</p>
 			<h2 class="text-lg font-semibold tracking-tight">
-				{label || model.name}
+				{modelListLabel({ name: model.name, label, display_label: model.display_label })}
 				{#if isNew}<span class="ml-2 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">New</span>{/if}
 			</h2>
 			<p class="font-mono text-xs text-muted-foreground">
@@ -368,12 +387,31 @@
 							</div>
 						{/if}
 						{#if row.def.type === 'link'}
-							<div class="space-y-1">
-								<label class="text-xs font-medium text-muted-foreground" for="target-{row.key}">Links to</label>
-								<NativeSelect id="target-{row.key}" value={row.def.target ?? ''} onchange={(event) => (row.def.target = event.currentTarget.value || undefined)}>
-									<option value="">Choose a model…</option>
-									{#each siblings as name (name)}<option value={name}>{name}</option>{/each}
+							<div class="space-y-1 sm:col-span-2">
+								<label class="text-xs font-medium text-muted-foreground" for="target-{row.key}"
+									>Links to</label
+								>
+								<NativeSelect
+									id="target-{row.key}"
+									value={row.def.target ?? ''}
+									onchange={(event) => (row.def.target = event.currentTarget.value || undefined)}
+								>
+									<option value="">Choose a plugin model…</option>
+									{#each linkTargets as group (group.plugin)}
+										<optgroup label="{group.label} ({group.plugin})">
+											{#each group.models as target (target.value)}
+												<option value={target.value}
+													>{target.label} · {target.name}{#if group.plugin !== plugin.name}
+														{' '}({group.plugin}){/if}</option
+												>
+											{/each}
+										</optgroup>
+									{/each}
 								</NativeSelect>
+								<p class="text-xs text-muted-foreground">
+									Same-plugin models use the model name; other plugins use
+									<code>plugin.model</code>.
+								</p>
 							</div>
 						{/if}
 						{#if chatter.enabled && chatter.track_changes && row.def.type !== 'json'}

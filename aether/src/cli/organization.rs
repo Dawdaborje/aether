@@ -2,5 +2,5 @@
 
 pub use aether_core::org_admin::{
     FirstMember, OrganizationRequest, StorageTarget, assign_user, create_organization,
-    provision_existing_organization,
+    provision_existing_organization, transfer_ownership,
 };

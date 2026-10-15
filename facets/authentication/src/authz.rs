@@ -1,5 +1,6 @@
+use aether_core::session_cache::session_from_token;
 use aether_core::state::AppState;
-use aether_orm::{ValidSession, find_session_by_token};
+use aether_orm::ValidSession;
 use axum::{
     extract::FromRequestParts,
     http::{StatusCode, request::Parts},
@@ -31,7 +32,7 @@ impl FromRequestParts<AppState> for AuthSession {
             (StatusCode::INTERNAL_SERVER_ERROR, "database error")
         })?;
 
-        match find_session_by_token(&core, &token).await {
+        match session_from_token(&state.cache, &core, &token).await {
             Ok(Some(session)) if session.user.is_active => Ok(AuthSession(session)),
             Ok(Some(_)) => Err((StatusCode::FORBIDDEN, "user inactive")),
             Ok(None) => Err((StatusCode::UNAUTHORIZED, "invalid session")),

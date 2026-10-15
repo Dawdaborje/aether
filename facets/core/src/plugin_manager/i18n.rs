@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 
 use aether_localization::{Catalogs, Translator};
 use serde_json::{Map, Value, json};
-use surrealdb::{Surreal, engine::remote::ws::Client};
 use surrealdb::types::SurrealValue;
+use surrealdb::{Surreal, engine::remote::ws::Client};
 
 use super::models::plugin_def::PluginManifest;
 
@@ -29,7 +29,10 @@ pub struct PluginCatalogs {
 
 /// Read `<package>/i18n/*.json`. `None` when the package has no such folder or it holds no
 /// catalogs. A file that is not a locale name or not a flat object of text is an error.
-pub async fn read_catalogs(package_dir: &Path, manifest: &PluginManifest) -> Result<Option<PluginCatalogs>, String> {
+pub async fn read_catalogs(
+    package_dir: &Path,
+    manifest: &PluginManifest,
+) -> Result<Option<PluginCatalogs>, String> {
     let dir = package_dir.join(I18N_DIR);
     let mut entries = match tokio::fs::read_dir(&dir).await {
         Ok(entries) => entries,
@@ -47,7 +50,11 @@ pub async fn read_catalogs(package_dir: &Path, manifest: &PluginManifest) -> Res
         if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
             continue;
         }
-        let Some(locale) = path.file_stem().and_then(|stem| stem.to_str()).map(str::to_string) else {
+        let Some(locale) = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .map(str::to_string)
+        else {
             continue;
         };
         let text = tokio::fs::read_to_string(&path)
@@ -60,9 +67,18 @@ pub async fn read_catalogs(package_dir: &Path, manifest: &PluginManifest) -> Res
         return Ok(None);
     }
     files.sort();
-    let default = manifest.plugin.i18n.as_ref().map_or("en", |i18n| i18n.default.as_str());
-    let catalogs = Catalogs::from_files(default, texts.iter().map(|(locale, text)| (locale.as_str(), text.as_str())))
-        .map_err(|error| error.to_string())?;
+    let default = manifest
+        .plugin
+        .i18n
+        .as_ref()
+        .map_or("en", |i18n| i18n.default.as_str());
+    let catalogs = Catalogs::from_files(
+        default,
+        texts
+            .iter()
+            .map(|(locale, text)| (locale.as_str(), text.as_str())),
+    )
+    .map_err(|error| error.to_string())?;
     Ok(Some(PluginCatalogs { catalogs, files }))
 }
 
@@ -79,18 +95,28 @@ pub fn check_overrides(manifest: &PluginManifest, catalogs: &Catalogs) -> Result
     targets.sort_unstable();
     targets.dedup();
     for target in targets {
-        if !plugin.capabilities.iter().any(|capability| capability == OVERRIDE_CAPABILITY) {
+        if !plugin
+            .capabilities
+            .iter()
+            .any(|capability| capability == OVERRIDE_CAPABILITY)
+        {
             return Err(format!(
                 "the i18n files override text of `{target}`, which needs the capability `{OVERRIDE_CAPABILITY}`"
             ));
         }
-        if !plugin.dependencies.iter().any(|dependency| dependency == target) {
+        if !plugin
+            .dependencies
+            .iter()
+            .any(|dependency| dependency == target)
+        {
             return Err(format!(
                 "the i18n files override text of `{target}`, which must be listed under `dependencies`"
             ));
         }
         if target == plugin.name {
-            return Err("a plugin does not override itself; write its keys without a prefix".into());
+            return Err(
+                "a plugin does not override itself; write its keys without a prefix".into(),
+            );
         }
     }
     Ok(())
@@ -100,8 +126,10 @@ pub fn check_overrides(manifest: &PluginManifest, catalogs: &Catalogs) -> Result
 pub fn to_value(catalogs: &Catalogs) -> Value {
     let mut locales = Map::new();
     for (locale, messages) in &catalogs.locales {
-        let messages: Map<String, Value> =
-            messages.iter().map(|(key, text)| (key.clone(), Value::String(text.clone()))).collect();
+        let messages: Map<String, Value> = messages
+            .iter()
+            .map(|(key, text)| (key.clone(), Value::String(text.clone())))
+            .collect();
         locales.insert(locale.clone(), Value::Object(messages));
     }
     json!({ "default": catalogs.default, "locales": locales })
@@ -110,7 +138,10 @@ pub fn to_value(catalogs: &Catalogs) -> Value {
 /// The catalogs of a stored value; `None` when it is not one.
 pub fn from_value(value: &Value) -> Option<Catalogs> {
     let default = value.get("default")?.as_str()?.to_string();
-    let mut catalogs = Catalogs { default, locales: Default::default() };
+    let mut catalogs = Catalogs {
+        default,
+        locales: Default::default(),
+    };
     for (locale, messages) in value.get("locales")?.as_object()? {
         let messages = messages
             .as_object()?
@@ -135,24 +166,47 @@ pub async fn translator_for(
     core: &Surreal<Client>,
     installed: &[(String, String)],
 ) -> Result<Translator, surrealdb::Error> {
+    translator_for_cached(None, core, installed).await
+}
+
+/// Like [`translator_for`], serving each plugin's i18n blob from Mantle Tier B when `cache` is set.
+pub async fn translator_for_cached(
+    cache: Option<&crate::cache::Cache>,
+    core: &Surreal<Client>,
+    installed: &[(String, String)],
+) -> Result<Translator, surrealdb::Error> {
     let mut translator = Translator::new();
     if installed.is_empty() {
         return Ok(translator);
     }
-    let names: Vec<String> = installed.iter().map(|(name, _)| name.clone()).collect();
-    let mut response = core
-        .query("SELECT name, version, i18n FROM plugins WHERE name IN $names AND i18n != NONE;")
-        .bind(("names", names))
-        .await?
-        .check()?;
-    let rows: Vec<I18nRow> = response.take(0)?;
     let mut all: Vec<(String, Catalogs)> = Vec::new();
-    for (name, version) in installed {
-        let Some(row) = rows.iter().find(|row| &row.name == name && &row.version == version) else {
-            continue;
-        };
-        if let Some(catalogs) = row.i18n.as_ref().and_then(from_value) {
-            all.push((name.clone(), catalogs));
+    if let Some(cache) = cache {
+        for (name, version) in installed {
+            let Some(i18n) = super::surface::i18n_cached(cache, core, name, version).await? else {
+                continue;
+            };
+            if let Some(catalogs) = from_value(&i18n) {
+                all.push((name.clone(), catalogs));
+            }
+        }
+    } else {
+        let names: Vec<String> = installed.iter().map(|(name, _)| name.clone()).collect();
+        let mut response = core
+            .query("SELECT name, version, i18n FROM plugins WHERE name IN $names AND i18n != NONE;")
+            .bind(("names", names))
+            .await?
+            .check()?;
+        let rows: Vec<I18nRow> = response.take(0)?;
+        for (name, version) in installed {
+            let Some(row) = rows
+                .iter()
+                .find(|row| &row.name == name && &row.version == version)
+            else {
+                continue;
+            };
+            if let Some(catalogs) = row.i18n.as_ref().and_then(from_value) {
+                all.push((name.clone(), catalogs));
+            }
         }
     }
     for (name, catalogs) in &all {
@@ -181,12 +235,14 @@ mod tests {
     }
 
     #[test]
-    fn overriding_needs_the_capability_and_a_dependency() -> Result<(), Box<dyn std::error::Error>> {
+    fn overriding_needs_the_capability_and_a_dependency() -> Result<(), Box<dyn std::error::Error>>
+    {
         let text = catalogs(r#"{"company:title": "Subject"}"#)?;
         let plain = manifest("[plugin]\nname = \"custom\"\nversion = \"1\"\n")?;
         assert!(check_overrides(&plain, &text).is_err());
-        let no_dependency =
-            manifest("[plugin]\nname = \"custom\"\nversion = \"1\"\ncapabilities = [\"i18n::override\"]\n")?;
+        let no_dependency = manifest(
+            "[plugin]\nname = \"custom\"\nversion = \"1\"\ncapabilities = [\"i18n::override\"]\n",
+        )?;
         assert!(check_overrides(&no_dependency, &text).is_err());
         let full = manifest(
             "[plugin]\nname = \"custom\"\nversion = \"1\"\ncapabilities = [\"i18n::override\"]\ndependencies = [\"company\"]\n",
@@ -200,25 +256,39 @@ mod tests {
     async fn catalogs_are_read_from_the_package() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let none = manifest("[plugin]\nname = \"notes\"\nversion = \"1\"\n")?;
-        assert!(read_catalogs(dir.path(), &none).await?.is_none(), "no i18n folder");
+        assert!(
+            read_catalogs(dir.path(), &none).await?.is_none(),
+            "no i18n folder"
+        );
 
         tokio::fs::create_dir(dir.path().join("i18n")).await?;
         tokio::fs::write(dir.path().join("i18n/en.json"), r#"{"a": "A"}"#).await?;
         tokio::fs::write(dir.path().join("i18n/fr.json"), r#"{"a": "Un"}"#).await?;
         tokio::fs::write(dir.path().join("i18n/README.md"), "not a catalog").await?;
-        let with_default = manifest("[plugin]\nname = \"notes\"\nversion = \"1\"\n[plugin.i18n]\ndefault = \"fr\"\n")?;
-        let found = read_catalogs(dir.path(), &with_default).await?.ok_or("catalogs not found")?;
+        let with_default = manifest(
+            "[plugin]\nname = \"notes\"\nversion = \"1\"\n[plugin.i18n]\ndefault = \"fr\"\n",
+        )?;
+        let found = read_catalogs(dir.path(), &with_default)
+            .await?
+            .ok_or("catalogs not found")?;
         assert_eq!(found.catalogs.default, "fr");
         assert_eq!(found.catalogs.locales.len(), 2);
-        assert_eq!(found.files, [PathBuf::from("i18n/en.json"), PathBuf::from("i18n/fr.json")]);
+        assert_eq!(
+            found.files,
+            [PathBuf::from("i18n/en.json"), PathBuf::from("i18n/fr.json")]
+        );
 
         tokio::fs::write(dir.path().join("i18n/de.json"), r#"{"a": 1}"#).await?;
-        assert!(read_catalogs(dir.path(), &none).await.is_err(), "values must be text");
+        assert!(
+            read_catalogs(dir.path(), &none).await.is_err(),
+            "values must be text"
+        );
         Ok(())
     }
 
     #[test]
-    fn catalogs_survive_the_trip_through_the_database_form() -> Result<(), Box<dyn std::error::Error>> {
+    fn catalogs_survive_the_trip_through_the_database_form()
+    -> Result<(), Box<dyn std::error::Error>> {
         let original = catalogs(r#"{"a": "A", "b": "B"}"#)?;
         assert_eq!(from_value(&to_value(&original)), Some(original));
         Ok(())

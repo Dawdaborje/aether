@@ -1,32 +1,18 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import BellIcon from '@lucide/svelte/icons/bell';
-	import CogIcon from '@lucide/svelte/icons/cog';
 	import PaletteIcon from '@lucide/svelte/icons/palette';
-	import ShieldIcon from '@lucide/svelte/icons/shield';
+	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import { base } from '$app/paths';
+	import { appIcon } from '$lib/components/apps/icons';
 	import type { CatalogGroup } from '$lib/settings/api';
 
 	let { groups = [] }: { groups?: CatalogGroup[] } = $props();
-
-	const iconFor = (slug: string) => {
-		switch (slug) {
-			case 'security':
-				return ShieldIcon;
-			case 'notifications':
-				return BellIcon;
-			case 'appearance':
-				return PaletteIcon;
-			default:
-				return CogIcon;
-		}
-	};
 
 	const links = $derived([
 		...groups.map((group) => ({
 			label: group.label.replace(/ Settings$/i, ''),
 			href: `${base}/desk/settings/${group.slug}`,
-			icon: iconFor(group.slug)
+			icon: appIcon(group.icon) ?? SettingsIcon
 		})),
 		{ label: 'Appearance', href: `${base}/desk/settings/appearance`, icon: PaletteIcon }
 	]);

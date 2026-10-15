@@ -1,3 +1,5 @@
+use aether_core::access::organizations::membership_db_names;
+use aether_core::access::visitor::record_id_string;
 use aether_core::application::settings::get_setting;
 use aether_core::state::AppState;
 use aether_core::tenancy::{OrgRef, resolve_org_slug};
@@ -30,9 +32,7 @@ pub async fn login(
     let org = org_from_headers(&state, &headers, None);
 
     // Ensure local method is enabled.
-    if let Ok(Some(methods)) =
-        get_setting(&state, "auth.enabled_methods", org.as_ref()).await
-    {
+    if let Ok(Some(methods)) = get_setting(&state, "auth.enabled_methods", org.as_ref()).await {
         let enabled = methods_as_strings(&methods.value);
         if !enabled.iter().any(|m| m == "local") {
             return Err((
@@ -74,7 +74,18 @@ pub async fn login(
         }
     };
 
-    let org_db = org.as_ref().map(|o| o.db_name.clone());
+    let mut org_db = org.as_ref().map(|o| o.db_name.clone());
+    // Session-only tenancy: bind the sole membership so /me capabilities match Apps.
+    if org_db.is_none() {
+        match membership_db_names(&state, &record_id_string(&user.id)).await {
+            Ok(memberships) => {
+                if let [only] = memberships.as_slice() {
+                    org_db = Some(only.clone());
+                }
+            }
+            Err(error) => log::warn!("login memberships for `{}`: {error}", body.username),
+        }
+    }
     let session = create_session(&core, user.id.clone(), "local", org_db, 24)
         .await
         .map_err(|err| {
@@ -84,6 +95,7 @@ pub async fn login(
                 Json(json!({ "error": "failed to create session" })),
             )
         })?;
+    aether_core::session_cache::warm_created(&state.cache, &session, &user);
 
     log::info!(
         "login ok: `{}` (organization: {})",

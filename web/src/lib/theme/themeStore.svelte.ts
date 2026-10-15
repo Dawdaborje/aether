@@ -1,12 +1,13 @@
+import { browserStorage } from '$lib/browserStorage';
 import { apiFetch } from '$lib/api/client';
 import { applyColorMode, applyTheme, resolveColorMode } from './applyTheme';
-import { enterpriseTheme } from './enterprise';
+import { defaultTheme } from './default';
 import type { ThemeApiResponse, ThemeConfig, ThemeColorMode } from './types';
 
 function fromApi(payload: ThemeApiResponse): ThemeConfig {
 	// The server says "fallback" when the organization has no theme: the built-in
-	// enterprise theme (baked into the app) is used, whatever tokens came with it.
-	if (payload.source !== 'organization') return enterpriseTheme;
+	// default theme (baked into the app) is used, whatever tokens came with it.
+	if (payload.source !== 'organization') return defaultTheme;
 
 	const mode = (
 		['light', 'dark', 'system'].includes(payload.color_mode) ? payload.color_mode : 'system'
@@ -21,13 +22,19 @@ function fromApi(payload: ThemeApiResponse): ThemeConfig {
 			light: payload.tokens.light,
 			dark: payload.tokens.dark,
 			radius: payload.tokens.radius,
-			fontSans: payload.tokens.font_sans
+			fontSans: payload.tokens.font_sans,
+			fontMono: payload.tokens.font_mono,
+			fontHeading: payload.tokens.font_heading,
+			density: (['compact', 'comfortable', 'spacious'] as const).find(
+				(d) => d === payload.tokens.density
+			)
 		},
 		layout: payload.layout || 'default',
 		errorPages: payload.error_pages || 'default',
 		nav: payload.nav ?? null,
 		layoutDef: payload.layout_def ?? null,
-		errorPagesDef: payload.error_pages_def ?? null
+		errorPagesDef: payload.error_pages_def ?? null,
+		shell: payload.shell ?? null
 	};
 }
 
@@ -35,7 +42,7 @@ const MODE_KEY = 'aether-color-mode';
 
 function readStoredMode(): 'light' | 'dark' | null {
 	try {
-		const v = localStorage.getItem(MODE_KEY);
+		const v = browserStorage()?.getItem(MODE_KEY);
 		return v === 'light' || v === 'dark' ? v : null;
 	} catch {
 		return null;
@@ -43,7 +50,7 @@ function readStoredMode(): 'light' | 'dark' | null {
 }
 
 class ThemeStore {
-	theme = $state<ThemeConfig>(enterpriseTheme);
+	theme = $state<ThemeConfig>(defaultTheme);
 	/** The viewer's own choice; null follows the theme's mode (system by default). */
 	userMode = $state<'light' | 'dark' | null>(null);
 	isDark = $state(false);
@@ -59,6 +66,10 @@ class ThemeStore {
 			window
 				.matchMedia('(prefers-color-scheme: dark)')
 				.addEventListener('change', () => this.syncMode());
+			// After sleep/unlock the OS preference can flap; re-assert our stored choice.
+			document.addEventListener('visibilitychange', () => {
+				if (document.visibilityState === 'visible') this.syncMode();
+			});
 		}
 	}
 
@@ -71,8 +82,9 @@ class ThemeStore {
 	setUserMode(mode: 'light' | 'dark' | null) {
 		this.userMode = mode;
 		try {
-			if (mode) localStorage.setItem(MODE_KEY, mode);
-			else localStorage.removeItem(MODE_KEY);
+			const storage = browserStorage();
+			if (mode) storage?.setItem(MODE_KEY, mode);
+			else storage?.removeItem(MODE_KEY);
 		} catch {
 			/* storage unavailable: the choice lasts for this session only */
 		}
@@ -105,7 +117,7 @@ class ThemeStore {
 			this.setTheme(fromApi(data));
 		} catch (err) {
 			this.error = err instanceof Error ? err.message : 'Failed to load theme';
-			this.setTheme(enterpriseTheme);
+			this.setTheme(defaultTheme);
 		} finally {
 			this.loading = false;
 		}

@@ -18,15 +18,16 @@ pub mod apply;
 pub mod compute;
 pub mod decimal;
 pub mod definition;
+pub mod media;
 pub mod query;
 pub mod rules;
 pub mod runtime;
 pub mod sequence;
 
 pub use definition::{
-    ChatterDef, FieldDef, FieldType, IndexDef, IndexKind, ModelDef, ModelFileError, SelectOption, ViewDef, new_id,
-    parse_model, read_models, sync_ids, sync_package, sync_package_with, validate_set, VisitorChatter, foreign_target,
-    foreign_targets,
+    ChatterDef, FieldDef, FieldType, IndexDef, IndexKind, ModelDef, ModelFileError, SelectOption,
+    ViewDef, VisitorChatter, foreign_target, foreign_targets, new_id, parse_model, read_models,
+    sync_ids, sync_package, sync_package_with, validate_set,
 };
 pub use query::{Agg, Aggregate, Filter, QueryError};
 pub use rules::{Decision, Operation, RuleSet};

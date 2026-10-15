@@ -19,7 +19,7 @@
 </script>
 
 <!-- A bolder variant: the status is the hero, drawn in the theme's primary colour. -->
-<div class="flex min-h-[70vh] items-center justify-center bg-gradient-to-b from-muted/60 to-background p-6">
+<div class="flex min-h-[70vh] items-center justify-center bg-canvas p-6">
 	<div class="w-full max-w-xl space-y-5 text-center">
 		<p class="text-8xl font-black tracking-tighter text-primary">{status}</p>
 		<h1 class="text-3xl font-semibold tracking-tight">{title}</h1>
@@ -28,7 +28,9 @@
 			<p class="font-mono text-xs break-all text-muted-foreground">{detail}</p>
 		{/if}
 		<div class="flex justify-center gap-3 pt-2">
-			<Button href={action?.href ?? resolve('/')} size="lg">{action?.label ?? 'Take me home'}</Button>
+			<Button href={action?.href ?? resolve('/')} size="lg"
+				>{action?.label ?? 'Take me home'}</Button
+			>
 			<Button variant="ghost" size="lg" onclick={() => history.back()}>Go back</Button>
 		</div>
 	</div>

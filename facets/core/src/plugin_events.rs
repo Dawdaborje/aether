@@ -35,12 +35,17 @@ pub const MAX_RUNTIME_SUBSCRIPTIONS: i64 = 50;
 
 /// `name` is a lower-case word: letters, digits, `_` and `-`.
 pub fn is_part(name: &str) -> bool {
-    !name.is_empty() && name.len() <= 64 && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
 }
 
 /// `<plugin>.<event>`, both parts plain.
 pub fn is_full_name(name: &str) -> bool {
-    name.split_once('.').is_some_and(|(source, event)| is_part(source) && is_part(event))
+    name.split_once('.')
+        .is_some_and(|(source, event)| is_part(source) && is_part(event))
 }
 
 #[derive(Debug, Deserialize)]
@@ -64,9 +69,16 @@ fn default_attempts() -> i64 {
 /// Make the organization's manifest subscriptions for `plugin` match the catalog version's
 /// `[[events]]` listeners. Subscriptions the plugin added while running are left alone. Caller must
 /// be on the organization's database.
-pub async fn sync_listeners(db: &Surreal<Client>, plugin: &str, listeners: Option<&[Value]>) -> Result<(), surrealdb::Error> {
-    let defs: Vec<Listener> =
-        listeners.unwrap_or_default().iter().filter_map(|value| serde_json::from_value(value.clone()).ok()).collect();
+pub async fn sync_listeners(
+    db: &Surreal<Client>,
+    plugin: &str,
+    listeners: Option<&[Value]>,
+) -> Result<(), surrealdb::Error> {
+    let defs: Vec<Listener> = listeners
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|value| serde_json::from_value(value.clone()).ok())
+        .collect();
     for def in &defs {
         db.query(
             "UPSERT event_subscriptions SET plugin = $plugin, event = $event, function_name = $function, source = 'manifest', \
@@ -98,15 +110,28 @@ pub enum EventError {
 }
 
 /// Subscribe the calling plugin to `event` (a full name) from running code.
-pub async fn subscribe(ctx: &PluginHostContext, event: &str, function: &str) -> Result<(), EventError> {
+pub async fn subscribe(
+    ctx: &PluginHostContext,
+    event: &str,
+    function: &str,
+) -> Result<(), EventError> {
     if !is_full_name(event) {
-        return Err(EventError::Refused(format!("`{event}` is not an event name; use <plugin>.<event>, such as `chat.message_posted`")));
+        return Err(EventError::Refused(format!(
+            "`{event}` is not an event name; use <plugin>.<event>, such as `chat.message_posted`"
+        )));
     }
     if function.is_empty() || function.len() > 128 {
-        return Err(EventError::Refused("`function` names one of this plugin's functions".into()));
+        return Err(EventError::Refused(
+            "`function` names one of this plugin's functions".into(),
+        ));
     }
     let source = event.split_once('.').map_or("", |(source, _)| source);
-    if source != ctx.plugin_name && !ctx.dependencies.iter().any(|dependency| dependency == source) {
+    if source != ctx.plugin_name
+        && !ctx
+            .dependencies
+            .iter()
+            .any(|dependency| dependency == source)
+    {
         return Err(EventError::Refused(format!(
             "`{source}` is not one of this plugin's dependencies; list it under `dependencies` in plugin.toml to listen to its events"
         )));
@@ -120,7 +145,9 @@ pub async fn subscribe(ctx: &PluginHostContext, event: &str, function: &str) -> 
         .check()?;
     let existing: Option<String> = response.take(0)?;
     if existing.as_deref() == Some("manifest") {
-        return Err(EventError::Refused(format!("`{event}` is declared in plugin.toml and cannot be changed while running")));
+        return Err(EventError::Refused(format!(
+            "`{event}` is declared in plugin.toml and cannot be changed while running"
+        )));
     }
     if existing.is_none() {
         let mut response = ctx
@@ -130,8 +157,14 @@ pub async fn subscribe(ctx: &PluginHostContext, event: &str, function: &str) -> 
             .await?
             .check()?;
         let counted: Option<Value> = response.take(0)?;
-        if counted.and_then(|row| row.get("n").and_then(Value::as_i64)).unwrap_or(0) >= MAX_RUNTIME_SUBSCRIPTIONS {
-            return Err(EventError::Refused(format!("a plugin may add at most {MAX_RUNTIME_SUBSCRIPTIONS} subscriptions while running")));
+        if counted
+            .and_then(|row| row.get("n").and_then(Value::as_i64))
+            .unwrap_or(0)
+            >= MAX_RUNTIME_SUBSCRIPTIONS
+        {
+            return Err(EventError::Refused(format!(
+                "a plugin may add at most {MAX_RUNTIME_SUBSCRIPTIONS} subscriptions while running"
+            )));
         }
     }
     ctx.db
@@ -170,7 +203,11 @@ struct Subscriber {
 
 /// Run the subscribers of `<this plugin>.<event>`: one background job each, for the plugins that are
 /// installed and enabled. Returns how many were queued. Does nothing for an event past [`MAX_DEPTH`].
-pub async fn dispatch(ctx: &PluginHostContext, event: &str, payload: &Value) -> Result<usize, EventError> {
+pub async fn dispatch(
+    ctx: &PluginHostContext,
+    event: &str,
+    payload: &Value,
+) -> Result<usize, EventError> {
     if !is_part(event) {
         // A name with dots or capitals is a browser-only event.
         return Ok(0);
@@ -198,14 +235,26 @@ pub async fn dispatch(ctx: &PluginHostContext, event: &str, payload: &Value) -> 
     if subscribers.is_empty() {
         return Ok(0);
     }
-    let mut response = ctx
-        .db
-        .query("SELECT VALUE plugin_name FROM installed_plugins WHERE is_enabled = true;")
-        .await?
-        .check()?;
-    let installed: Vec<String> = response.take(0)?;
+    let installed: Vec<String> = if let Some(services) = ctx.services.as_ref() {
+        crate::plugin_manager::installed::list_cached(&services.cache, &ctx.database, &ctx.db)
+            .await?
+            .into_iter()
+            .filter(|row| row.is_enabled)
+            .map(|row| row.plugin_name)
+            .collect()
+    } else {
+        let mut response = ctx
+            .db
+            .query("SELECT VALUE plugin_name FROM installed_plugins WHERE is_enabled = true;")
+            .await?
+            .check()?;
+        response.take(0)?
+    };
     let mut queued = 0;
-    for subscriber in subscribers.into_iter().filter(|s| installed.contains(&s.plugin)) {
+    for subscriber in subscribers
+        .into_iter()
+        .filter(|s| installed.contains(&s.plugin))
+    {
         let mut job = NewJob::new("plugin", subscriber.queue);
         job.plugin = Some(subscriber.plugin.clone());
         job.function = Some(subscriber.function);
@@ -221,11 +270,19 @@ pub async fn dispatch(ctx: &PluginHostContext, event: &str, payload: &Value) -> 
         job.request_id = Some(ctx.audit.request_id.clone());
         match queue::enqueue(&ctx.db, job).await {
             Ok(_) => queued += 1,
-            Err(error) => log::warn!("{}: `{full}` could not be passed to `{}`: {error}", ctx.database, subscriber.plugin),
+            Err(error) => log::warn!(
+                "{}: `{full}` could not be passed to `{}`: {error}",
+                ctx.database,
+                subscriber.plugin
+            ),
         }
     }
     if queued > 0 {
-        if let Some(scheduler) = ctx.services.as_ref().and_then(|services| services.scheduler.clone()) {
+        if let Some(scheduler) = ctx
+            .services
+            .as_ref()
+            .and_then(|services| services.scheduler.clone())
+        {
             scheduler.wake(&ctx.database);
         }
     }
@@ -241,7 +298,15 @@ mod tests {
         for good in ["chat.message_posted", "crm.lead-won", "a1.b2"] {
             assert!(is_full_name(good), "{good}");
         }
-        for bad in ["posted", "chat.", ".posted", "Chat.posted", "chat.a.b", "chat.has space", ""] {
+        for bad in [
+            "posted",
+            "chat.",
+            ".posted",
+            "Chat.posted",
+            "chat.a.b",
+            "chat.has space",
+            "",
+        ] {
             assert!(!is_full_name(bad), "{bad:?}");
         }
         assert!(is_part("typing") && !is_part("a.b") && !is_part("Typing"));

@@ -1,0 +1,22 @@
+{
+  "code": "magic_link",
+  "name": "Magic links",
+  "description": "Create and revoke single-use magic links for auth or plugin workflows.",
+  "capabilities": [
+    {
+      "code": "create",
+      "name": "Create magic link",
+      "description": "Issue a single-use magic link. Maps to kernel command magic_link::create. Plugins may only use purposes under their own name."
+    },
+    {
+      "code": "revoke",
+      "name": "Revoke magic link",
+      "description": "Soft-revoke a magic link (sets revoked_at). Maps to kernel command magic_link::revoke."
+    },
+    {
+      "code": "inspect",
+      "name": "Inspect magic link",
+      "description": "Read metadata for a magic link without consuming it. Maps to kernel command magic_link::inspect."
+    }
+  ]
+}

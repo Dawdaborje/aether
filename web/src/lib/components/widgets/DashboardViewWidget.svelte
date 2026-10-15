@@ -33,7 +33,12 @@
 		const result = await page.call(source, { ...page.params });
 		if (current !== latest) return;
 		dash.loading = false;
-		if (result.ok && result.data && typeof result.data === 'object' && !Array.isArray(result.data)) {
+		if (
+			result.ok &&
+			result.data &&
+			typeof result.data === 'object' &&
+			!Array.isArray(result.data)
+		) {
 			dash.data = result.data as Record<string, unknown>;
 			dash.error = null;
 		} else if (result.ok) {

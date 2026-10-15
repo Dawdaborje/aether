@@ -1,32 +1,29 @@
 <script lang="ts">
-	import { authSession } from '$lib/auth/session.svelte';
-	import { themeStore } from '$lib/theme';
 	import type { LayoutDef } from '$lib/theme/types';
-	import { builtInNav, deskNav } from '../nav';
 	import BareLayout from '../bare/bareLayout.svelte';
+	import { defaultLayout, deskLayout } from '../composed/builtins';
+	import ComposedLayout from '../composed/ComposedLayout.svelte';
 	import CustomLayout from '../custom/customLayout.svelte';
-	import EnterpriseShell from '../shell/EnterpriseShell.svelte';
 
 	let { children, def }: { children: import('svelte').Snippet; def: LayoutDef } = $props();
 
-	const chrome = $derived(def.chrome || 'top');
-	const nav = $derived.by(() => {
-		if (chrome === 'sidebar') return deskNav;
-		return themeStore.theme.nav ?? builtInNav(authSession.isDeveloper);
+	// A plugin layout either composes its own regions or picks a first-party chrome.
+	const composed = $derived.by((): LayoutDef => {
+		if (def.chrome === 'composed' && def.regions) return def;
+		return def.chrome === 'sidebar' ? deskLayout : defaultLayout;
 	});
 </script>
 
-{#if chrome === 'bare'}
+{#if def.chrome === 'bare'}
 	<BareLayout>
 		{@render children()}
 	</BareLayout>
-{:else if chrome === 'custom'}
+{:else if def.chrome === 'custom'}
 	<CustomLayout>
 		{@render children()}
 	</CustomLayout>
 {:else}
-	<!-- top and sidebar both use the enterprise shell; sidebar uses desk nav -->
-	<EnterpriseShell {nav}>
+	<ComposedLayout def={composed}>
 		{@render children()}
-	</EnterpriseShell>
+	</ComposedLayout>
 {/if}

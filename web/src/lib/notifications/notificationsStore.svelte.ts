@@ -42,6 +42,11 @@ class NotificationsStore {
 	unread = $state(0);
 	toasts = $state<AppNotification[]>([]);
 	connected = $state(false);
+	/**
+	 * True while the live stream cannot reach the API and is retrying.
+	 * Auth stops (401/403/…) are not an outage — those leave this false.
+	 */
+	unreachable = $state(false);
 
 	private abort: AbortController | null = null;
 	private lastId: string | null = null;
@@ -60,6 +65,7 @@ class NotificationsStore {
 		this.abort?.abort();
 		this.abort = null;
 		this.connected = false;
+		this.unreachable = false;
 	}
 
 	/** Start over, e.g. after the organization changed: nothing carries across. */
@@ -96,7 +102,9 @@ class NotificationsStore {
 		const targets = ids ?? this.items.filter((item) => !item.read).map((item) => item.id);
 		if (targets.length === 0) return;
 		const before = this.items;
-		this.items = this.items.map((item) => (targets.includes(item.id) ? { ...item, read: true } : item));
+		this.items = this.items.map((item) =>
+			targets.includes(item.id) ? { ...item, read: true } : item
+		);
 		this.unread = this.items.filter((item) => !item.read).length;
 		try {
 			const res = await apiFetch('/api/ui/notifications/read', {
@@ -135,10 +143,12 @@ class NotificationsStore {
 				if (FINAL.has(res.status)) {
 					// Not something to retry now; a new organization or a login restarts us.
 					this.connected = false;
+					this.unreachable = false;
 					return;
 				}
 				if (!res.ok || !res.body) throw new Error(`stream ${res.status}`);
 				this.connected = true;
+				this.unreachable = false;
 				backoff = 1000;
 				// Anything stored between the first list and this connection is picked up here.
 				void this.refresh();
@@ -158,6 +168,8 @@ class NotificationsStore {
 				if (abort.signal.aborted) return;
 			}
 			this.connected = false;
+			// Dropped mid-flight or never opened: the API (or its proxy target) is gone.
+			this.unreachable = true;
 			if (abort.signal.aborted) return;
 			await new Promise((resolve) => setTimeout(resolve, backoff));
 			backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);

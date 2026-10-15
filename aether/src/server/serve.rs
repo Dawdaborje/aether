@@ -61,6 +61,7 @@ pub async fn run_server(
     db_conn: &'static Surreal<SurrealClient>,
     scheduling: bool,
     dev_watch: bool,
+    config_path: Option<std::path::PathBuf>,
 ) -> Result<(), Box<dyn Error + Send + Sync + '_>> {
     let namespace = config
         .database
@@ -71,7 +72,15 @@ pub async fn run_server(
 
     let server_config = config.server.clone();
 
-    let state = match AppState::new(db_conn.clone(), config.clone(), namespace, "core").await {
+    let state = match AppState::new(
+        db_conn.clone(),
+        config.clone(),
+        namespace,
+        "core",
+        config_path,
+    )
+    .await
+    {
         Ok(state) => state,
         Err(err) => {
             log::error!("Failed to initialize application state: {err}");
@@ -95,6 +104,7 @@ pub async fn run_server(
     let retention_task = aether_core::access::audit::spawn_retention_task(&state);
     let notification_cleanup = aether_core::notifications::spawn_cleanup(&state);
     let chatter_cleanup = aether_core::chatter::spawn_cleanup(&state);
+    let media_cleanup = aether_core::media_cleanup::spawn_cleanup(&state);
     let notification_hub = state.notifications.clone();
 
     // Background jobs. The scheduler runs here unless it was turned off or a standalone one
@@ -119,10 +129,15 @@ pub async fn run_server(
         None
     };
 
+    // Base64 JSON uploads: avatars/logos are small; catalog plugin zips may be up to
+    // 50 MB decoded (~67 MB as base64). Keep one limit for the whole API.
+    const MAX_UPLOAD_BODY: usize = 70 * 1024 * 1024;
+
     let app = Router::new()
         .merge(core_routes())
         .nest("/api/auth", auth_routes())
         .fallback(aether_core::error_pages::not_found)
+        .layer(axum::extract::DefaultBodyLimit::max(MAX_UPLOAD_BODY))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             aether_authentication::csrf::csrf_protect,
@@ -212,6 +227,7 @@ pub async fn run_server(
     }
     notification_cleanup.abort();
     chatter_cleanup.abort();
+    media_cleanup.abort();
     // End the database session cleanly. The connection itself closes when the
     // process exits, which follows immediately.
     // Bounded: with the database already gone the client keeps trying to

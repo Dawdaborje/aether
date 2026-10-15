@@ -63,19 +63,37 @@ impl Pattern {
                         "YYYY" => Part::Year4,
                         "YY" => Part::Year2,
                         "MM" => Part::Month,
-                        t if !t.is_empty() && t.chars().all(|c| c == '#') && t.len() <= MAX_WIDTH => Part::Number(t.len()),
-                        other => return Err(format!("does not know `{{{other}}}`: use YYYY, YY, MM or #####")),
+                        t if !t.is_empty()
+                            && t.chars().all(|c| c == '#')
+                            && t.len() <= MAX_WIDTH =>
+                        {
+                            Part::Number(t.len())
+                        }
+                        other => {
+                            return Err(format!(
+                                "does not know `{{{other}}}`: use YYYY, YY, MM or #####"
+                            ));
+                        }
                     });
                 }
                 '}' => return Err("has a `}` without an opening `{`".into()),
                 c if c.is_ascii_alphanumeric() || " -_/.:".contains(c) => literal.push(c),
-                c => return Err(format!("may only contain letters, digits and ` -_/.:` as text, not `{c}`")),
+                c => {
+                    return Err(format!(
+                        "may only contain letters, digits and ` -_/.:` as text, not `{c}`"
+                    ));
+                }
             }
         }
         if !literal.is_empty() {
             parts.push(Part::Text(literal));
         }
-        if parts.iter().filter(|part| matches!(part, Part::Number(_))).count() != 1 {
+        if parts
+            .iter()
+            .filter(|part| matches!(part, Part::Number(_)))
+            .count()
+            != 1
+        {
             return Err("needs exactly one number part such as `{#####}`".into());
         }
         Ok(Self { parts })
@@ -113,7 +131,13 @@ impl Pattern {
 }
 
 /// The counter row for a series: one per model, field and reset period.
-pub fn counter_key(table: &str, column: &str, reset: SequenceReset, year: i32, month: u32) -> String {
+pub fn counter_key(
+    table: &str,
+    column: &str,
+    reset: SequenceReset,
+    year: i32,
+    month: u32,
+) -> String {
     match reset {
         SequenceReset::Never => format!("{table}_{column}"),
         SequenceReset::Yearly => format!("{table}_{column}_{year:04}"),
@@ -137,7 +161,10 @@ mod tests {
     #[test]
     fn adjacent_text_is_joined_so_few_values_are_bound() -> Result<(), String> {
         let segments = Pattern::parse("A-{YYYY}-{MM}-{##}")?.segments(2026, 10);
-        assert_eq!(segments, vec![Segment::Text("A-2026-10-".into()), Segment::Number(2)]);
+        assert_eq!(
+            segments,
+            vec![Segment::Text("A-2026-10-".into()), Segment::Number(2)]
+        );
         Ok(())
     }
 
@@ -155,6 +182,9 @@ mod tests {
         let never = counter_key("mdl_a", "fld_b", SequenceReset::Never, 2026, 10);
         let yearly = counter_key("mdl_a", "fld_b", SequenceReset::Yearly, 2026, 10);
         let monthly = counter_key("mdl_a", "fld_b", SequenceReset::Monthly, 2026, 10);
-        assert_eq!((never.as_str(), yearly.as_str(), monthly.as_str()), ("mdl_a_fld_b", "mdl_a_fld_b_2026", "mdl_a_fld_b_202610"));
+        assert_eq!(
+            (never.as_str(), yearly.as_str(), monthly.as_str()),
+            ("mdl_a_fld_b", "mdl_a_fld_b_2026", "mdl_a_fld_b_202610")
+        );
     }
 }

@@ -23,3 +23,19 @@ export async function fetchBridges(): Promise<Bridge[]> {
 	}
 	return ((await res.json()) as { bridges: Bridge[] }).bridges;
 }
+
+/** Turn a bridge on or off for the whole platform. */
+export async function setBridgeEnabled(featureKey: string, enabled: boolean): Promise<Bridge> {
+	const res = await apiFetch(`/api/ui/bridges/${encodeURIComponent(featureKey)}`, {
+		method: 'PATCH',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ enabled })
+	});
+	const body = await res.json().catch(() => ({}));
+	if (!res.ok) {
+		throw new Error(
+			typeof body.error === 'string' ? body.error : `Could not update the bridge (${res.status}).`
+		);
+	}
+	return (body as { bridge: Bridge }).bridge;
+}

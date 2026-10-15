@@ -1,11 +1,13 @@
-use crate::cache::{CacheBackendKind, CacheConfig, RedisCacheConfig};
+use crate::cache::{CacheBackendKind, CacheConfig, MemcachedCacheConfig, RedisCacheConfig};
 use crate::config_manager::errors::{ConfigError, MissingSetting};
 use crate::config_manager::models::{
-    AetherConfig, AuditConfig, CoreConfig, DatabaseConfig, MediaBackendKind, MediaConfig, NotificationsConfig, SchedulerConfig, SecurityConfig, OrgResolutionMode, PluginRuntimeConfig,
-    PublicConfig, ServerConfig, TenancyConfig,
+    AetherConfig, AuditConfig, CoreConfig, DatabaseConfig, LoggingConfig, MediaBackendKind,
+    MediaConfig, NotificationsConfig, OrgResolutionMode, PluginRuntimeConfig, PublicConfig,
+    SchedulerConfig, SecurityConfig, ServerConfig, TenancyConfig,
 };
 use crate::plugin_manager::models::plugin_def::PluginDefinition;
 use std::fs;
+use std::path::PathBuf;
 use toml::Value;
 
 fn get_field<'a>(value: &'a Value, key: &str) -> Result<&'a Value, ConfigError> {
@@ -34,7 +36,6 @@ fn require_str(value: &Value, key: &str) -> Result<String, ConfigError> {
             expected: "string".to_string(),
         })
 }
-
 
 fn require_port(value: &Value, key: &str) -> Result<u16, ConfigError> {
     let raw = get_field(value, key)?
@@ -86,15 +87,15 @@ fn optional_usize(value: &Value, key: &str) -> Result<Option<usize>, ConfigError
     }
 }
 
-
 fn parse_cache_backend(raw: &str) -> Result<CacheBackendKind, ConfigError> {
     match raw {
         "moka" | "memory" | "in_memory" | "in-memory" => Ok(CacheBackendKind::Moka),
         "redis" => Ok(CacheBackendKind::Redis),
+        "memcached" | "memcache" => Ok(CacheBackendKind::Memcached),
         other => Err(ConfigError::InvalidType {
             field: "cache.backend".to_string(),
             expected: format!(
-                "`moka` (default) or `redis` (got `{other}`; aliases: memory, in_memory)"
+                "`moka` (default), `redis` or `memcached` (got `{other}`; aliases: memory, in_memory)"
             ),
         }),
     }
@@ -134,6 +135,34 @@ fn build_redis_conf(redis_value: &Value) -> Result<RedisCacheConfig, ConfigError
     Ok(config)
 }
 
+fn build_memcached_conf(value: &Value) -> Result<MemcachedCacheConfig, ConfigError> {
+    let mut config = MemcachedCacheConfig::default();
+    if let Some(servers) = value.get("servers") {
+        let invalid = || ConfigError::InvalidType {
+            field: "cache.memcached.servers".to_string(),
+            expected: "array of `host:port` strings".to_string(),
+        };
+        config.servers = servers
+            .as_array()
+            .ok_or_else(invalid)?
+            .iter()
+            .map(|item| item.as_str().map(str::to_string).ok_or_else(invalid))
+            .collect::<Result<_, _>>()?;
+    } else if value.get("host").is_some() {
+        let host = require_str(value, "host")?;
+        let port = value
+            .get("port")
+            .and_then(|v| v.as_integer())
+            .and_then(|p| u16::try_from(p).ok())
+            .unwrap_or(11211);
+        config.servers = vec![format!("{host}:{port}")];
+    }
+    if let Some(prefix) = value.get("key_prefix").and_then(|v| v.as_str()) {
+        config.key_prefix = prefix.to_string();
+    }
+    Ok(config)
+}
+
 fn build_cache_conf(cache_value: &Value) -> Result<CacheConfig, ConfigError> {
     let mut config = CacheConfig::default();
 
@@ -153,8 +182,39 @@ fn build_cache_conf(cache_value: &Value) -> Result<CacheConfig, ConfigError> {
         config.max_value_bytes = max_value_bytes;
     }
 
+    if let Some(max_bytes) = optional_u64(cache_value, "max_bytes")? {
+        config.max_bytes = max_bytes;
+    }
+
+    if let Some(compress_min_bytes) = optional_usize(cache_value, "compress_min_bytes")? {
+        config.compress_min_bytes = compress_min_bytes;
+    }
+
+    if let Some(ghost_capacity) = optional_usize(cache_value, "ghost_capacity")? {
+        config.ghost_capacity = ghost_capacity;
+    }
+
+    if let Some(heat_half_life_secs) = optional_u64(cache_value, "heat_half_life_secs")? {
+        config.heat_half_life_secs = heat_half_life_secs;
+    }
+
     if let Some(redis_table) = optional_table(cache_value, "redis")? {
         config.redis = Some(build_redis_conf(redis_table)?);
+    }
+
+    if let Some(memcached_table) = optional_table(cache_value, "memcached")? {
+        config.memcached = Some(build_memcached_conf(memcached_table)?);
+    }
+
+    if let Some(flag) = cache_value
+        .get("coherence_signals")
+        .and_then(|v| v.as_bool())
+    {
+        config.coherence_signals = flag;
+    }
+
+    if config.backend == CacheBackendKind::Memcached && config.memcached.is_none() {
+        return Err(ConfigError::MissingField("cache.memcached".to_string()));
     }
 
     if config.backend == CacheBackendKind::Redis && config.redis.is_none() {
@@ -163,7 +223,6 @@ fn build_cache_conf(cache_value: &Value) -> Result<CacheConfig, ConfigError> {
 
     Ok(config)
 }
-
 
 fn build_server_conf(server_value: &Value) -> Result<ServerConfig, ConfigError> {
     let mut config = ServerConfig::default();
@@ -302,11 +361,10 @@ fn build_media_conf(
 
     match media.backend {
         MediaBackendKind::Local => {
-            let mut local = media.local.take().unwrap_or_else(|| {
-                MediaConfig::default_for(app_dir)
-                    .local
-                    .unwrap_or_default()
-            });
+            let mut local = media
+                .local
+                .take()
+                .unwrap_or_else(|| MediaConfig::default_for(app_dir).local.unwrap_or_default());
             local.base_path = resolve_against(&local.base_path, config_directory);
             media.local = Some(local);
         }
@@ -347,11 +405,19 @@ fn text_setting(
     }
     match table.and_then(|table| table.get(key)) {
         None => {
-            missing.push(MissingSetting { key: label, flag, empty: false });
+            missing.push(MissingSetting {
+                key: label,
+                flag,
+                empty: false,
+            });
             Ok(None)
         }
         Some(Value::String(text)) if text.trim().is_empty() => {
-            missing.push(MissingSetting { key: label, flag, empty: true });
+            missing.push(MissingSetting {
+                key: label,
+                flag,
+                empty: true,
+            });
             Ok(None)
         }
         Some(Value::String(text)) => Ok(Some(text.clone())),
@@ -374,11 +440,19 @@ fn port_setting(
         expected: "integer between 1 and 65535".to_string(),
     };
     if let Some(port) = flag_value {
-        return if port == 0 { Err(invalid()) } else { Ok(Some(port)) };
+        return if port == 0 {
+            Err(invalid())
+        } else {
+            Ok(Some(port))
+        };
     }
     match table.and_then(|table| table.get("port")) {
         None => {
-            missing.push(MissingSetting { key: LABEL, flag: Some("--db-port"), empty: false });
+            missing.push(MissingSetting {
+                key: LABEL,
+                flag: Some("--db-port"),
+                empty: false,
+            });
             Ok(None)
         }
         Some(Value::Integer(raw)) => match u16::try_from(*raw) {
@@ -409,10 +483,70 @@ fn flag_setting(
         Some(Value::Boolean(value)) => Ok(Some(*value)),
         Some(_) => Err(invalid()),
         None => {
-            missing.push(MissingSetting { key: label, flag: None, empty: false });
+            missing.push(MissingSetting {
+                key: label,
+                flag: None,
+                empty: false,
+            });
             Ok(None)
         }
     }
+}
+
+/// Re-read top-level `plugin_paths` from a config file (paths resolved against
+/// the file's directory). Used by Desk Apps catalog reload so edits to
+/// `aether.toml` while the server runs are picked up without restart.
+pub fn peek_plugin_paths(config_file: &std::path::Path) -> Result<Vec<PathBuf>, ConfigError> {
+    let content = fs::read_to_string(config_file).map_err(|source| ConfigError::Read {
+        path: config_file.display().to_string(),
+        source,
+    })?;
+    let value = toml::from_str::<Value>(&content)?;
+    let config_directory = config_file
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .to_path_buf();
+    build_plugin_paths_conf(value.get("plugin_paths"), &config_directory)
+}
+
+/// Read `[logging]` and `app_dir` from a config file without a full load.
+///
+/// Used to open the log file before the database settings are validated.
+/// Missing or unreadable files yield defaults and `app_dir_override` only.
+pub fn peek_logging(
+    config_file: Option<&std::path::Path>,
+    app_dir_override: Option<PathBuf>,
+) -> (LoggingConfig, Option<PathBuf>) {
+    let Some(path) = config_file else {
+        return (LoggingConfig::default(), app_dir_override);
+    };
+    let Ok(content) = fs::read_to_string(path) else {
+        return (LoggingConfig::default(), app_dir_override);
+    };
+    let Ok(value) = toml::from_str::<Value>(&content) else {
+        return (LoggingConfig::default(), app_dir_override);
+    };
+    let config_directory = path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .to_path_buf();
+
+    let logging = value
+        .get("logging")
+        .cloned()
+        .and_then(|table| table.try_into::<LoggingConfig>().ok())
+        .unwrap_or_default();
+
+    let app_dir = app_dir_override.or_else(|| {
+        value
+            .get("app_dir")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|raw| resolve_against(std::path::Path::new(raw), &config_directory))
+    });
+
+    (logging, app_dir)
 }
 
 /// Load the configuration from `config_file` (if any) and `overrides`.
@@ -450,19 +584,66 @@ pub fn load_config(
 
     let mut missing = Vec::new();
     let database = optional_table(&value, "database")?;
-    let host = text_setting(database, "host", overrides.db_host.as_deref(), "database.host", Some("--db-host"), &mut missing)?;
+    let host = text_setting(
+        database,
+        "host",
+        overrides.db_host.as_deref(),
+        "database.host",
+        Some("--db-host"),
+        &mut missing,
+    )?;
     let port = port_setting(database, overrides.db_port, &mut missing)?;
-    let user = text_setting(database, "user", overrides.db_user.as_deref(), "database.user", Some("--db-user"), &mut missing)?;
-    let password = text_setting(database, "password", overrides.db_password.as_deref(), "database.password", Some("--db-password"), &mut missing)?;
-    let namespace = text_setting(database, "namespace", overrides.db_namespace.as_deref(), "database.namespace", Some("--db-namespace"), &mut missing)?;
+    let user = text_setting(
+        database,
+        "user",
+        overrides.db_user.as_deref(),
+        "database.user",
+        Some("--db-user"),
+        &mut missing,
+    )?;
+    let password = text_setting(
+        database,
+        "password",
+        overrides.db_password.as_deref(),
+        "database.password",
+        Some("--db-password"),
+        &mut missing,
+    )?;
+    let namespace = text_setting(
+        database,
+        "namespace",
+        overrides.db_namespace.as_deref(),
+        "database.namespace",
+        Some("--db-namespace"),
+        &mut missing,
+    )?;
 
     let app_dir = match overrides.app_dir.clone() {
         Some(path) => Some(path),
-        None => text_setting(Some(&value), "app_dir", None, "app_dir", Some("--app-dir"), &mut missing)?
-            .map(|raw| resolve_against(std::path::Path::new(&raw), &config_directory)),
+        None => text_setting(
+            Some(&value),
+            "app_dir",
+            None,
+            "app_dir",
+            Some("--app-dir"),
+            &mut missing,
+        )?
+        .map(|raw| resolve_against(std::path::Path::new(&raw), &config_directory)),
     };
-    let is_development_mode = flag_setting(&value, "configuration", "is_development_mode", "configuration.is_development_mode", &mut missing)?;
-    let is_development_with_assets = flag_setting(&value, "configuration", "is_development_with_assets", "configuration.is_development_with_assets", &mut missing)?;
+    let is_development_mode = flag_setting(
+        &value,
+        "configuration",
+        "is_development_mode",
+        "configuration.is_development_mode",
+        &mut missing,
+    )?;
+    let is_development_with_assets = flag_setting(
+        &value,
+        "configuration",
+        "is_development_with_assets",
+        "configuration.is_development_with_assets",
+        &mut missing,
+    )?;
 
     let (
         Some(host),
@@ -473,7 +654,16 @@ pub fn load_config(
         Some(app_dir),
         Some(is_development_mode),
         Some(is_development_with_assets),
-    ) = (host, port, user, password, namespace, app_dir, is_development_mode, is_development_with_assets)
+    ) = (
+        host,
+        port,
+        user,
+        password,
+        namespace,
+        app_dir,
+        is_development_mode,
+        is_development_with_assets,
+    )
     else {
         return Err(ConfigError::MissingSettings {
             file: config_file.map(str::to_string),
@@ -486,27 +676,33 @@ pub fn load_config(
         Some(table) => table.clone().try_into()?,
         None => AuditConfig::default(),
     };
-    audit.validate().map_err(|message| ConfigError::InvalidType {
-        field: "audit".to_string(),
-        expected: message,
-    })?;
+    audit
+        .validate()
+        .map_err(|message| ConfigError::InvalidType {
+            field: "audit".to_string(),
+            expected: message,
+        })?;
     let public: PublicConfig = match optional_table(&value, "public")? {
         Some(table) => table.clone().try_into()?,
         None => PublicConfig::default(),
     };
-    public.validate().map_err(|message| ConfigError::InvalidType {
-        field: "public".to_string(),
-        expected: message,
-    })?;
+    public
+        .validate()
+        .map_err(|message| ConfigError::InvalidType {
+            field: "public".to_string(),
+            expected: message,
+        })?;
 
     let notifications: NotificationsConfig = match optional_table(&value, "notifications")? {
         Some(table) => table.clone().try_into()?,
         None => NotificationsConfig::default(),
     };
-    notifications.validate().map_err(|message| ConfigError::InvalidType {
-        field: "notifications".to_string(),
-        expected: message,
-    })?;
+    notifications
+        .validate()
+        .map_err(|message| ConfigError::InvalidType {
+            field: "notifications".to_string(),
+            expected: message,
+        })?;
 
     let security: SecurityConfig = match optional_table(&value, "security")? {
         Some(table) => table.clone().try_into()?,
@@ -516,19 +712,23 @@ pub fn load_config(
         Some(table) => table.clone().try_into()?,
         None => SchedulerConfig::default(),
     };
-    scheduler.validate().map_err(|message| ConfigError::InvalidType {
-        field: "scheduler".to_string(),
-        expected: message,
-    })?;
+    scheduler
+        .validate()
+        .map_err(|message| ConfigError::InvalidType {
+            field: "scheduler".to_string(),
+            expected: message,
+        })?;
 
     let plugin_runtime: PluginRuntimeConfig = match optional_table(&value, "plugin_runtime")? {
         Some(table) => table.clone().try_into()?,
         None => PluginRuntimeConfig::default(),
     };
-    plugin_runtime.validate().map_err(|message| ConfigError::InvalidType {
-        field: "plugin_runtime".to_string(),
-        expected: message,
-    })?;
+    plugin_runtime
+        .validate()
+        .map_err(|message| ConfigError::InvalidType {
+            field: "plugin_runtime".to_string(),
+            expected: message,
+        })?;
 
     let server = match optional_table(&value, "server")? {
         Some(table) => Some(build_server_conf(table)?),
@@ -544,6 +744,17 @@ pub fn load_config(
     };
     let plugins: Vec<PluginDefinition> = Vec::new();
     let plugin_paths = build_plugin_paths_conf(value.get("plugin_paths"), &config_directory)?;
+
+    let logging: LoggingConfig = match optional_table(&value, "logging")? {
+        Some(table) => table.clone().try_into()?,
+        None => LoggingConfig::default(),
+    };
+    if logging.filename.trim().is_empty() {
+        return Err(ConfigError::InvalidType {
+            field: "logging.filename".to_string(),
+            expected: "a non-empty file name such as aether.log".to_string(),
+        });
+    }
 
     Ok(AetherConfig {
         app_dir,
@@ -573,6 +784,7 @@ pub fn load_config(
         plugin_runtime,
         security,
         scheduler,
+        logging,
         ..Default::default()
     })
 }
@@ -585,6 +797,30 @@ mod tests {
     fn parse(toml_text: &str) -> Result<MediaConfig, ConfigError> {
         let value: Value = toml::from_str(toml_text)?;
         build_media_conf(&value, Path::new("/srv/app"), Path::new("/etc/aether"))
+    }
+
+    #[test]
+    fn logging_section_enables_file_under_app_dir() -> Result<(), ConfigError> {
+        let directory = tempfile::tempdir().map_err(|e| ConfigError::Read {
+            path: "temp".into(),
+            source: e,
+        })?;
+        let path = directory.path().join("aether.toml");
+        std::fs::write(
+            &path,
+            format!("{BASE}\n[logging]\nfile = true\nfilename = \"kernel.log\"\n"),
+        )
+        .map_err(|source| ConfigError::Read {
+            path: path.display().to_string(),
+            source,
+        })?;
+        let config = load_config(Some(&path.to_string_lossy()), &ConfigOverrides::default())?;
+        assert!(config.logging.file);
+        assert_eq!(
+            config.logging.file_path(&config.app_dir).unwrap(),
+            config.app_dir.join("logs/kernel.log")
+        );
+        Ok(())
     }
 
     #[test]
@@ -622,18 +858,24 @@ mod tests {
         let media = parse(
             "[media]\nbackend = \"s3\"\n[media.s3]\nbucket = \"b\"\nendpoint = \"http://garage:3900\"\nallow_http = true\n",
         )?;
-        let s3 = media.s3.ok_or_else(|| ConfigError::MissingField("media.s3".into()))?;
+        let s3 = media
+            .s3
+            .ok_or_else(|| ConfigError::MissingField("media.s3".into()))?;
         assert_eq!(s3.bucket, "b");
         assert!(s3.allow_http);
         Ok(())
     }
 
     #[test]
-    fn plugin_runtime_defaults_to_a_memory_budget_with_the_disk_cache_on() -> Result<(), Box<dyn std::error::Error>> {
+    fn plugin_runtime_defaults_to_a_memory_budget_with_the_disk_cache_on()
+    -> Result<(), Box<dyn std::error::Error>> {
         let config = load(BASE)?;
         assert_eq!(config.plugin_runtime.max_compiled_memory_mb, 256);
         assert!(config.plugin_runtime.compile_cache.enabled);
-        assert_eq!(config.plugin_runtime.compile_cache.directory, std::path::PathBuf::from("cache/compiled"));
+        assert_eq!(
+            config.plugin_runtime.compile_cache.directory,
+            std::path::PathBuf::from("cache/compiled")
+        );
         Ok(())
     }
 
@@ -655,12 +897,19 @@ mod tests {
     fn plugin_runtime_rejects_unknown_and_unusable_settings() {
         // The old entry-count setting was never read; it must not be silently ignored.
         assert!(load_typed(&format!("{BASE}[plugin_runtime]\nmax_compiled = 8\n")).is_err());
-        assert!(load_typed(&format!("{BASE}[plugin_runtime]\nmax_compiled_memory_mb = 4\n")).is_err());
+        assert!(
+            load_typed(&format!(
+                "{BASE}[plugin_runtime]\nmax_compiled_memory_mb = 4\n"
+            ))
+            .is_err()
+        );
         // A budget too small for the biggest wasm that would be accepted.
-        assert!(load_typed(&format!(
-            "{BASE}[plugin_runtime]\nmax_compiled_memory_mb = 64\nmax_wasm_size_mb = 24\n"
-        ))
-        .is_err());
+        assert!(
+            load_typed(&format!(
+                "{BASE}[plugin_runtime]\nmax_compiled_memory_mb = 64\nmax_wasm_size_mb = 24\n"
+            ))
+            .is_err()
+        );
     }
 
     /// Like [`load`], but keeps the typed error.
@@ -681,7 +930,10 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("aether.toml");
         std::fs::write(&path, toml_text)?;
-        Ok(load_config(Some(&path.to_string_lossy()), &ConfigOverrides::default())?)
+        Ok(load_config(
+            Some(&path.to_string_lossy()),
+            &ConfigOverrides::default(),
+        )?)
     }
 
     const BASE: &str = "app_dir = \"app\"\n[database]\nhost=\"h\"\nport=1\nuser=\"u\"\npassword=\"p\"\nnamespace=\"n\"\n[configuration]\nis_development_mode=false\nis_development_with_assets=false\n";
@@ -689,22 +941,54 @@ mod tests {
     #[test]
     fn audit_and_public_default_to_keeping_everything() -> Result<(), Box<dyn std::error::Error>> {
         let config = load(BASE)?;
-        assert_eq!(config.audit.ip, crate::config_manager::models::IpStorage::Full);
+        assert_eq!(
+            config.audit.ip,
+            crate::config_manager::models::IpStorage::Full
+        );
         assert_eq!(config.audit.retention_days, None);
         assert_eq!(config.public.max_new_visitors_per_ip_per_minute, 30);
         assert_eq!(config.public.max_requests_per_ip_per_minute, 300);
-        assert!(config.server.map(|s| s.trusted_proxies.is_empty()).unwrap_or(true));
+        assert!(
+            config
+                .server
+                .map(|s| s.trusted_proxies.is_empty())
+                .unwrap_or(true)
+        );
         assert!(config.plugin_paths.is_empty());
         Ok(())
     }
 
     #[test]
-    fn plugin_paths_are_resolved_against_the_config_file() -> Result<(), Box<dyn std::error::Error>> {
+    fn peek_plugin_paths_resolves_relative_entries() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("aether.toml");
+        // Root keys must appear before tables, or TOML nests them under the last table.
+        std::fs::write(
+            &path,
+            "app_dir = \"app\"\nplugin_paths = [\"plugins/base/currency\", \"/abs/partner\"]\n\
+             [database]\nhost=\"h\"\nport=1\nuser=\"u\"\npassword=\"p\"\nnamespace=\"n\"\n\
+             [configuration]\nis_development_mode=false\nis_development_with_assets=false\n",
+        )?;
+        assert_eq!(
+            peek_plugin_paths(&path)?,
+            [
+                directory.path().join("plugins/base/currency"),
+                PathBuf::from("/abs/partner"),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn plugin_paths_are_resolved_against_the_config_file() -> Result<(), Box<dyn std::error::Error>>
+    {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("aether.toml");
         std::fs::write(
             &path,
-            format!("{BASE}plugin_paths = [\"plugins/base/currency\", \"/abs/partner\"]\n"),
+            "app_dir = \"app\"\nplugin_paths = [\"plugins/base/currency\", \"/abs/partner\"]\n\
+             [database]\nhost=\"h\"\nport=1\nuser=\"u\"\npassword=\"p\"\nnamespace=\"n\"\n\
+             [configuration]\nis_development_mode=false\nis_development_with_assets=false\n",
         )?;
         let config = load_config(Some(&path.to_string_lossy()), &ConfigOverrides::default())?;
         assert_eq!(
@@ -719,7 +1003,14 @@ mod tests {
 
     #[test]
     fn rejects_a_non_array_plugin_paths() {
-        assert!(load(&format!("{BASE}plugin_paths = \"plugins/base\"\n")).is_err());
+        assert!(
+            load(
+                "app_dir = \"app\"\nplugin_paths = \"plugins/base\"\n\
+             [database]\nhost=\"h\"\nport=1\nuser=\"u\"\npassword=\"p\"\nnamespace=\"n\"\n\
+             [configuration]\nis_development_mode=false\nis_development_with_assets=false\n"
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -727,7 +1018,10 @@ mod tests {
         let config = load(&format!(
             "{BASE}[server]\ntrusted_proxies = [\"10.0.0.1\", \"::1\"]\n[audit]\nip = \"hashed\"\nip_hash_key = \"0123456789abcdef\"\nretention_days = 90\n[public]\nmax_new_visitors_per_ip_per_minute = 5\nmax_requests_per_ip_per_minute = 60\n"
         ))?;
-        assert_eq!(config.audit.ip, crate::config_manager::models::IpStorage::Hashed);
+        assert_eq!(
+            config.audit.ip,
+            crate::config_manager::models::IpStorage::Hashed
+        );
         assert_eq!(config.audit.retention_days, Some(90));
         assert_eq!(config.public.max_new_visitors_per_ip_per_minute, 5);
         assert_eq!(config.public.max_requests_per_ip_per_minute, 60);
@@ -739,11 +1033,26 @@ mod tests {
     #[test]
     fn rejects_unsafe_audit_settings() {
         assert!(load(&format!("{BASE}[audit]\nip = \"hashed\"\n")).is_err());
-        assert!(load(&format!("{BASE}[audit]\nip = \"hashed\"\nip_hash_key = \"short\"\n")).is_err());
+        assert!(
+            load(&format!(
+                "{BASE}[audit]\nip = \"hashed\"\nip_hash_key = \"short\"\n"
+            ))
+            .is_err()
+        );
         assert!(load(&format!("{BASE}[audit]\nretention_days = 0\n")).is_err());
-        assert!(load(&format!("{BASE}[public]\nmax_requests_per_ip_per_minute = 0\n")).is_err());
+        assert!(
+            load(&format!(
+                "{BASE}[public]\nmax_requests_per_ip_per_minute = 0\n"
+            ))
+            .is_err()
+        );
         assert!(load(&format!("{BASE}[audit]\nip = \"nonsense\"\n")).is_err());
-        assert!(load(&format!("{BASE}[server]\ntrusted_proxies = [\"not an ip\"]\n")).is_err());
+        assert!(
+            load(&format!(
+                "{BASE}[server]\ntrusted_proxies = [\"not an ip\"]\n"
+            ))
+            .is_err()
+        );
     }
 
     #[test]
@@ -758,11 +1067,18 @@ mod tests {
                 "http://127.0.0.1:5173".into()
             ])
         );
-        assert!(load(&format!(
-            "{BASE}[server]\ncsrf_trusted_origins = [\"http://localhost:5173/path\"]\n"
-        ))
-        .is_err());
-        assert!(load(&format!("{BASE}[server]\ncsrf_trusted_origins = [\"ftp://x\"]\n")).is_err());
+        assert!(
+            load(&format!(
+                "{BASE}[server]\ncsrf_trusted_origins = [\"http://localhost:5173/path\"]\n"
+            ))
+            .is_err()
+        );
+        assert!(
+            load(&format!(
+                "{BASE}[server]\ncsrf_trusted_origins = [\"ftp://x\"]\n"
+            ))
+            .is_err()
+        );
         Ok(())
     }
 
@@ -796,11 +1112,13 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_file_reports_everything_missing_instead_of_defaulting() -> Result<(), Box<dyn std::error::Error>> {
+    fn an_empty_file_reports_everything_missing_instead_of_defaulting()
+    -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("aether.toml");
         std::fs::write(&path, "")?;
-        let Err(error) = load_config(Some(&path.to_string_lossy()), &ConfigOverrides::default()) else {
+        let Err(error) = load_config(Some(&path.to_string_lossy()), &ConfigOverrides::default())
+        else {
             panic!("an empty config must not load");
         };
         let message = error.to_string();
@@ -813,7 +1131,9 @@ mod tests {
     #[test]
     fn only_the_absent_setting_is_reported() {
         let toml = BASE.replace("password=\"p\"\n", "");
-        let Err(error) = load(&toml) else { panic!("password is required") };
+        let Err(error) = load(&toml) else {
+            panic!("password is required")
+        };
         let message = error.to_string();
         assert!(message.contains("database.password"));
         assert!(!message.contains("database.host"));
@@ -822,7 +1142,9 @@ mod tests {
     #[test]
     fn an_empty_value_counts_as_missing() {
         let toml = BASE.replace("user=\"u\"", "user=\"  \"");
-        let Err(error) = load(&toml) else { panic!("an empty user is not a user") };
+        let Err(error) = load(&toml) else {
+            panic!("an empty user is not a user")
+        };
         assert!(error.to_string().contains("database.user: is empty"));
     }
 
@@ -830,7 +1152,10 @@ mod tests {
     fn flags_can_supply_everything_the_file_lacks() -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("aether.toml");
-        std::fs::write(&path, "[configuration]\nis_development_mode = true\nis_development_with_assets = false\n")?;
+        std::fs::write(
+            &path,
+            "[configuration]\nis_development_mode = true\nis_development_with_assets = false\n",
+        )?;
         let overrides = ConfigOverrides {
             app_dir: Some(directory.path().join("flag_app")),
             db_host: Some("db.internal".into()),
@@ -842,7 +1167,12 @@ mod tests {
         let config = load_config(Some(&path.to_string_lossy()), &overrides)?;
         let database = config.database.ok_or("no database config")?;
         assert_eq!(
-            (database.host.as_str(), database.port, database.user.as_str(), database.namespace.as_str()),
+            (
+                database.host.as_str(),
+                database.port,
+                database.user.as_str(),
+                database.namespace.as_str()
+            ),
             ("db.internal", 9000, "svc", "prod")
         );
         assert_eq!(config.app_dir, directory.path().join("flag_app"));
@@ -856,9 +1186,15 @@ mod tests {
         std::fs::write(&path, BASE)?;
         let config = load_config(
             Some(&path.to_string_lossy()),
-            &ConfigOverrides { db_host: Some("flag-host".into()), ..ConfigOverrides::default() },
+            &ConfigOverrides {
+                db_host: Some("flag-host".into()),
+                ..ConfigOverrides::default()
+            },
         )?;
-        assert_eq!(config.database.map(|d| d.host), Some("flag-host".to_string()));
+        assert_eq!(
+            config.database.map(|d| d.host),
+            Some("flag-host".to_string())
+        );
         Ok(())
     }
 
@@ -870,7 +1206,10 @@ mod tests {
             BASE.replace("port=1", "port=70000"),
             BASE.replace("host=\"h\"", "host=5"),
         ] {
-            assert!(matches!(load_typed(&toml), Err(ConfigError::InvalidType { .. })), "{toml}");
+            assert!(
+                matches!(load_typed(&toml), Err(ConfigError::InvalidType { .. })),
+                "{toml}"
+            );
         }
     }
 }

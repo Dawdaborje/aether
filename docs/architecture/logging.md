@@ -3,6 +3,31 @@
 Aether logs through the `log` crate; choose the level with `--log` (`error`,
 `warn`, `info`, `debug`, `trace`; the default is `debug`).
 
+## Where logs go
+
+By default every line goes to **stderr** only. To also append to a file:
+
+```toml
+# aether.toml
+[logging]
+file = true
+# dir = "logs"              # under app_dir when relative; default logs
+# filename = "aether.log"
+# stdout = true             # keep writing to stderr as well
+```
+
+That writes `<app_dir>/logs/aether.log` (directory created on start). CLI overrides:
+
+| Flag | Meaning |
+|---|---|
+| `--log-file PATH` | Append to this file (creates parents) |
+| `--log-dir PATH` | Use `PATH/aether.log` (or `[logging].filename`) |
+| `--no-log-file` | Stderr only, even if `[logging] file = true` |
+| `--no-log-stdout` | File only (no stderr) when a file is used |
+
+There is no built-in rotation: use `logrotate`, your process manager, or an
+external tee if you need size/time limits.
+
 ## Every request
 
 Each HTTP request is logged by `aether_core::request_log`, which also gives it

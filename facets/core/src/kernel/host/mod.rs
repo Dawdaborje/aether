@@ -6,25 +6,31 @@
 //! - There is no raw SurQL: a plugin can only touch the models it was granted, through
 //!   the structured commands, so it can never reach another plugin's data.
 
+pub mod bridge_call;
+pub mod communication;
 pub mod context;
 pub mod db;
 pub mod dispatch;
-pub mod bridge_call;
-pub mod communication;
 pub mod error;
 pub mod files;
 pub mod graph;
 pub mod guard;
-pub mod integrity;
-pub mod nested;
-pub mod plugin_call;
-pub mod scheduling;
 pub mod http;
+pub mod integrity;
+pub mod magic_link;
+pub mod nested;
+pub mod org;
+pub mod plugin_call;
+pub mod report;
+pub mod scheduling;
 pub mod storage;
-pub mod transitions;
 pub mod store;
+pub mod transitions;
 
-pub use context::{BridgeHandle, CallInfo, DbScope, HostServices, JobDefaults, ModelGrant, PluginCaller, PluginHostContext, SchedulerHandle};
+pub use context::{
+    BridgeHandle, CallInfo, DbScope, HostServices, JobDefaults, ModelGrant, PluginCaller,
+    PluginHostContext, SchedulerHandle,
+};
 pub use dispatch::kernel_command;
 pub use error::HostError;
 

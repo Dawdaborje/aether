@@ -46,7 +46,8 @@ struct ListRequest {
 }
 
 fn parse<T: serde::de::DeserializeOwned>(payload: &JsonValue) -> Result<T, HostError> {
-    serde_json::from_value(payload.clone()).map_err(|error| HostError::InvalidPayload(error.to_string()))
+    serde_json::from_value(payload.clone())
+        .map_err(|error| HostError::InvalidPayload(error.to_string()))
 }
 
 /// The plugin's key placed under its own folder.
@@ -72,7 +73,10 @@ fn storage_error(error: StorageError) -> HostError {
     }
 }
 
-pub async fn storage_write(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
+pub async fn storage_write(
+    ctx: &PluginHostContext,
+    payload: &JsonValue,
+) -> Result<JsonValue, HostError> {
     ctx.require_cap("storage::write")?;
     let request: WriteRequest = parse(payload)?;
     let bytes = match (request.text, request.base64) {
@@ -80,7 +84,11 @@ pub async fn storage_write(ctx: &PluginHostContext, payload: &JsonValue) -> Resu
         (None, Some(encoded)) => STANDARD
             .decode(encoded.as_bytes())
             .map_err(|error| HostError::InvalidPayload(format!("base64: {error}")))?,
-        _ => return Err(HostError::InvalidPayload("give either `text` or `base64`".into())),
+        _ => {
+            return Err(HostError::InvalidPayload(
+                "give either `text` or `base64`".into(),
+            ));
+        }
     };
     if bytes.len() > MAX_OBJECT_BYTES {
         return Err(HostError::InvalidPayload(format!(
@@ -89,11 +97,18 @@ pub async fn storage_write(ctx: &PluginHostContext, payload: &JsonValue) -> Resu
     }
     let key = plugin_key(ctx, &request.key)?;
     let size = bytes.len();
-    ctx.services()?.media.put(&key, Bytes::from(bytes)).await.map_err(storage_error)?;
+    ctx.services()?
+        .media
+        .put(&key, Bytes::from(bytes))
+        .await
+        .map_err(storage_error)?;
     Ok(serde_json::json!({ "ok": true, "data": { "key": request.key, "size": size } }))
 }
 
-pub async fn storage_read(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
+pub async fn storage_read(
+    ctx: &PluginHostContext,
+    payload: &JsonValue,
+) -> Result<JsonValue, HostError> {
     ctx.require_cap("storage::read")?;
     let request: KeyRequest = parse(payload)?;
     let key = plugin_key(ctx, &request.key)?;
@@ -102,7 +117,9 @@ pub async fn storage_read(ctx: &PluginHostContext, payload: &JsonValue) -> Resul
     let head = match media.head(&key).await {
         Ok(head) => head,
         // A file that is not there is an answer (`data: null`), like a cache miss.
-        Err(StorageError::NotFound(_)) => return Ok(serde_json::json!({ "ok": true, "data": null })),
+        Err(StorageError::NotFound(_)) => {
+            return Ok(serde_json::json!({ "ok": true, "data": null }));
+        }
         Err(error) => return Err(storage_error(error)),
     };
     if head.size > MAX_OBJECT_BYTES as u64 {
@@ -122,28 +139,55 @@ pub async fn storage_read(ctx: &PluginHostContext, payload: &JsonValue) -> Resul
             }
         },
         "base64" => serde_json::json!({ "base64": STANDARD.encode(&bytes), "size": head.size }),
-        other => return Err(HostError::InvalidPayload(format!("unknown encoding `{other}`"))),
+        other => {
+            return Err(HostError::InvalidPayload(format!(
+                "unknown encoding `{other}`"
+            )));
+        }
     };
     Ok(serde_json::json!({ "ok": true, "data": data }))
 }
 
-pub async fn storage_delete(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
+pub async fn storage_delete(
+    ctx: &PluginHostContext,
+    payload: &JsonValue,
+) -> Result<JsonValue, HostError> {
     ctx.require_cap("storage::delete")?;
     let request: KeyRequest = parse(payload)?;
     let key = plugin_key(ctx, &request.key)?;
-    ctx.services()?.media.delete(&key).await.map_err(storage_error)?;
+    ctx.services()?
+        .media
+        .delete(&key)
+        .await
+        .map_err(storage_error)?;
     Ok(serde_json::json!({ "ok": true, "data": null }))
 }
 
-pub async fn storage_list(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
+pub async fn storage_list(
+    ctx: &PluginHostContext,
+    payload: &JsonValue,
+) -> Result<JsonValue, HostError> {
     ctx.require_cap("storage::list")?;
-    let request: ListRequest = if payload.is_null() { ListRequest::default() } else { parse(payload)? };
+    let request: ListRequest = if payload.is_null() {
+        ListRequest::default()
+    } else {
+        parse(payload)?
+    };
     let folder = folder(ctx);
-    let prefix = match request.prefix.as_deref().filter(|prefix| !prefix.is_empty()) {
+    let prefix = match request
+        .prefix
+        .as_deref()
+        .filter(|prefix| !prefix.is_empty())
+    {
         Some(prefix) => plugin_key(ctx, prefix.trim_end_matches('/'))?,
         None => MediaKey::parse(folder.trim_end_matches('/')).map_err(storage_error)?,
     };
-    let objects = ctx.services()?.media.list(Some(&prefix)).await.map_err(storage_error)?;
+    let objects = ctx
+        .services()?
+        .media
+        .list(Some(&prefix))
+        .await
+        .map_err(storage_error)?;
     let entries: Vec<JsonValue> = objects
         .into_iter()
         .filter_map(|object| {

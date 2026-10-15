@@ -1,3 +1,5 @@
+import { browserStorage } from '$lib/browserStorage';
+
 /**
  * The organization this browser chose, for deployments where the client sends
  * `X-Org-Slug` (header tenancy). Kept in localStorage so it survives reloads.
@@ -12,7 +14,7 @@ function restore(): void {
 	if (restored) return;
 	restored = true;
 	try {
-		current = localStorage.getItem(KEY);
+		current = browserStorage()?.getItem(KEY) ?? null;
 	} catch {
 		// Storage can be blocked (private mode); the choice then lasts for this page only.
 		current = null;
@@ -28,8 +30,9 @@ export function setHeaderOrg(org: string | null): void {
 	restore();
 	current = org;
 	try {
-		if (org) localStorage.setItem(KEY, org);
-		else localStorage.removeItem(KEY);
+		const storage = browserStorage();
+		if (org) storage?.setItem(KEY, org);
+		else storage?.removeItem(KEY);
 	} catch {
 		// See restore(): not being able to persist is not an error.
 	}

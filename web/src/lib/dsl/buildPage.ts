@@ -20,7 +20,12 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 function viewTypeOf(node: PageNode): string | undefined {
 	if (typeof node.viewType === 'string') return node.viewType;
 	if (typeof node.view_type === 'string') return node.view_type;
-	if (node.type === 'kanban' || node.type === 'dashboard' || node.type === 'list' || node.type === 'form') {
+	if (
+		node.type === 'kanban' ||
+		node.type === 'dashboard' ||
+		node.type === 'list' ||
+		node.type === 'form'
+	) {
 		return node.type;
 	}
 	return undefined;
@@ -89,6 +94,25 @@ function normalizeNode(raw: unknown, warnings: string[], path: string): PageNode
 	return node;
 }
 
+const FORM_BAR = new Set(['buttonbox', 'header', 'statusbar', 'button', 'action', 'actions']);
+
+/**
+ * A page with one form view that has buttons or a state tracker beside it (`<buttonbox>`,
+ * `<header>`, `<statusbar>` as siblings of the view) gets them moved into the form, so they
+ * sit in the form's sticky top bar with Save instead of scrolling away above it.
+ */
+function hoistFormBar(children: PageNode[]): PageNode[] {
+	const forms = children.filter((child) => child.type === 'view' && viewTypeOf(child) === 'form');
+	if (forms.length !== 1) return children;
+	const form = forms[0]!;
+	const bar = children.filter((child) => FORM_BAR.has(child.type));
+	if (bar.length === 0) return children;
+	const moved = { ...form, children: [...bar, ...(form.children ?? [])] };
+	return children
+		.filter((child) => !FORM_BAR.has(child.type))
+		.map((child) => (child === form ? moved : child));
+}
+
 /**
  * Build a normalized page tree from API / compiled XML JSON.
  * Pure TypeScript — Svelte only renders the result.
@@ -108,6 +132,8 @@ export function buildPage(input: unknown): BuildPageResult {
 			warnings
 		};
 	}
+
+	root.children = hoistFormBar(root.children ?? []);
 
 	const page: PageDef = {
 		...root,

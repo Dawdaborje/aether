@@ -16,38 +16,103 @@ use crate::{
     access::{
         audit::{Actor, record_plugin_call},
         identity::{
-            Identity, IdentityError, ensure_visitor, identify, with_retry_after, with_visitor_cookie,
+            Identity, IdentityError, ensure_visitor, identify, with_retry_after,
+            with_visitor_cookie,
         },
     },
     kernel::{CallInfo, DbScope, PluginHostContext},
-    state::AppState,
+    plugin_manager::installed,
+    state::{AppState, Db},
 };
 
 #[derive(Debug, Deserialize, SurrealValue)]
 struct InstalledPluginRow {
+    #[serde(default)]
+    plugin_name: String,
     version: String,
     is_enabled: bool,
 }
 
-#[derive(Debug, Deserialize, SurrealValue)]
-struct PublicSurfaceRow {
-    public_functions: Vec<String>,
+async fn warm_installed_plugin(
+    state: &AppState,
+    org: &Db,
+    org_db: &str,
+    plugin_name: &str,
+) -> Result<Option<InstalledPluginRow>, CallError> {
+    let rows = installed::list_cached(&state.cache, org_db, org)
+        .await
+        .map_err(|error| CallError::database("installation lookup", error))?;
+    Ok(rows
+        .into_iter()
+        .find(|row| row.plugin_name == plugin_name)
+        .map(|row| InstalledPluginRow {
+            plugin_name: row.plugin_name,
+            version: row.version,
+            is_enabled: row.is_enabled,
+        }))
 }
 
-#[derive(Debug, Deserialize, SurrealValue)]
-struct PublicPageModels {
-    models: Vec<String>,
+/// Read-only grants for every model of each installed dependency, keyed `plugin.model`.
+async fn attach_dependency_reads(
+    state: &AppState,
+    core: &Db,
+    org: &Db,
+    org_db: &str,
+    dependencies: &[String],
+    models: &mut std::collections::HashMap<String, crate::kernel::ModelGrant>,
+) -> Result<(), CallError> {
+    let read = ["read".to_string()];
+    for dependency in dependencies {
+        let Some(installed) = warm_installed_plugin(state, org, org_db, dependency).await? else {
+            continue;
+        };
+        if !installed.is_enabled {
+            continue;
+        }
+        let loaded = match state
+            .plugin_runtime
+            .ensure_loaded(core, dependency, &installed.version)
+            .await
+        {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                log::warn!("dependency `{dependency}` is not loadable: {error}");
+                continue;
+            }
+        };
+        for (name, schema) in &loaded.schemas {
+            let key = format!("{dependency}.{name}");
+            let mut grant =
+                crate::kernel::ModelGrant::from_access(&key, &read, Some(schema.table.as_str()));
+            grant.can_write = false;
+            grant.schema = Some(schema.clone());
+            grant.rules = loaded.rules.get(name).cloned();
+            models.insert(key, grant);
+        }
+    }
+    Ok(())
 }
 
 /// A failed call: the HTTP status and the message sent to the client.
 struct CallError {
     status: StatusCode,
     message: String,
+    /// What actually went wrong, for developers only (the client message stays generic).
+    detail: Option<String>,
 }
 
 impl CallError {
     fn new(status: StatusCode, message: impl Into<String>) -> Self {
-        Self { status, message: message.into() }
+        Self {
+            status,
+            message: message.into(),
+            detail: None,
+        }
+    }
+
+    fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
     }
 
     fn database(context: &str, error: impl std::fmt::Display) -> Self {
@@ -106,7 +171,16 @@ async fn invoke(
     };
 
     let trail = vec![format!("{plugin_name}.{function}")];
-    let result = run_call(&state, &mut identity, &plugin_name, &function, payload, trail.clone(), 0).await;
+    let result = run_call(
+        &state,
+        &mut identity,
+        &plugin_name,
+        &function,
+        payload,
+        trail.clone(),
+        0,
+    )
+    .await;
     let status = match &result {
         Ok(_) => StatusCode::OK,
         Err(error) => error.status,
@@ -148,7 +222,33 @@ async fn invoke(
     let jar = with_visitor_cookie(&state, &identity, jar);
     match result {
         Ok(value) => (jar, Json(value)).into_response(),
-        Err(error) => (error.status, jar, Json(json!({ "error": error.message }))).into_response(),
+        Err(error) => {
+            let mut body = json!({ "error": error.message });
+            // A developer is told which function failed and why; everyone else gets the
+            // generic message only.
+            let mut developer = identity
+                .session
+                .as_ref()
+                .is_some_and(|session| session.user.is_super_user);
+            if !developer
+                && error.detail.is_some()
+                && let crate::access::audit::Actor::User(user_id) = &identity.actor
+                && let Ok(org) = state.org(&identity.org_db).await
+                && let Ok(roles) =
+                    crate::roles::roles_of_cached(&state.cache, &identity.org_db, &org, user_id)
+                        .await
+            {
+                // Organization administrators manage the plugins, so they see why one failed.
+                developer = roles.iter().any(|role| role == "org_admin");
+            }
+            if developer {
+                body["function"] = json!(format!("{plugin_name}.{function}"));
+                if let Some(detail) = &error.detail {
+                    body["detail"] = json!(detail);
+                }
+            }
+            (error.status, jar, Json(body)).into_response()
+        }
     }
 }
 
@@ -182,7 +282,7 @@ async fn run_call(
     // The kernel's own jobs run with the plugin's full manifest, like a member; they are not visitors.
     let anonymous = !matches!(identity.actor, Actor::User(_) | Actor::System(_));
 
-    // Installed in this organization?
+    // Installed in this organization? Prefer Mantle warm-set, then DB.
     let org = state
         .org(&identity.org_db)
         .await
@@ -191,16 +291,11 @@ async fn run_call(
         .core()
         .await
         .map_err(|error| CallError::database("core selection", error))?;
-    let mut response = org
-        .query("SELECT version, is_enabled FROM installed_plugins WHERE plugin_name = $plugin_name LIMIT 1;")
-        .bind(("plugin_name", plugin_name.to_string()))
-        .await
-        .and_then(|response| response.check())
-        .map_err(|error| CallError::database("installation lookup", error))?;
-    let installed: Vec<InstalledPluginRow> = response
-        .take(0)
-        .map_err(|error| CallError::database("installation decode", error))?;
-    let installed = installed.into_iter().next();
+    state.cache.ensure_org_heat_loaded(&identity.org_db);
+    let installed = match warm_installed_plugin(state, &org, &identity.org_db, plugin_name).await {
+        Ok(row) => row,
+        Err(error) => return Err(error),
+    };
 
     // Anonymous callers learn nothing about what is installed or private.
     let Some(installed) = installed else {
@@ -218,54 +313,33 @@ async fn run_call(
     // the catalog before any WASM is compiled.
     let mut public_models = BTreeSet::new();
     if anonymous {
-        let mut response = core
-            .query("SELECT public_functions FROM plugins WHERE name = $name AND version = $version LIMIT 1;")
-            .bind(("name", plugin_name.to_string()))
-            .bind(("version", installed.version.clone()))
-            .await
-            .and_then(|response| response.check())
-            .map_err(|error| CallError::database("public surface lookup", error))?;
-        let surface: Vec<PublicSurfaceRow> = response
-            .take(0)
-            .map_err(|error| CallError::database("public surface decode", error))?;
-        let allowed = surface
-            .first()
-            .is_some_and(|row| row.public_functions.iter().any(|name| name == function));
-        if !allowed {
-            return Err(refuse_anonymous(identity));
-        }
-
-        let mut response = core
-            .query(
-                "SELECT models FROM plugin_ui_pages \
-                 WHERE is_public = true AND plugin.name = $name AND plugin.version = $version;",
-            )
-            .bind(("name", plugin_name.to_string()))
-            .bind(("version", installed.version.clone()))
-            .await
-            .and_then(|response| response.check())
-            .map_err(|error| CallError::database("public pages lookup", error))?;
-        let pages: Vec<PublicPageModels> = response
-            .take(0)
-            .map_err(|error| CallError::database("public pages decode", error))?;
-        public_models = pages.into_iter().flat_map(|page| page.models).collect();
-
-        // A visitor identity is issued only now that the call is permitted.
-        ensure_visitor(state, identity).await.map_err(|error| match error {
-            IdentityError::RateLimited => {
-                CallError::new(StatusCode::TOO_MANY_REQUESTS, "too many requests")
-            }
-            other => CallError::database("visitor creation", other),
-        })?;
-    }
-
-    let loaded = state
-        .plugin_runtime
-        .ensure_loaded(
+        let surface = crate::plugin_manager::surface::public_cached(
+            &state.cache,
             &core,
             plugin_name,
             &installed.version,
         )
+        .await
+        .map_err(|error| CallError::database("public surface lookup", error))?;
+        if !surface.public_functions.iter().any(|name| name == function) {
+            return Err(refuse_anonymous(identity));
+        }
+        public_models = surface.public_models.into_iter().collect();
+
+        // A visitor identity is issued only now that the call is permitted.
+        ensure_visitor(state, identity)
+            .await
+            .map_err(|error| match error {
+                IdentityError::RateLimited => {
+                    CallError::new(StatusCode::TOO_MANY_REQUESTS, "too many requests")
+                }
+                other => CallError::database("visitor creation", other),
+            })?;
+    }
+
+    let loaded = state
+        .plugin_runtime
+        .ensure_loaded(&core, plugin_name, &installed.version)
         .await
         .map_err(|error| {
             use super::runtime::PluginRuntimeError as Failure;
@@ -275,16 +349,18 @@ async fn run_call(
                     StatusCode::NOT_FOUND,
                     "plugin version is not in the catalog",
                 ),
-                Failure::MissingArtifact(_) => CallError::new(
-                    StatusCode::NOT_FOUND,
-                    "plugin has no callable functions",
-                ),
+                Failure::MissingArtifact(_) => {
+                    CallError::new(StatusCode::NOT_FOUND, "plugin has no callable functions")
+                }
                 Failure::WasmTooLarge { .. } | Failure::ExceedsBudget { .. } => CallError::new(
                     StatusCode::UNPROCESSABLE_ENTITY,
                     "plugin is too large to load",
                 ),
                 Failure::CompileQueueFull | Failure::CompileTimeout { .. } | Failure::Busy => {
-                    CallError::new(StatusCode::SERVICE_UNAVAILABLE, "plugin is busy, retry shortly")
+                    CallError::new(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "plugin is busy, retry shortly",
+                    )
                 }
                 _ => CallError::new(
                     StatusCode::SERVICE_UNAVAILABLE,
@@ -307,9 +383,27 @@ async fn run_call(
     for (name, grant) in models.iter_mut() {
         grant.rules = loaded.rules.get(name).cloned();
     }
+    // A dependency's models are readable here as `plugin.model`, with that model's own rules.
+    // A missing or disabled dependency is skipped; the report command refuses the model then.
+    if let Err(error) = attach_dependency_reads(
+        state,
+        &core,
+        &org,
+        &identity.org_db,
+        &manifest.plugin.dependencies,
+        &mut models,
+    )
+    .await
+    {
+        log::warn!(
+            "dependency reads for `{plugin_name}` were not attached: {}",
+            error.message
+        );
+    }
     // The kernel's own jobs are not held to a person's rules, and neither are the small
     // functions (`rule_var_*`) that answer a rule's variables: they would need the rules they feed.
-    let bypass_rules = matches!(identity.actor, Actor::System(_)) || function.starts_with(crate::kernel::host::guard::VARIABLE_PREFIX);
+    let bypass_rules = matches!(identity.actor, Actor::System(_))
+        || function.starts_with(crate::kernel::host::guard::VARIABLE_PREFIX);
     let host = PluginHostContext::new(
         plugin_name,
         granted,
@@ -326,16 +420,33 @@ async fn run_call(
     .with_plugin_calls(
         manifest.plugin.dependencies.clone(),
         trail,
-        std::sync::Arc::new(NestedCalls { state: state.clone(), identity: identity.clone(), event_depth }),
+        std::sync::Arc::new(NestedCalls {
+            state: state.clone(),
+            identity: identity.clone(),
+            event_depth,
+        }),
     );
     let host = match state.org_media(&identity.org_db) {
-        Ok(media) => host.with_services(crate::kernel::HostServices {
-            cache: state.cache.clone(),
-            media,
-            scheduler: Some(std::sync::Arc::new(crate::scheduler::AppScheduler { state: state.clone() })),
-            files_root: crate::app_dir::AppDir::new(&state.config.app_dir).plugin_files_dir(&identity.org_db, plugin_name).ok(),
-            bridges: Some(std::sync::Arc::new(crate::bridges::AppBridges { state: state.clone() })),
-        }),
+        Ok(media) => {
+            let core = state.core().await.ok();
+            let sessions = state.clone();
+            host.with_services(crate::kernel::HostServices {
+                cache: state.cache.clone(),
+                media,
+                scheduler: Some(std::sync::Arc::new(crate::scheduler::AppScheduler {
+                    state: state.clone(),
+                })),
+                files_root: crate::app_dir::AppDir::new(&state.config.app_dir)
+                    .plugin_files_dir(&identity.org_db, plugin_name)
+                    .ok(),
+                bridges: Some(std::sync::Arc::new(crate::bridges::AppBridges {
+                    state: state.clone(),
+                })),
+                core,
+                public_base: crate::member_mail::public_base_for(&state, &identity.org_db).await,
+                open_session: Some(std::sync::Arc::new(move || sessions.fresh_session())),
+            })
+        }
         Err(error) => {
             // The plugin still runs; only its storage commands fail, and say why.
             log::warn!("storage is unavailable for `{plugin_name}.{function}`: {error}");
@@ -354,10 +465,12 @@ async fn run_call(
                 return CallError::new(StatusCode::UNPROCESSABLE_ENTITY, message);
             }
             match error {
-                super::runtime::PluginRuntimeError::Busy => {
-                    CallError::new(StatusCode::SERVICE_UNAVAILABLE, "plugin is busy, retry shortly")
-                }
-                _ => CallError::new(StatusCode::BAD_GATEWAY, "plugin invocation failed"),
+                super::runtime::PluginRuntimeError::Busy => CallError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "plugin is busy, retry shortly",
+                ),
+                _ => CallError::new(StatusCode::BAD_GATEWAY, "plugin invocation failed")
+                    .with_detail(error.to_string()),
             }
         })
 }
@@ -381,7 +494,16 @@ impl crate::kernel::PluginCaller for NestedCalls {
         trail: Vec<String>,
     ) -> Result<Value, crate::kernel::HostError> {
         let mut identity = self.identity.clone();
-        let result = run_call(&self.state, &mut identity, plugin, function, payload, trail, self.event_depth).await;
+        let result = run_call(
+            &self.state,
+            &mut identity,
+            plugin,
+            function,
+            payload,
+            trail,
+            self.event_depth,
+        )
+        .await;
         let status = match &result {
             Ok(_) => StatusCode::OK,
             Err(error) => error.status,
@@ -395,16 +517,21 @@ impl crate::kernel::PluginCaller for NestedCalls {
         match self.state.org(&identity.org_db).await {
             Ok(org) => {
                 if let Err(error) =
-                    record_plugin_call(&org, &identity.audit, plugin, function, status.as_u16()).await
+                    record_plugin_call(&org, &identity.audit, plugin, function, status.as_u16())
+                        .await
                 {
                     // The call already ran; the caller is told rather than left with an unrecorded one.
                     log::error!("nested plugin call audit failed: {error}");
-                    return Err(crate::kernel::HostError::Message("audit unavailable".into()));
+                    return Err(crate::kernel::HostError::Message(
+                        "audit unavailable".into(),
+                    ));
                 }
             }
             Err(error) => {
                 log::error!("nested plugin call audit failed: {error}");
-                return Err(crate::kernel::HostError::Message("audit unavailable".into()));
+                return Err(crate::kernel::HostError::Message(
+                    "audit unavailable".into(),
+                ));
             }
         }
         result.map_err(|error| crate::kernel::HostError::Message(error.message))
@@ -431,7 +558,16 @@ pub async fn run_system_call(
     payload: Value,
     request_id: &str,
 ) -> Result<Value, SystemCallError> {
-    run_system_call_as(state, org_db, "system:scheduler", plugin, function, payload, request_id).await
+    run_system_call_as(
+        state,
+        org_db,
+        "system:scheduler",
+        plugin,
+        function,
+        payload,
+        request_id,
+    )
+    .await
 }
 
 /// Like [`run_system_call`], recorded under another kernel actor such as `system:cli:ann`.
@@ -468,14 +604,25 @@ pub async fn run_system_call_as(
         .and_then(|_| payload.get("depth"))
         .and_then(Value::as_u64)
         .map_or(0, |depth| u32::try_from(depth).unwrap_or(u32::MAX));
-    let result = run_call(state, &mut identity, plugin, function, payload, trail, event_depth).await;
+    let result = run_call(
+        state,
+        &mut identity,
+        plugin,
+        function,
+        payload,
+        trail,
+        event_depth,
+    )
+    .await;
     let status = match &result {
         Ok(_) => StatusCode::OK,
         Err(error) => error.status,
     };
     match state.org(org_db).await {
         Ok(org) => {
-            if let Err(error) = record_plugin_call(&org, &identity.audit, plugin, function, status.as_u16()).await {
+            if let Err(error) =
+                record_plugin_call(&org, &identity.audit, plugin, function, status.as_u16()).await
+            {
                 log::error!("scheduled plugin call audit failed: {error}");
             }
         }

@@ -73,7 +73,11 @@ impl SchedulerLink {
 
     /// Wake only the scheduler in this process.
     pub fn wake_local(&self, org: &str) {
-        self.inner.hot.lock().unwrap_or_else(PoisonError::into_inner).insert(org.to_string());
+        self.inner
+            .hot
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(org.to_string());
         self.inner.wake.notify_one();
     }
 
@@ -94,7 +98,12 @@ impl SchedulerLink {
 
     /// Organizations that were woken since the last call.
     pub fn take_hot(&self) -> Vec<String> {
-        self.inner.hot.lock().unwrap_or_else(PoisonError::into_inner).drain().collect()
+        self.inner
+            .hot
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .drain()
+            .collect()
     }
 
     /// Whether a reload was requested since the last call.
@@ -108,11 +117,19 @@ impl SchedulerLink {
     }
 
     pub fn set_remote(&self, remote: Option<Remote>) {
-        *self.inner.remote.write().unwrap_or_else(PoisonError::into_inner) = remote;
+        *self
+            .inner
+            .remote
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = remote;
     }
 
     pub fn remote(&self) -> Option<Remote> {
-        self.inner.remote.read().unwrap_or_else(PoisonError::into_inner).clone()
+        self.inner
+            .remote
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     pub fn set_paused(&self, paused: bool) {
@@ -141,15 +158,29 @@ impl crate::kernel::SchedulerHandle for AppScheduler {
     }
 
     async fn defaults(&self, org: &str) -> crate::kernel::JobDefaults {
-        let org = crate::tenancy::OrgRef { slug: org.to_string(), db_name: org.to_string() };
+        let org = crate::tenancy::OrgRef {
+            slug: org.to_string(),
+            db_name: org.to_string(),
+        };
         crate::kernel::JobDefaults {
-            max_attempts: worker::number_setting(&self.state, &org, "scheduler.max_attempts", 3).await.clamp(1, 20),
-            backoff_secs: worker::number_setting(&self.state, &org, "scheduler.retry_backoff_secs", 30).await.clamp(1, 3600),
+            max_attempts: worker::number_setting(&self.state, &org, "scheduler.max_attempts", 3)
+                .await
+                .clamp(1, 20),
+            backoff_secs: worker::number_setting(
+                &self.state,
+                &org,
+                "scheduler.retry_backoff_secs",
+                30,
+            )
+            .await
+            .clamp(1, 3600),
         }
     }
 
     async fn check_messaging(&self, org: &str, kind: &str) -> Result<(), String> {
-        crate::messaging::check_configured(&self.state, org, kind).await.map_err(|error| error.message)
+        crate::messaging::check_configured(&self.state, org, kind)
+            .await
+            .map_err(|error| error.message)
     }
 }
 
@@ -164,7 +195,9 @@ mod tests {
         link.wake_local("acme");
         link.wake_local("beta");
         // A wake that happened before the wait is not lost.
-        tokio::time::timeout(Duration::from_secs(1), link.wait(Duration::from_secs(30))).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(1), link.wait(Duration::from_secs(30)))
+            .await
+            .unwrap();
         let mut hot = link.take_hot();
         hot.sort();
         assert_eq!(hot, ["acme", "beta"]);

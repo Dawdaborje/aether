@@ -27,7 +27,9 @@ use std::time::Instant;
 
 use mlua::chunk::{ChunkMode, Compiler};
 use mlua::serde::SerializeOptions;
-use mlua::{Error as LuaError, Function, Lua, LuaSerdeExt, MultiValue, Table, Value as LuaValue, VmState};
+use mlua::{
+    Error as LuaError, Function, Lua, LuaSerdeExt, MultiValue, Table, Value as LuaValue, VmState,
+};
 use serde_json::Value;
 
 use crate::kernel::PluginHostContext;
@@ -40,10 +42,19 @@ const OPERATIONS_MARK: &str = "\u{1}operations\u{1}";
 const TIME_MARK: &str = "\u{1}time\u{1}";
 
 /// Globals a script must not have: they load code or files, or reach into the interpreter.
-const REMOVED_GLOBALS: [&str; 6] = ["require", "package", "loadstring", "getfenv", "setfenv", "newproxy"];
+const REMOVED_GLOBALS: [&str; 6] = [
+    "require",
+    "package",
+    "loadstring",
+    "getfenv",
+    "setfenv",
+    "newproxy",
+];
 
 /// JSON `null` becomes `nil` rather than a placeholder value, so `if record == nil` works.
-const TO_LUA: SerializeOptions = SerializeOptions::new().serialize_none_to_null(false).serialize_unit_to_null(false);
+const TO_LUA: SerializeOptions = SerializeOptions::new()
+    .serialize_none_to_null(false)
+    .serialize_unit_to_null(false);
 
 /// A checked Lua script, ready to run. Cheap to share; each call builds its own interpreter.
 pub struct LuaProgram {
@@ -55,8 +66,11 @@ pub struct LuaProgram {
 impl LuaProgram {
     /// Compile a script and check that it is allowed to run.
     pub fn compile(source: &str) -> Result<Self, ScriptError> {
-        let bytecode = Compiler::new().compile(source).map_err(|error| ScriptError::Compile(error.to_string()))?;
-        let lua = limited_lua(Instant::now()).map_err(|error| ScriptError::Compile(error.to_string()))?;
+        let bytecode = Compiler::new()
+            .compile(source)
+            .map_err(|error| ScriptError::Compile(error.to_string()))?;
+        let lua =
+            limited_lua(Instant::now()).map_err(|error| ScriptError::Compile(error.to_string()))?;
         let provided = global_names(&lua)?;
         run_chunk(&lua, &bytecode).map_err(|error| {
             ScriptError::Compile(format!(
@@ -68,12 +82,18 @@ impl LuaProgram {
         let mut functions = Vec::new();
         for pair in lua.globals().pairs::<String, LuaValue>() {
             let (name, value) = pair.map_err(|error| ScriptError::Compile(error.to_string()))?;
-            if matches!(value, LuaValue::Function(_)) && !name.starts_with('_') && !provided.contains(&name) {
+            if matches!(value, LuaValue::Function(_))
+                && !name.starts_with('_')
+                && !provided.contains(&name)
+            {
                 functions.push(name);
             }
         }
         functions.sort();
-        Ok(Self { bytecode, functions })
+        Ok(Self {
+            bytecode,
+            functions,
+        })
     }
 
     pub fn has_function(&self, name: &str) -> bool {
@@ -98,12 +118,23 @@ impl LuaProgram {
             return Err(ScriptError::NoSuchFunction(function.to_string()));
         }
         let lua = limited_lua(Instant::now()).map_err(describe)?;
-        register_commands(&lua, &Rc::new(Host { context: host, runtime })).map_err(describe)?;
+        register_commands(
+            &lua,
+            &Rc::new(Host {
+                context: host,
+                runtime,
+            }),
+        )
+        .map_err(describe)?;
         run_chunk(&lua, &self.bytecode).map_err(describe)?;
         let target: Function = lua.globals().get(function).map_err(describe)?;
-        let input = lua.to_value_with(&input, TO_LUA).map_err(|error| ScriptError::Data(error.to_string()))?;
+        let input = lua
+            .to_value_with(&input, TO_LUA)
+            .map_err(|error| ScriptError::Data(error.to_string()))?;
         let result: LuaValue = target.call(input).map_err(describe)?;
-        let output = lua.from_value::<Value>(result).map_err(|error| ScriptError::Data(error.to_string()))?;
+        let output = lua
+            .from_value::<Value>(result)
+            .map_err(|error| ScriptError::Data(error.to_string()))?;
         Ok(whole_numbers(output))
     }
 }
@@ -112,7 +143,10 @@ impl LuaProgram {
 fn global_names(lua: &Lua) -> Result<Vec<String>, ScriptError> {
     lua.globals()
         .pairs::<String, LuaValue>()
-        .map(|pair| pair.map(|(name, _)| name).map_err(|error| ScriptError::Compile(error.to_string())))
+        .map(|pair| {
+            pair.map(|(name, _)| name)
+                .map_err(|error| ScriptError::Compile(error.to_string()))
+        })
         .collect()
 }
 
@@ -126,11 +160,17 @@ fn run_chunk(lua: &Lua, bytecode: &[u8]) -> mlua::Result<()> {
 fn whole_numbers(value: Value) -> Value {
     match value {
         Value::Number(number) => match number.as_f64() {
-            Some(float) if number.is_f64() && float.fract() == 0.0 && float.abs() < 9.0e15 => Value::from(float as i64),
+            Some(float) if number.is_f64() && float.fract() == 0.0 && float.abs() < 9.0e15 => {
+                Value::from(float as i64)
+            }
             _ => Value::Number(number),
         },
         Value::Array(items) => Value::Array(items.into_iter().map(whole_numbers).collect()),
-        Value::Object(map) => Value::Object(map.into_iter().map(|(key, item)| (key, whole_numbers(item))).collect()),
+        Value::Object(map) => Value::Object(
+            map.into_iter()
+                .map(|(key, item)| (key, whole_numbers(item)))
+                .collect(),
+        ),
         other => other,
     }
 }
@@ -143,13 +183,21 @@ fn describe(error: LuaError) -> ScriptError {
         return ScriptError::User(message.trim_end().to_string());
     }
     if text.contains(OPERATIONS_MARK) {
-        return ScriptError::Failed(format!("the script ran more than {MAX_OPERATIONS} operations"));
+        return ScriptError::Failed(format!(
+            "the script ran more than {MAX_OPERATIONS} operations"
+        ));
     }
     if text.contains(TIME_MARK) {
-        return ScriptError::Failed(format!("the script ran longer than {} s", MAX_RUN_TIME.as_secs()));
+        return ScriptError::Failed(format!(
+            "the script ran longer than {} s",
+            MAX_RUN_TIME.as_secs()
+        ));
     }
     if matches!(error, LuaError::MemoryError(_)) {
-        return ScriptError::Failed(format!("the script used more than {} MB of memory", MAX_MEMORY_BYTES / (1024 * 1024)));
+        return ScriptError::Failed(format!(
+            "the script used more than {} MB of memory",
+            MAX_MEMORY_BYTES / (1024 * 1024)
+        ));
     }
     ScriptError::Failed(text)
 }
@@ -191,24 +239,36 @@ fn limited_lua(started: Instant) -> mlua::Result<Lua> {
     globals.set(
         "print",
         lua.create_function(|_, args: MultiValue| {
-            let text: Vec<String> = args.iter().map(|value| value.to_string().unwrap_or_default()).collect();
+            let text: Vec<String> = args
+                .iter()
+                .map(|value| value.to_string().unwrap_or_default())
+                .collect();
             log::info!("[script] {}", text.join("\t"));
             Ok(())
         })?,
     )?;
     let log_table = lua.create_table()?;
-    log_table.set("info", lua.create_function(|_, message: String| {
+    log_table.set(
+        "info",
+        lua.create_function(|_, message: String| {
             log::info!("[script] {message}");
             Ok(())
-        })?)?;
-    log_table.set("warn", lua.create_function(|_, message: String| {
+        })?,
+    )?;
+    log_table.set(
+        "warn",
+        lua.create_function(|_, message: String| {
             log::warn!("[script] {message}");
             Ok(())
-        })?)?;
-    log_table.set("error", lua.create_function(|_, message: String| {
+        })?,
+    )?;
+    log_table.set(
+        "error",
+        lua.create_function(|_, message: String| {
             log::error!("[script] {message}");
             Ok(())
-        })?)?;
+        })?,
+    )?;
     globals.set("log", log_table)?;
     Ok(lua)
 }
@@ -247,7 +307,14 @@ const fn command(
     command: &'static str,
     args: &'static [Arg],
 ) -> Command {
-    Command { module, name, command, args, fixed: &[], pick: None }
+    Command {
+        module,
+        name,
+        command,
+        args,
+        fixed: &[],
+        pick: None,
+    }
 }
 
 use Arg::{Body, Key, Merge};
@@ -257,20 +324,117 @@ use Arg::{Body, Key, Merge};
 const COMMANDS: &[Command] = &[
     command("db", "get", "db::get", &[Key("model"), Key("id"), Merge]),
     command("db", "find", "db::find", &[Key("model"), Merge]),
-    command("db", "transitions", "db::transitions", &[Key("model"), Key("id")]),
+    command("db", "count", "db::count", &[Key("model"), Merge]),
+    command("db", "aggregate", "db::aggregate", &[Key("model"), Merge]),
+    command("report", "query", "report::query", &[Merge]),
+    command("report", "export", "report::export", &[Merge]),
+    command("db", "search", "db::search", &[Key("model"), Merge]),
+    command(
+        "db",
+        "transitions",
+        "db::transitions",
+        &[Key("model"), Key("id")],
+    ),
     command("db", "create", "db::create", &[Key("model"), Key("data")]),
-    command("db", "update", "db::update", &[Key("model"), Key("id"), Key("data")]),
-    command("db", "increment", "db::increment", &[Key("model"), Key("id"), Key("field"), Key("by")]),
+    command(
+        "db",
+        "update",
+        "db::update",
+        &[Key("model"), Key("id"), Key("data")],
+    ),
+    command(
+        "db",
+        "increment",
+        "db::increment",
+        &[Key("model"), Key("id"), Key("field"), Key("by")],
+    ),
     command("db", "delete", "db::delete", &[Key("model"), Key("id")]),
     command("db", "transaction", "db::transaction", &[Key("ops")]),
     command("cache", "get", "cache::get", &[Key("key")]),
-    command("cache", "set", "cache::set", &[Key("key"), Key("value"), Key("ttl_secs")]),
+    command(
+        "cache",
+        "set",
+        "cache::set",
+        &[Key("key"), Key("value"), Key("ttl_secs")],
+    ),
+    command(
+        "cache",
+        "get_row",
+        "cache::get_row",
+        &[Key("model"), Key("id")],
+    ),
+    command(
+        "cache",
+        "set_row",
+        "cache::set_row",
+        &[Key("model"), Key("id"), Key("value"), Key("ttl_secs")],
+    ),
+    command(
+        "cache",
+        "invalidate_row",
+        "cache::invalidate_row",
+        &[Key("model"), Key("id")],
+    ),
+    command(
+        "cache",
+        "get_list",
+        "cache::get_list",
+        &[Key("model"), Key("query_hash")],
+    ),
+    command(
+        "cache",
+        "set_list",
+        "cache::set_list",
+        &[
+            Key("model"),
+            Key("query_hash"),
+            Key("value"),
+            Key("ttl_secs"),
+        ],
+    ),
+    command("cache", "get_meta", "cache::get_meta", &[Key("name")]),
+    command(
+        "cache",
+        "set_meta",
+        "cache::set_meta",
+        &[Key("name"), Key("value"), Key("ttl_secs")],
+    ),
+    command(
+        "cache",
+        "set_agg",
+        "cache::set_agg",
+        &[
+            Key("model"),
+            Key("name"),
+            Key("scope_hash"),
+            Key("value"),
+            Key("ttl_secs"),
+        ],
+    ),
     command("cache", "invalidate", "cache::invalidate", &[Key("key")]),
-    command("cache", "invalidate_prefix", "cache::invalidate", &[Key("prefix")]),
+    command(
+        "cache",
+        "invalidate_prefix",
+        "cache::invalidate",
+        &[Key("prefix")],
+    ),
     command("cache", "clear", "cache::clear", &[]),
-    command("storage", "write", "storage::write", &[Key("key"), Key("text")]),
-    command("storage", "write_base64", "storage::write", &[Key("key"), Key("base64")]),
-    Command { pick: Some("text"), ..command("storage", "read", "storage::read", &[Key("key")]) },
+    command(
+        "storage",
+        "write",
+        "storage::write",
+        &[Key("key"), Key("text")],
+    ),
+    command(
+        "storage",
+        "write_base64",
+        "storage::write",
+        &[Key("key"), Key("base64")],
+    ),
+    Command {
+        pick: Some("text"),
+        ..command("storage", "read", "storage::read", &[Key("key")])
+    },
     Command {
         fixed: &[("encoding", "base64")],
         pick: Some("base64"),
@@ -278,34 +442,104 @@ const COMMANDS: &[Command] = &[
     },
     command("storage", "delete", "storage::delete", &[Key("key")]),
     command("storage", "list", "storage::list", &[Key("prefix")]),
-    command("plugins", "call", "plugins::call", &[Key("plugin"), Key("function"), Key("input")]),
-    command("plugins", "invoke", "plugins::call", &[Key("plugin"), Key("function"), Key("input")]),
-    command("bridge", "call", "bridge::call", &[Key("bridge"), Key("action"), Key("params")]),
-    command("bridge", "invoke", "bridge::call", &[Key("bridge"), Key("action"), Key("params")]),
-    Command { pick: Some("text"), ..command("fs", "read", "fs::read", &[Key("path")]) },
+    command(
+        "plugins",
+        "call",
+        "plugins::call",
+        &[Key("plugin"), Key("function"), Key("input")],
+    ),
+    command(
+        "plugins",
+        "invoke",
+        "plugins::call",
+        &[Key("plugin"), Key("function"), Key("input")],
+    ),
+    command(
+        "bridge",
+        "call",
+        "bridge::call",
+        &[Key("bridge"), Key("action"), Key("params")],
+    ),
+    command(
+        "bridge",
+        "invoke",
+        "bridge::call",
+        &[Key("bridge"), Key("action"), Key("params")],
+    ),
+    Command {
+        pick: Some("text"),
+        ..command("fs", "read", "fs::read", &[Key("path")])
+    },
     Command {
         fixed: &[("encoding", "base64")],
         pick: Some("base64"),
         ..command("fs", "read_base64", "fs::read", &[Key("path")])
     },
     command("fs", "write", "fs::write", &[Key("path"), Key("text")]),
-    command("fs", "write_base64", "fs::write", &[Key("path"), Key("base64")]),
+    command(
+        "fs",
+        "write_base64",
+        "fs::write",
+        &[Key("path"), Key("base64")],
+    ),
     command("fs", "list", "fs::list", &[Key("path")]),
     command("fs", "stat", "fs::stat", &[Key("path")]),
-    command("fs", "rename", "fs::rename", &[Key("from"), Key("to"), Key("overwrite")]),
+    command(
+        "fs",
+        "rename",
+        "fs::rename",
+        &[Key("from"), Key("to"), Key("overwrite")],
+    ),
     command("fs", "delete", "fs::delete", &[Key("path")]),
     command("communication", "send", "communication::send", &[Merge]),
-    command("scheduler", "enqueue", "scheduler::enqueue", &[Key("function"), Key("payload"), Merge]),
+    command("org", "members", "org::members", &[]),
+    command("org", "create_member", "org::create_member", &[Merge]),
+    command("org", "invite", "org::invite", &[Merge]),
+    command("magic_link", "create", "magic_link::create", &[Merge]),
+    command("magic_link", "revoke", "magic_link::revoke", &[Merge]),
+    command(
+        "magic_link",
+        "inspect",
+        "magic_link::inspect",
+        &[Key("token")],
+    ),
+    command(
+        "scheduler",
+        "enqueue",
+        "scheduler::enqueue",
+        &[Key("function"), Key("payload"), Merge],
+    ),
     command("scheduler", "job", "scheduler::job", &[Key("id")]),
-    command("scheduler", "cancel_job", "scheduler::cancel_job", &[Key("id")]),
+    command(
+        "scheduler",
+        "cancel_job",
+        "scheduler::cancel_job",
+        &[Key("id")],
+    ),
     command("scheduler", "register", "scheduler::register", &[Merge]),
     command("scheduler", "cancel", "scheduler::cancel", &[Key("name")]),
     command("http", "request", "http::request", &[Merge]),
-    Command { fixed: &[("method", "GET")], ..command("http", "get", "http::request", &[Key("url")]) },
-    Command { fixed: &[("method", "POST")], ..command("http", "post", "http::request", &[Key("url"), Body]) },
+    Command {
+        fixed: &[("method", "GET")],
+        ..command("http", "get", "http::request", &[Key("url")])
+    },
+    Command {
+        fixed: &[("method", "POST")],
+        ..command("http", "post", "http::request", &[Key("url"), Body])
+    },
     command("notify", "send", "notify::send", &[Merge]),
-    command("events", "subscribe", "events::subscribe", &[Key("event"), Key("function")]),
-    command("events", "unsubscribe", "events::unsubscribe", &[Key("event")]),
+    command(
+        "events",
+        "subscribe",
+        "events::subscribe",
+        &[Key("event"), Key("function")],
+    ),
+    command(
+        "events",
+        "unsubscribe",
+        "events::unsubscribe",
+        &[Key("event")],
+    ),
     command("events", "emit", "events::emit", &[Merge]),
     command("context", "get", "context::get", &[]),
 ];
@@ -316,7 +550,9 @@ impl Host {
         let mut merged = serde_json::Map::new();
         let mut keyed = serde_json::Map::new();
         for (index, value) in args.into_iter().enumerate() {
-            let Some(arg) = spec.args.get(index) else { break };
+            let Some(arg) = spec.args.get(index) else {
+                break;
+            };
             if value.is_nil() {
                 continue;
             }
@@ -347,8 +583,13 @@ impl Host {
         for (key, text) in spec.fixed {
             merged.insert((*key).to_string(), Value::String((*text).to_string()));
         }
-        let payload = if merged.is_empty() { Value::Null } else { Value::Object(merged) };
-        let mut data = kernel_data(&self.context, &self.runtime, spec.command, payload).map_err(LuaError::runtime)?;
+        let payload = if merged.is_empty() {
+            Value::Null
+        } else {
+            Value::Object(merged)
+        };
+        let mut data = kernel_data(&self.context, &self.runtime, spec.command, payload)
+            .map_err(LuaError::runtime)?;
         if let Some(field) = spec.pick {
             data = data.get(field).cloned().unwrap_or(Value::Null);
         }
@@ -369,7 +610,10 @@ fn register_commands(lua: &Lua, host: &Rc<Host>) -> mlua::Result<()> {
             }
         };
         let host = host.clone();
-        module.set(spec.name, lua.create_function(move |lua, args: MultiValue| host.run(lua, spec, args))?)?;
+        module.set(
+            spec.name,
+            lua.create_function(move |lua, args: MultiValue| host.run(lua, spec, args))?,
+        )?;
     }
     Ok(())
 }
@@ -399,19 +643,30 @@ mod tests {
             "function hello(input) return input end\nlocal function secret() return 1 end\nfunction _helper() return 2 end\nfunction zero() return 3 end\nLIMIT = 5",
         )?;
         assert_eq!(script.function_names(), vec!["hello", "zero"]);
-        assert!(!script.has_function("secret") && !script.has_function("_helper") && !script.has_function("LIMIT"));
+        assert!(
+            !script.has_function("secret")
+                && !script.has_function("_helper")
+                && !script.has_function("LIMIT")
+        );
         Ok(())
     }
 
     #[test]
     fn a_script_that_does_not_compile_is_refused_when_loaded() {
-        assert!(matches!(LuaProgram::compile("function broken( {"), Err(ScriptError::Compile(_))));
+        assert!(matches!(
+            LuaProgram::compile("function broken( {"),
+            Err(ScriptError::Compile(_))
+        ));
     }
 
     #[test]
     fn the_top_level_may_not_call_kernel_commands() {
         let result = LuaProgram::compile(r#"local note = db.get("note", "1")"#);
-        assert!(matches!(&result, Err(ScriptError::Compile(message)) if message.contains("top level")), "{:?}", result.err());
+        assert!(
+            matches!(&result, Err(ScriptError::Compile(message)) if message.contains("top level")),
+            "{:?}",
+            result.err()
+        );
     }
 
     #[tokio::test]
@@ -443,28 +698,40 @@ mod tests {
 
     #[tokio::test]
     async fn runaway_scripts_are_stopped_even_inside_pcall() -> TestResult {
-        let error = run_script("function run() while true do pcall(function() while true do end end) end end", &[])
-            .await
-            .err()
-            .ok_or("it finished")?;
+        let error = run_script(
+            "function run() while true do pcall(function() while true do end end) end end",
+            &[],
+        )
+        .await
+        .err()
+        .ok_or("it finished")?;
         assert!(error.to_string().contains("operations"), "{error}");
         Ok(())
     }
 
     #[tokio::test]
     async fn fail_reaches_the_caller_from_a_nested_function() -> TestResult {
-        let error = run_script(r#"local function inner() fail("deep") end function run() inner() end"#, &[])
-            .await
-            .err()
-            .ok_or("it finished")?;
-        assert!(matches!(&error, ScriptError::User(message) if message == "deep"), "{error}");
+        let error = run_script(
+            r#"local function inner() fail("deep") end function run() inner() end"#,
+            &[],
+        )
+        .await
+        .err()
+        .ok_or("it finished")?;
+        assert!(
+            matches!(&error, ScriptError::User(message) if message == "deep"),
+            "{error}"
+        );
         assert!(error.to_string().starts_with(USER_ERROR_PREFIX));
         Ok(())
     }
 
     #[tokio::test]
     async fn other_errors_are_internal() -> TestResult {
-        let error = run_script(r#"function run() error("db exploded") end"#, &[]).await.err().ok_or("it finished")?;
+        let error = run_script(r#"function run() error("db exploded") end"#, &[])
+            .await
+            .err()
+            .ok_or("it finished")?;
         assert!(matches!(error, ScriptError::Failed(_)), "{error}");
         Ok(())
     }
@@ -477,7 +744,12 @@ mod tests {
         let host = crate::kernel::host::test_support::dummy_ctx(&[]);
         let runtime = tokio::runtime::Handle::current();
         let answer = tokio::task::spawn_blocking(move || {
-            script.call("double", serde_json::json!({ "n": 21, "tags": ["a", "b"] }), host, runtime)
+            script.call(
+                "double",
+                serde_json::json!({ "n": 21, "tags": ["a", "b"] }),
+                host,
+                runtime,
+            )
         })
         .await??;
         assert_eq!(answer, serde_json::json!({ "n": 42, "tags": ["a", "b"] }));
@@ -498,7 +770,10 @@ mod tests {
             &["cache::get", "cache::set", "cache::invalidate", "cache::clear"],
         )
         .await?;
-        assert_eq!(result, serde_json::json!({ "n": 1, "tag": "a", "cleared": 1 }));
+        assert_eq!(
+            result,
+            serde_json::json!({ "n": 1, "tag": "a", "cleared": 1 })
+        );
         Ok(())
     }
 
@@ -542,7 +817,12 @@ mod tests {
             &["http::request"],
         )
         .await?;
-        assert!(result.as_str().is_some_and(|text| text.contains("http_hosts")), "{result}");
+        assert!(
+            result
+                .as_str()
+                .is_some_and(|text| text.contains("http_hosts")),
+            "{result}"
+        );
         Ok(())
     }
 
@@ -557,7 +837,12 @@ mod tests {
             &["plugins::call"],
         )
         .await?;
-        assert!(result.as_str().is_some_and(|text| text.contains("dependencies")), "{result}");
+        assert!(
+            result
+                .as_str()
+                .is_some_and(|text| text.contains("dependencies")),
+            "{result}"
+        );
         Ok(())
     }
 

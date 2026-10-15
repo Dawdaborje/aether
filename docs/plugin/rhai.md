@@ -45,7 +45,7 @@ fn add_note(input) {
 | `plugins::invoke(plugin, function[, input])` | `plugins::call` (the plugin must be in `dependencies`; `call` is reserved in Rhai) |
 | `notify::send(map)` | `notify::send` |
 | `events::emit(map)` | `events::emit` |
-| `context::get()` | `context::get` (`actor`, `organization`, `now`, …) |
+| `context::get()` | `context::get` (`actor`, `organization`, `company`, `now`, …) |
 | `fail("message")` | stops the call; the message is shown to the caller |
 | `log::info/warn/error(text)` | the kernel log |
 

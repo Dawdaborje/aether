@@ -8,17 +8,17 @@
 
 use std::net::IpAddr;
 
-use aether_orm::{ValidSession, find_session_by_token};
+use aether_orm::ValidSession;
 use axum::http::{HeaderMap, Request, header::USER_AGENT};
 use axum_extra::extract::CookieJar;
 use surrealdb::types::SurrealValue;
 use thiserror::Error;
 
 use super::audit::{Actor, AuditContext, AuditError, clip_user_agent, new_request_id};
-use crate::request_log::REQUEST_ID_HEADER;
 use super::ip::client_ip;
 use super::organizations::membership_db_names;
 use super::visitor::{self, VISITOR_COOKIE, record_id_string};
+use crate::request_log::REQUEST_ID_HEADER;
 use crate::state::AppState;
 use crate::tenancy::resolve_org_slug;
 
@@ -53,7 +53,9 @@ impl IdentityError {
         match self {
             // Someone not logged in is asked to log in rather than told what exists.
             Self::OrgNotFound { logged_in: true } => (StatusCode::NOT_FOUND, "not found"),
-            Self::OrgNotFound { logged_in: false } => (StatusCode::UNAUTHORIZED, "not authenticated"),
+            Self::OrgNotFound { logged_in: false } => {
+                (StatusCode::UNAUTHORIZED, "not authenticated")
+            }
             Self::OrgSelectionRequired => (StatusCode::CONFLICT, "organization selection required"),
             Self::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "too many requests"),
             Self::Database(_) | Self::Audit(_) => {
@@ -66,7 +68,9 @@ impl IdentityError {
 /// Answers to rule variables (`$hr.employee`), kept for one request so a rule is not worked out
 /// again by every query. Shared by the plugins a request calls.
 #[derive(Debug, Clone, Default)]
-pub struct RuleCache(pub std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, serde_json::Value>>>);
+pub struct RuleCache(
+    pub std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, serde_json::Value>>>,
+);
 
 impl RuleCache {
     pub fn get(&self, name: &str) -> Option<serde_json::Value> {
@@ -99,11 +103,6 @@ pub struct Identity {
     pub new_visitor_token: Option<String>,
     /// Answers to rule variables for this request.
     pub rule_cache: RuleCache,
-}
-
-#[derive(Debug, SurrealValue)]
-struct DbNameRow {
-    db_name: String,
 }
 
 #[derive(Debug, SurrealValue)]
@@ -183,11 +182,13 @@ async fn identify_inner(
         .map(|cookie| cookie.value())
         .filter(|value| !value.is_empty())
     {
-        Some(token) => find_session_by_token(&core, token)
+        Some(token) => crate::session_cache::session_from_token(&state.cache, &core, token)
             .await
             .map_err(|error| match error {
                 aether_orm::SessionError::Surreal(error) => IdentityError::Database(error),
-                aether_orm::SessionError::Invalid => IdentityError::OrgNotFound { logged_in: false },
+                aether_orm::SessionError::Invalid => {
+                    IdentityError::OrgNotFound { logged_in: false }
+                }
             })?
             .filter(|session| session.user.is_active),
         None => None,
@@ -229,8 +230,7 @@ async fn identify_inner(
     if org_db.is_none()
         && let Some(session) = &session
     {
-        let memberships =
-            membership_db_names(state, &record_id_string(&session.user.id)).await?;
+        let memberships = membership_db_names(state, &record_id_string(&session.user.id)).await?;
         // A developer who left their organization stays out of every one.
         let left = super::organizations::session_left_organization(session);
         match memberships.as_slice() {
@@ -281,24 +281,34 @@ async fn identify_inner(
     log::debug!(
         "{request_id} organization `{org_db}`; actor {}{}",
         actor.kind(),
-        if foreign_user { " (logged in, but not a member: treated as a visitor)" } else { "" }
+        if foreign_user {
+            " (logged in, but not a member: treated as a visitor)"
+        } else {
+            ""
+        }
     );
     let org = state.org(&org_db).await?;
     if let Some(token) = jar
         .get(VISITOR_COOKIE)
         .map(|cookie| cookie.value())
         .filter(|value| !value.is_empty())
-        && let Some(found) = visitor::find(&org, token).await?
+        && let Some(found) = find_visitor(state, &org_db, &org, token).await?
     {
         match &actor {
             Actor::User(user_id) => {
                 // The browser that browsed anonymously has now logged in:
                 // tie its earlier history to the user.
-                let link = found.linked_user.is_none().then_some(user_id.as_str());
-                visitor::touch(&org, &found.id, link).await?;
+                if found.linked_user.is_none() {
+                    visitor::touch(&org, &found.id, Some(user_id.as_str())).await?;
+                    let _ = state
+                        .cache
+                        .kernel_org_invalidate(&org_db, &visitor_key(token));
+                } else {
+                    touch_visitor(state, &org_db, &org, &found.id).await?;
+                }
             }
             _ => {
-                visitor::touch(&org, &found.id, None).await?;
+                touch_visitor(state, &org_db, &org, &found.id).await?;
                 actor = Actor::Visitor(found.id);
             }
         }
@@ -319,6 +329,64 @@ async fn identify_inner(
         new_visitor_token: None,
         rule_cache: RuleCache::default(),
     })
+}
+
+/// How long a visitor lookup, and the "seen" write that follows it, are reused.
+const VISITOR_WARM: std::time::Duration = std::time::Duration::from_secs(300);
+const VISITOR_SEEN_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+
+fn visitor_key(raw_token: &str) -> String {
+    format!("visitor:{}", visitor::hash_token(raw_token))
+}
+
+/// `visitor::find` behind the warm cache: a returning browser costs no query per request.
+async fn find_visitor(
+    state: &AppState,
+    org_db: &str,
+    org: &surrealdb::Surreal<surrealdb::engine::remote::ws::Client>,
+    raw_token: &str,
+) -> Result<Option<visitor::Visitor>, surrealdb::Error> {
+    let key = visitor_key(raw_token);
+    if let Ok(Some(value)) = state.cache.kernel_org_get(org_db, &key)
+        && let Ok(json) = serde_json::from_slice::<serde_json::Value>(value.as_slice())
+        && let Some(id) = json.get("id").and_then(|v| v.as_str())
+    {
+        return Ok(Some(visitor::Visitor {
+            id: id.to_string(),
+            linked_user: json
+                .get("linked_user")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+        }));
+    }
+    let found = visitor::find(org, raw_token).await?;
+    if let Some(found) = &found {
+        let json = serde_json::json!({ "id": found.id, "linked_user": found.linked_user });
+        if let Ok(bytes) = serde_json::to_vec(&json) {
+            let _ = state
+                .cache
+                .kernel_org_set(org_db, &key, bytes, Some(VISITOR_WARM));
+        }
+    }
+    Ok(found)
+}
+
+/// Record "seen now" at most once a minute per visitor instead of once per request.
+async fn touch_visitor(
+    state: &AppState,
+    org_db: &str,
+    org: &surrealdb::Surreal<surrealdb::engine::remote::ws::Client>,
+    visitor_id: &str,
+) -> Result<(), surrealdb::Error> {
+    let key = format!("visitor_seen:{visitor_id}");
+    if matches!(state.cache.kernel_org_get(org_db, &key), Ok(Some(_))) {
+        return Ok(());
+    }
+    visitor::touch(org, visitor_id, None).await?;
+    let _ = state
+        .cache
+        .kernel_org_set(org_db, &key, b"1".as_slice(), Some(VISITOR_SEEN_EVERY));
+    Ok(())
 }
 
 fn throttle(state: &AppState, ip: Option<IpAddr>) -> Result<(), IdentityError> {
@@ -343,7 +411,10 @@ pub fn with_retry_after(mut response: axum::response::Response) -> axum::respons
 
 /// Give an anonymous caller a visitor identity (subject to the per-address
 /// rate limit) and make it the actor. Leaves `org` on the organization.
-pub async fn ensure_visitor(state: &AppState, identity: &mut Identity) -> Result<(), IdentityError> {
+pub async fn ensure_visitor(
+    state: &AppState,
+    identity: &mut Identity,
+) -> Result<(), IdentityError> {
     if identity.actor != Actor::Anonymous {
         return Ok(());
     }
@@ -381,32 +452,37 @@ pub fn with_visitor_cookie(state: &AppState, identity: &Identity, jar: CookieJar
 /// The first candidate that is a registered organization database. Tenancy
 /// slugs can be written with or without an `org_` prefix, so both are tried.
 /// Leaves `org` on the core database.
-async fn existing_org(state: &AppState, candidates: &[String]) -> Result<Option<String>, surrealdb::Error> {
+async fn existing_org(
+    state: &AppState,
+    candidates: &[String],
+) -> Result<Option<String>, surrealdb::Error> {
     if candidates.is_empty() {
         return Ok(None);
     }
-    let core = state.core().await?;
-    let mut response = core
-        .query("SELECT db_name FROM org_databases WHERE db_name IN $candidates;")
-        .bind(("candidates", candidates.to_vec()))
+    let pick = |names: &[String]| {
+        candidates
+            .iter()
+            .find(|candidate| names.iter().any(|name| name == *candidate))
+            .cloned()
+    };
+    if let Ok(Some(names)) = state.cache.warm_get_org_databases() {
+        if let Some(hit) = pick(&names) {
+            return Ok(Some(hit));
+        }
+        // Warm list may lag a CLI create: reload from core and try again.
+    }
+    let names = super::org_databases::refresh(state).await?;
+    Ok(pick(&names))
+}
+
+async fn is_member(
+    state: &AppState,
+    user_id: &str,
+    org_db: &str,
+) -> Result<bool, surrealdb::Error> {
+    // Warm-cached memberships; invalidated whenever a member is invited, removed or restored.
+    Ok(membership_db_names(state, user_id)
         .await?
-        .check()?;
-    let rows: Vec<DbNameRow> = response.take(0)?;
-    Ok(candidates
         .iter()
-        .find(|candidate| rows.iter().any(|row| &row.db_name == *candidate))
-        .cloned())
+        .any(|name| name == org_db))
 }
-
-async fn is_member(state: &AppState, user_id: &str, org_db: &str) -> Result<bool, surrealdb::Error> {
-    let core = state.core().await?;
-    let mut response = core
-        .query("SELECT organization_id FROM organization_users WHERE user_id = $user AND organization_id = $org LIMIT 1;")
-        .bind(("user", user_id.to_string()))
-        .bind(("org", format!("organizations:{org_db}")))
-        .await?
-        .check()?;
-    let rows: Vec<OrganizationIdRow> = response.take(0)?;
-    Ok(!rows.is_empty())
-}
-

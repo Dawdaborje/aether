@@ -52,19 +52,54 @@ pub enum LoadPathsError {
     },
 }
 
+/// One workspace.toml discovered while resolving load paths.
+#[derive(Debug, Clone)]
+pub struct WorkspaceSource {
+    pub dir: PathBuf,
+    pub name: String,
+    pub label: Option<String>,
+    pub group_label: Option<String>,
+    pub group_icon: Option<String>,
+    pub description: Option<String>,
+    /// Apps home layout: `folder` (default) or `flat`.
+    pub launcher: Option<String>,
+}
+
+/// Packages to load plus the workspaces they came from (for launcher groups).
+#[derive(Debug, Clone)]
+pub struct LoadPlan {
+    pub packages: Vec<PathBuf>,
+    pub workspaces: Vec<WorkspaceSource>,
+}
+
+#[derive(Debug, Default)]
+struct PathHit {
+    packages: Vec<PathBuf>,
+    workspace: Option<WorkspaceSource>,
+}
+
 /// Expand `entries` to concrete plugin package directories, dependencies first.
 ///
 /// `search_roots` are used when an entry is a bare workspace name (for example
 /// `base`): each root is tried as `<root>/<name>` and `<root>/plugins/<name>`.
+/// Workspaces encountered along the way are returned for catalog registration.
 pub async fn resolve_load_paths(
     entries: &[PathBuf],
     search_roots: &[PathBuf],
-) -> Result<Vec<PathBuf>, LoadPathsError> {
+) -> Result<LoadPlan, LoadPathsError> {
     let mut packages = Vec::new();
     let mut seen_dirs = HashSet::new();
+    let mut workspaces = Vec::new();
+    let mut seen_workspaces = HashSet::new();
 
     for entry in entries {
-        for package in resolve_entry(entry, search_roots).await? {
+        let hit = resolve_entry(entry, search_roots).await?;
+        if let Some(workspace) = hit.workspace {
+            if seen_workspaces.insert(workspace.name.clone()) {
+                workspaces.push(workspace);
+            }
+        }
+        for package in hit.packages {
             let key = canonicalize_key(&package);
             if seen_dirs.insert(key) {
                 packages.push(package);
@@ -72,15 +107,15 @@ pub async fn resolve_load_paths(
         }
     }
 
-    order_by_dependencies(&packages).await
+    Ok(LoadPlan {
+        packages: order_by_dependencies(&packages).await?,
+        workspaces,
+    })
 }
 
-async fn resolve_entry(
-    entry: &Path,
-    search_roots: &[PathBuf],
-) -> Result<Vec<PathBuf>, LoadPathsError> {
-    if let Some(packages) = try_path(entry).await? {
-        return Ok(packages);
+async fn resolve_entry(entry: &Path, search_roots: &[PathBuf]) -> Result<PathHit, LoadPathsError> {
+    if let Some(hit) = try_path(entry).await? {
+        return Ok(hit);
     }
 
     let name = entry
@@ -93,12 +128,9 @@ async fn resolve_entry(
     // search roots (and `plugins/<name>`), matching `aether --load-plugins base`.
     if entry.components().count() <= 1 || !path_exists(entry).await {
         for root in search_roots {
-            for candidate in [
-                root.join(name),
-                root.join("plugins").join(name),
-            ] {
-                if let Some(packages) = try_path(&candidate).await? {
-                    return Ok(packages);
+            for candidate in [root.join(name), root.join("plugins").join(name)] {
+                if let Some(hit) = try_path(&candidate).await? {
+                    return Ok(hit);
                 }
             }
         }
@@ -107,7 +139,7 @@ async fn resolve_entry(
     Err(LoadPathsError::NotFound(entry.display().to_string()))
 }
 
-async fn try_path(path: &Path) -> Result<Option<Vec<PathBuf>>, LoadPathsError> {
+async fn try_path(path: &Path) -> Result<Option<PathHit>, LoadPathsError> {
     if !path_exists(path).await {
         return Ok(None);
     }
@@ -122,10 +154,10 @@ async fn try_path(path: &Path) -> Result<Option<Vec<PathBuf>>, LoadPathsError> {
     if meta.is_file() {
         let file_name = path.file_name().and_then(|name| name.to_str());
         return match file_name {
-            Some(PLUGIN_MANIFEST) => Ok(Some(vec![path
-                .parent()
-                .unwrap_or(Path::new("."))
-                .to_path_buf()])),
+            Some(PLUGIN_MANIFEST) => Ok(Some(PathHit {
+                packages: vec![path.parent().unwrap_or(Path::new(".")).to_path_buf()],
+                workspace: None,
+            })),
             Some(WORKSPACE_MANIFEST) => {
                 let dir = path.parent().unwrap_or(Path::new("."));
                 Ok(Some(expand_workspace(dir).await?))
@@ -138,12 +170,15 @@ async fn try_path(path: &Path) -> Result<Option<Vec<PathBuf>>, LoadPathsError> {
         return Ok(Some(expand_workspace(path).await?));
     }
     if path.join(PLUGIN_MANIFEST).is_file() {
-        return Ok(Some(vec![path.to_path_buf()]));
+        return Ok(Some(PathHit {
+            packages: vec![path.to_path_buf()],
+            workspace: None,
+        }));
     }
     Ok(None)
 }
 
-async fn expand_workspace(dir: &Path) -> Result<Vec<PathBuf>, LoadPathsError> {
+async fn expand_workspace(dir: &Path) -> Result<PathHit, LoadPathsError> {
     let manifest_path = dir.join(WORKSPACE_MANIFEST);
     let text = tokio::fs::read_to_string(&manifest_path)
         .await
@@ -175,7 +210,18 @@ async fn expand_workspace(dir: &Path) -> Result<Vec<PathBuf>, LoadPathsError> {
         }
         packages.push(package);
     }
-    Ok(packages)
+    Ok(PathHit {
+        packages,
+        workspace: Some(WorkspaceSource {
+            dir: dir.to_path_buf(),
+            name: manifest.workspace.name,
+            label: manifest.workspace.label,
+            group_label: manifest.workspace.group_label,
+            group_icon: manifest.workspace.group_icon,
+            description: manifest.workspace.description,
+            launcher: manifest.workspace.launcher,
+        }),
+    })
 }
 
 struct Package {
@@ -261,10 +307,11 @@ async fn read_package(path: &Path) -> Result<Package, LoadPathsError> {
             path: manifest_path.clone(),
             source,
         })?;
-    let manifest = PluginManifest::parse(&text).map_err(|source| LoadPathsError::PluginManifest {
-        path: manifest_path,
-        source,
-    })?;
+    let manifest =
+        PluginManifest::parse(&text).map_err(|source| LoadPathsError::PluginManifest {
+            path: manifest_path,
+            source,
+        })?;
     Ok(Package {
         path: package_dir,
         name: manifest.plugin.name,
@@ -317,7 +364,10 @@ currency = { path = "./currency" }
 country = { path = "./country" }
 "#,
         );
-        write(&base.join("currency/plugin.toml"), &plugin_toml("currency", &[]));
+        write(
+            &base.join("currency/plugin.toml"),
+            &plugin_toml("currency", &[]),
+        );
         write(
             &base.join("country/plugin.toml"),
             &plugin_toml("country", &["currency"]),
@@ -327,18 +377,18 @@ country = { path = "./country" }
             &plugin_toml("company", &["country"]),
         );
 
-        let ordered = resolve_load_paths(
-            &[PathBuf::from("base")],
-            &[dir.path().to_path_buf()],
-        )
-        .await
-        .unwrap();
+        let plan = resolve_load_paths(&[PathBuf::from("base")], &[dir.path().to_path_buf()])
+            .await
+            .unwrap();
 
-        let names: Vec<_> = ordered
+        let names: Vec<_> = plan
+            .packages
             .iter()
             .map(|path| path.file_name().unwrap().to_str().unwrap())
             .collect();
         assert_eq!(names, ["currency", "country", "company"]);
+        assert_eq!(plan.workspaces.len(), 1);
+        assert_eq!(plan.workspaces[0].name, "base");
     }
 
     #[tokio::test]
@@ -347,10 +397,11 @@ country = { path = "./country" }
         let package = dir.path().join("notes");
         write(&package.join("plugin.toml"), &plugin_toml("notes", &[]));
 
-        let ordered = resolve_load_paths(&[package.clone()], &[dir.path().to_path_buf()])
+        let plan = resolve_load_paths(&[package.clone()], &[dir.path().to_path_buf()])
             .await
             .unwrap();
-        assert_eq!(ordered, [package]);
+        assert_eq!(plan.packages, [package]);
+        assert!(plan.workspaces.is_empty());
     }
 
     #[tokio::test]
@@ -362,14 +413,24 @@ country = { path = "./country" }
             r#"
 [workspace]
 name = "base"
+group_label = "Base"
+group_icon = "./assets/base.svg"
 [workspace.plugins]
 currency = { path = "./currency" }
 "#,
         );
-        write(&base.join("currency/plugin.toml"), &plugin_toml("currency", &[]));
+        write(
+            &base.join("currency/plugin.toml"),
+            &plugin_toml("currency", &[]),
+        );
 
-        let ordered = resolve_load_paths(&[base.clone()], &[]).await.unwrap();
-        assert_eq!(ordered, [base.join("currency")]);
+        let plan = resolve_load_paths(&[base.clone()], &[]).await.unwrap();
+        assert_eq!(plan.packages, [base.join("currency")]);
+        assert_eq!(plan.workspaces[0].group_label.as_deref(), Some("Base"));
+        assert_eq!(
+            plan.workspaces[0].group_icon.as_deref(),
+            Some("./assets/base.svg")
+        );
     }
 
     #[tokio::test]

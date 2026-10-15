@@ -96,7 +96,11 @@ pub enum Filter {
     And(Vec<Filter>),
     Or(Vec<Filter>),
     Not(Box<Filter>),
-    Cmp { field: String, op: Op, value: Value },
+    Cmp {
+        field: String,
+        op: Op,
+        value: Value,
+    },
     /// Matches nothing. A rule that depends on something the caller does not have (an employee
     /// record, say) reduces to this.
     Never,
@@ -115,7 +119,11 @@ impl Filter {
     }
 }
 
-fn parse_object(object: &Map<String, Value>, depth: usize, terms: &mut usize) -> Result<Filter, QueryError> {
+fn parse_object(
+    object: &Map<String, Value>,
+    depth: usize,
+    terms: &mut usize,
+) -> Result<Filter, QueryError> {
     if depth > MAX_DEPTH {
         return Err(invalid(format!("nested more than {MAX_DEPTH} levels deep")));
     }
@@ -133,11 +141,21 @@ fn parse_object(object: &Map<String, Value>, depth: usize, terms: &mut usize) ->
                         .ok_or_else(|| invalid(format!("`{key}` takes a list of filters")))?;
                     inner.push(parse_object(item, depth + 1, terms)?);
                 }
-                parts.push(if key == "and" { Filter::And(inner) } else { Filter::Or(inner) });
+                parts.push(if key == "and" {
+                    Filter::And(inner)
+                } else {
+                    Filter::Or(inner)
+                });
             }
             "not" => {
-                let inner = value.as_object().ok_or_else(|| invalid("`not` takes one filter"))?;
-                parts.push(Filter::Not(Box::new(parse_object(inner, depth + 1, terms)?)));
+                let inner = value
+                    .as_object()
+                    .ok_or_else(|| invalid("`not` takes one filter"))?;
+                parts.push(Filter::Not(Box::new(parse_object(
+                    inner,
+                    depth + 1,
+                    terms,
+                )?)));
             }
             field => parse_field(field, value, terms, &mut parts)?,
         }
@@ -145,13 +163,22 @@ fn parse_object(object: &Map<String, Value>, depth: usize, terms: &mut usize) ->
     Ok(Filter::And(parts))
 }
 
-fn parse_field(field: &str, value: &Value, terms: &mut usize, parts: &mut Vec<Filter>) -> Result<(), QueryError> {
+fn parse_field(
+    field: &str,
+    value: &Value,
+    terms: &mut usize,
+    parts: &mut Vec<Filter>,
+) -> Result<(), QueryError> {
     let mut push = |op: Op, value: Value| -> Result<(), QueryError> {
         *terms += 1;
         if *terms > MAX_TERMS {
             return Err(invalid(format!("more than {MAX_TERMS} comparisons")));
         }
-        parts.push(Filter::Cmp { field: field.to_string(), op, value });
+        parts.push(Filter::Cmp {
+            field: field.to_string(),
+            op,
+            value,
+        });
         Ok(())
     };
     match value {
@@ -162,7 +189,8 @@ fn parse_field(field: &str, value: &Value, terms: &mut usize, parts: &mut Vec<Fi
                 return Err(invalid(format!("`{field}` has an empty operator list")));
             }
             for (name, operand) in ops {
-                let op = Op::parse(name).ok_or_else(|| invalid(format!("`{field}`: unknown operator `{name}`")))?;
+                let op = Op::parse(name)
+                    .ok_or_else(|| invalid(format!("`{field}`: unknown operator `{name}`")))?;
                 push(op, operand.clone())?;
             }
             Ok(())
@@ -272,7 +300,9 @@ impl Filter {
     /// The names of the fields the filter compares.
     pub fn fields(&self) -> Vec<&str> {
         match self {
-            Filter::And(parts) | Filter::Or(parts) => parts.iter().flat_map(Filter::fields).collect(),
+            Filter::And(parts) | Filter::Or(parts) => {
+                parts.iter().flat_map(Filter::fields).collect()
+            }
             Filter::Not(inner) => inner.fields(),
             Filter::Cmp { field, .. } => vec![field.as_str()],
             Filter::Never => Vec::new(),
@@ -282,7 +312,11 @@ impl Filter {
 
 /// Turn a filter into a `WHERE` condition (without the keyword); an empty string matches all.
 /// Bind names start with `prefix`, so several compiled pieces can share one statement.
-pub fn compile_filter(filter: &Filter, columns: &dyn Columns, prefix: &str) -> Result<Compiled, QueryError> {
+pub fn compile_filter(
+    filter: &Filter,
+    columns: &dyn Columns,
+    prefix: &str,
+) -> Result<Compiled, QueryError> {
     let mut out = Compiled::default();
     if filter.is_empty() {
         return Ok(out);
@@ -305,7 +339,11 @@ fn compile_node(
 ) -> Result<String, QueryError> {
     match node {
         Filter::And(parts) | Filter::Or(parts) => {
-            let (joiner, empty) = if matches!(node, Filter::And(_)) { (" AND ", "true") } else { (" OR ", "false") };
+            let (joiner, empty) = if matches!(node, Filter::And(_)) {
+                (" AND ", "true")
+            } else {
+                (" OR ", "false")
+            };
             let mut pieces = Vec::new();
             for part in parts {
                 pieces.push(compile_node(part, columns, prefix, binds)?);
@@ -316,7 +354,10 @@ fn compile_node(
                 _ => format!("({})", pieces.join(joiner)),
             })
         }
-        Filter::Not(inner) => Ok(format!("!({})", compile_node(inner, columns, prefix, binds)?)),
+        Filter::Not(inner) => Ok(format!(
+            "!({})",
+            compile_node(inner, columns, prefix, binds)?
+        )),
         Filter::Cmp { field, op, value } => compile_cmp(field, *op, value, columns, prefix, binds),
         Filter::Never => Ok("false".to_string()),
     }
@@ -342,14 +383,19 @@ fn compile_cmp(
             let wants_empty = value
                 .as_bool()
                 .ok_or_else(|| invalid(format!("`{field}`: `null` takes true or false")))?;
-            Ok(format!("{column} {} NONE", if wants_empty { "=" } else { "!=" }))
+            Ok(format!(
+                "{column} {} NONE",
+                if wants_empty { "=" } else { "!=" }
+            ))
         }
         Op::In | Op::Nin => {
             let list = value
                 .as_array()
                 .ok_or_else(|| invalid(format!("`{field}`: `in` takes a list")))?;
             if list.len() > MAX_LIST {
-                return Err(invalid(format!("`{field}`: more than {MAX_LIST} values in a list")));
+                return Err(invalid(format!(
+                    "`{field}`: more than {MAX_LIST} values in a list"
+                )));
             }
             let checked = list
                 .iter()
@@ -367,7 +413,9 @@ fn compile_cmp(
             // on, is that record. One test per level, so a rule on a whole tree needs no list of ids (and no
             // 500-item cap). Records above the root are not matched: `under` is strictly below.
             if !value.is_string() {
-                return Err(invalid(format!("`{field}`: `under` takes the id of a record")));
+                return Err(invalid(format!(
+                    "`{field}`: `under` takes the id of a record"
+                )));
             }
             let checked = columns.value(field, value)?;
             let placeholder = bind(binds, prefix, checked);
@@ -388,11 +436,15 @@ fn compile_cmp(
                 "string::contains(string::lowercase(<string> {column}), string::lowercase({placeholder}))"
             ))
         }
-        Op::Eq | Op::Ne | Op::Gt | Op::Gte | Op::Lt | Op::Lte if field_reference(value).is_some() => {
+        Op::Eq | Op::Ne | Op::Gt | Op::Gte | Op::Lt | Op::Lte
+            if field_reference(value).is_some() =>
+        {
             let other = field_reference(value).unwrap_or_default();
             let other_column = columns.column(other)?;
             if columns.scale(field) != columns.scale(other) {
-                return Err(invalid(format!("`{field}` and `{other}` are decimals of different scales, so they cannot be compared")));
+                return Err(invalid(format!(
+                    "`{field}` and `{other}` are decimals of different scales, so they cannot be compared"
+                )));
             }
             let symbol = match op {
                 Op::Eq => "=",
@@ -406,7 +458,9 @@ fn compile_cmp(
             Ok(if matches!(op, Op::Eq | Op::Ne) {
                 format!("{column} {symbol} {other_column}")
             } else {
-                format!("({column} != NONE AND {other_column} != NONE AND {column} {symbol} {other_column})")
+                format!(
+                    "({column} != NONE AND {other_column} != NONE AND {column} {symbol} {other_column})"
+                )
             })
         }
         Op::Eq | Op::Ne | Op::Gt | Op::Gte | Op::Lt | Op::Lte => {
@@ -472,10 +526,16 @@ impl Aggregate {
                         "avg" => Agg::Avg(field),
                         "min" => Agg::Min(field),
                         "max" => Agg::Max(field),
-                        other => return Err(invalid(format!("`{name}`: unknown figure `{other}`"))),
+                        other => {
+                            return Err(invalid(format!("`{name}`: unknown figure `{other}`")));
+                        }
                     }
                 }
-                _ => return Err(invalid(format!("`{name}`: use \"count\" or {{\"sum\": \"field\"}}"))),
+                _ => {
+                    return Err(invalid(format!(
+                        "`{name}`: use \"count\" or {{\"sum\": \"field\"}}"
+                    )));
+                }
             };
             figures.push((name.clone(), agg));
         }
@@ -486,7 +546,10 @@ impl Aggregate {
                 return Err(invalid(format!("`{name}` is used twice in the result")));
             }
         }
-        Ok(Self { group_by: group_by.to_vec(), figures })
+        Ok(Self {
+            group_by: group_by.to_vec(),
+            figures,
+        })
     }
 
     /// The names of the fields the summary looks at: grouped and summed.
@@ -542,7 +605,11 @@ impl Aggregate {
                 Agg::Max(field) => format!("math::max({}) AS {name}", columns.column(field)?),
             });
         }
-        let group_clause = if group.is_empty() { "GROUP ALL".to_string() } else { format!("GROUP BY {}", group.join(", ")) };
+        let group_clause = if group.is_empty() {
+            "GROUP ALL".to_string()
+        } else {
+            format!("GROUP BY {}", group.join(", "))
+        };
         Ok((select.join(", "), group_clause))
     }
 }
@@ -567,7 +634,11 @@ mod tests {
     #[test]
     fn under_walks_the_link_chain() -> Result<(), QueryError> {
         let compiled = sql(json!({ "parent": { "under": "department:a" } }))?;
-        assert_eq!(compiled.binds.len(), 1, "the id is bound once, however deep the chain");
+        assert_eq!(
+            compiled.binds.len(),
+            1,
+            "the id is bound once, however deep the chain"
+        );
         assert!(compiled.sql.contains("parent = $f0"));
         assert!(compiled.sql.contains("parent.parent = $f0"));
         assert_eq!(compiled.sql.matches(" OR ").count(), MAX_UNDER_DEPTH - 1);
@@ -645,7 +716,11 @@ mod tests {
     #[test]
     fn like_is_case_insensitive_and_bound() -> Result<(), QueryError> {
         let compiled = sql(json!({ "name": { "like": "Jo" } }))?;
-        assert!(compiled.sql.starts_with("string::contains(string::lowercase("));
+        assert!(
+            compiled
+                .sql
+                .starts_with("string::contains(string::lowercase(")
+        );
         assert_eq!(compiled.binds[0].1, json!("Jo"));
         Ok(())
     }
@@ -656,7 +731,10 @@ mod tests {
         let aggs = aggs.as_object().ok_or_else(|| invalid("object"))?;
         let aggregate = Aggregate::parse(&["dept".to_string()], aggs)?;
         let (select, group) = aggregate.compile(&Unchecked)?;
-        assert_eq!(select, "dept AS dept, count() AS n, math::sum(salary) AS total");
+        assert_eq!(
+            select,
+            "dept AS dept, count() AS n, math::sum(salary) AS total"
+        );
         assert_eq!(group, "GROUP BY dept");
         let all = Aggregate::parse(&[], aggs)?;
         assert_eq!(all.compile(&Unchecked)?.1, "GROUP ALL");
@@ -668,7 +746,9 @@ mod tests {
         let empty = Map::new();
         assert!(Aggregate::parse(&[], &empty).is_err());
         let clash = json!({ "dept": "count" });
-        assert!(Aggregate::parse(&["dept".to_string()], clash.as_object().unwrap_or(&empty)).is_err());
+        assert!(
+            Aggregate::parse(&["dept".to_string()], clash.as_object().unwrap_or(&empty)).is_err()
+        );
         let unknown = json!({ "x": { "median": "salary" } });
         assert!(Aggregate::parse(&[], unknown.as_object().unwrap_or(&empty)).is_err());
         let bad_name = json!({ "x; DROP": "count" });

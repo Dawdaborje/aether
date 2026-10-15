@@ -43,16 +43,33 @@ pub fn bridge_setting(bridge: &str, field: &str) -> String {
     format!("bridge.{bridge}.{field}")
 }
 
+/// The bridge name inside a setting key (`bridge.twilio.auth_token` → `twilio`).
+/// Non-bridge keys (for example `communications.email.provider`) return `None`.
+pub fn bridge_name_from_setting_key(s_key: &str) -> Option<&str> {
+    let rest = s_key.strip_prefix("bridge.")?;
+    let (name, field) = rest.split_once('.')?;
+    if name.is_empty() || field.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
+
 fn find_spec(specs: &[&'static Spec], key: &str) -> Option<&'static Spec> {
     specs.iter().copied().find(|spec| spec.key == key)
 }
 
 fn text(value: Option<Value>) -> Option<String> {
-    value.and_then(|value| value.as_str().map(str::trim).map(str::to_string)).filter(|text| !text.is_empty())
+    value
+        .and_then(|value| value.as_str().map(str::trim).map(str::to_string))
+        .filter(|text| !text.is_empty())
 }
 
 fn org_ref(org_db: &str) -> OrgRef {
-    OrgRef { slug: org_db.to_string(), db_name: org_db.to_string() }
+    OrgRef {
+        slug: org_db.to_string(),
+        db_name: org_db.to_string(),
+    }
 }
 
 fn unreadable(error: impl std::fmt::Display) -> SendError {
@@ -61,17 +78,37 @@ fn unreadable(error: impl std::fmt::Display) -> SendError {
 
 /// A setting's value for an organization: its own if filled in, else the global one.
 async fn setting(state: &AppState, org: &OrgRef, key: &str) -> Result<Option<String>, SendError> {
-    if let Some(own) = text(get_setting_plain_in(state, key, Scope::Org(org)).await.map_err(unreadable)?) {
+    if let Some(own) = text(
+        get_setting_plain_in(state, key, Scope::Org(org))
+            .await
+            .map_err(unreadable)?,
+    ) {
         return Ok(Some(own));
     }
-    Ok(text(get_setting_plain_in(state, key, Scope::Global).await.map_err(unreadable)?))
+    Ok(text(
+        get_setting_plain_in(state, key, Scope::Global)
+            .await
+            .map_err(unreadable)?,
+    ))
 }
 
 /// The settings of one bridge for one organization, following the rules in the module docs.
-pub async fn resolve_values(state: &AppState, org: &OrgRef, spec: &Spec) -> Result<Values, SendError> {
+pub async fn resolve_values(
+    state: &AppState,
+    org: &OrgRef,
+    spec: &Spec,
+) -> Result<Values, SendError> {
     let mut own = HashMap::new();
     for field in spec.account {
-        let value = text(get_setting_plain_in(state, &bridge_setting(spec.key, field.name), Scope::Org(org)).await.map_err(unreadable)?);
+        let value = text(
+            get_setting_plain_in(
+                state,
+                &bridge_setting(spec.key, field.name),
+                Scope::Org(org),
+            )
+            .await
+            .map_err(unreadable)?,
+        );
         if let Some(value) = value {
             own.insert(field.name, value);
         }
@@ -83,7 +120,11 @@ pub async fn resolve_values(state: &AppState, org: &OrgRef, spec: &Spec) -> Resu
         let value = if uses_own {
             own.get(field.name).cloned()
         } else {
-            text(get_setting_plain_in(state, &bridge_setting(spec.key, field.name), Scope::Global).await.map_err(unreadable)?)
+            text(
+                get_setting_plain_in(state, &bridge_setting(spec.key, field.name), Scope::Global)
+                    .await
+                    .map_err(unreadable)?,
+            )
         };
         match value {
             Some(value) => {
@@ -94,7 +135,11 @@ pub async fn resolve_values(state: &AppState, org: &OrgRef, spec: &Spec) -> Resu
         }
     }
     if !missing.is_empty() {
-        let whose = if uses_own { "this organization's own" } else { "the global" };
+        let whose = if uses_own {
+            "this organization's own"
+        } else {
+            "the global"
+        };
         return Err(SendError::transient(format!(
             "{} settings are incomplete: {} {} not set in {whose} settings",
             spec.label,
@@ -103,7 +148,9 @@ pub async fn resolve_values(state: &AppState, org: &OrgRef, spec: &Spec) -> Resu
         )));
     }
     for field in spec.options {
-        let value = setting(state, org, &bridge_setting(spec.key, field.name)).await?.or_else(|| field.default.map(str::to_string));
+        let value = setting(state, org, &bridge_setting(spec.key, field.name))
+            .await?
+            .or_else(|| field.default.map(str::to_string));
         if let Some(value) = value {
             values.insert(field.name.to_string(), value);
         }
@@ -119,7 +166,11 @@ fn build_email(key: &str, values: &Values) -> Result<Box<dyn EmailBridge>, SendE
     Ok(match key {
         "smtp" => Box::new(smtp::Smtp::new(values).map_err(config)?),
         "resend" => Box::new(resend::Resend::new(values).map_err(config)?),
-        other => return Err(SendError::transient(format!("`{other}` is not an email provider"))),
+        other => {
+            return Err(SendError::transient(format!(
+                "`{other}` is not an email provider"
+            )));
+        }
     })
 }
 
@@ -127,8 +178,14 @@ fn build_sms(key: &str, values: &Values) -> Result<Box<dyn SmsBridge>, SendError
     Ok(match key {
         "twilio" => Box::new(twilio::Twilio::new(values).map_err(config)?),
         "termii" => Box::new(termii::Termii::new(values).map_err(config)?),
-        "africas_talking" => Box::new(africas_talking::AfricasTalking::new(values).map_err(config)?),
-        other => return Err(SendError::transient(format!("`{other}` is not an SMS provider"))),
+        "africas_talking" => {
+            Box::new(africas_talking::AfricasTalking::new(values).map_err(config)?)
+        }
+        other => {
+            return Err(SendError::transient(format!(
+                "`{other}` is not an SMS provider"
+            )));
+        }
     })
 }
 
@@ -136,17 +193,33 @@ fn build_sms(key: &str, values: &Values) -> Result<Box<dyn SmsBridge>, SendError
 /// settings incomplete. Used to refuse early with a clear message.
 pub async fn check_configured(state: &AppState, org_db: &str, kind: &str) -> Result<(), SendError> {
     let org = org_ref(org_db);
-    let specs = if kind == "email" { EMAIL_BRIDGES } else { SMS_BRIDGES };
+    let specs = if kind == "email" {
+        EMAIL_BRIDGES
+    } else {
+        SMS_BRIDGES
+    };
     let provider = setting(state, &org, &provider_setting(kind))
         .await?
-        .ok_or_else(|| SendError::permanent(format!("{kind} is not set up: no provider is chosen in the settings")))?;
-    let spec = find_spec(specs, &provider)
-        .ok_or_else(|| SendError::permanent(format!("`{provider}` is not a {kind} provider (use {})", names(specs))))?;
+        .ok_or_else(|| {
+            SendError::permanent(format!(
+                "{kind} is not set up: no provider is chosen in the settings"
+            ))
+        })?;
+    let spec = find_spec(specs, &provider).ok_or_else(|| {
+        SendError::permanent(format!(
+            "`{provider}` is not a {kind} provider (use {})",
+            names(specs)
+        ))
+    })?;
     resolve_values(state, &org, spec).await.map(|_| ())
 }
 
 fn names(specs: &[&Spec]) -> String {
-    specs.iter().map(|spec| spec.key).collect::<Vec<_>>().join(", ")
+    specs
+        .iter()
+        .map(|spec| spec.key)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Deliver a queued message through the configured bridge. The error says whether trying again
@@ -155,19 +228,35 @@ pub async fn deliver(state: &AppState, org_db: &str, payload: &Value) -> Result<
     let message = Message::from_job(payload).map_err(|e| SendError::permanent(e.to_string()))?;
     let org = org_ref(org_db);
     let kind = message.kind();
-    let specs = if kind == "email" { EMAIL_BRIDGES } else { SMS_BRIDGES };
+    let specs = if kind == "email" {
+        EMAIL_BRIDGES
+    } else {
+        SMS_BRIDGES
+    };
     let provider = setting(state, &org, &provider_setting(kind))
         .await?
-        .ok_or_else(|| SendError::transient(format!("{kind} is not set up: no provider is chosen in the settings")))?;
-    let spec = find_spec(specs, &provider)
-        .ok_or_else(|| SendError::transient(format!("`{provider}` is not a {kind} provider (use {})", names(specs))))?;
+        .ok_or_else(|| {
+            SendError::transient(format!(
+                "{kind} is not set up: no provider is chosen in the settings"
+            ))
+        })?;
+    let spec = find_spec(specs, &provider).ok_or_else(|| {
+        SendError::transient(format!(
+            "`{provider}` is not a {kind} provider (use {})",
+            names(specs)
+        ))
+    })?;
     let values = resolve_values(state, &org, spec).await?;
 
     match &message {
         Message::Email { .. } => {
             let from_address = setting(state, &org, "communications.email.from_address")
                 .await?
-                .ok_or_else(|| SendError::transient("no sender address: set `From address` under Email in the settings"))?;
+                .ok_or_else(|| {
+                    SendError::transient(
+                        "no sender address: set `From address` under Email in the settings",
+                    )
+                })?;
             let from_name = setting(state, &org, "communications.email.from_name").await?;
             let email = message::email_for_bridge(&message, from_address, from_name)
                 .ok_or_else(|| SendError::permanent("not an email"))?;
@@ -175,7 +264,8 @@ pub async fn deliver(state: &AppState, org_db: &str, payload: &Value) -> Result<
         }
         Message::Sms { .. } => {
             let sender = setting(state, &org, "communications.sms.sender").await?;
-            let sms = message::sms_for_bridge(&message, sender).ok_or_else(|| SendError::permanent("not an SMS"))?;
+            let sms = message::sms_for_bridge(&message, sender)
+                .ok_or_else(|| SendError::permanent("not an SMS"))?;
             build_sms(spec.key, &values)?.send(&sms).await
         }
     }
@@ -185,24 +275,44 @@ pub async fn deliver(state: &AppState, org_db: &str, payload: &Value) -> Result<
 mod tests {
     use super::*;
 
+    #[test]
+    fn bridge_name_is_read_from_bridge_setting_keys() {
+        assert_eq!(
+            bridge_name_from_setting_key("bridge.smtp.host"),
+            Some("smtp")
+        );
+        assert_eq!(
+            bridge_name_from_setting_key("communications.sms.provider"),
+            None
+        );
+    }
+
     /// The seeded settings and the bridges' own descriptions must agree, or the settings screen
     /// would offer fields the bridge ignores (or miss ones it needs).
     #[test]
     fn the_seeded_settings_match_what_each_bridge_asks_for() {
-        let seed: Value = serde_json::from_str(include_str!("../../../../seeds/settings/communications.json")).unwrap();
+        let seed: Value = serde_json::from_str(include_str!(
+            "../../../../seeds/settings/communications.json"
+        ))
+        .unwrap();
         let mut keys: HashMap<String, (bool, Value)> = HashMap::new();
         for group in seed["groups"].as_array().unwrap() {
             for item in group["items"].as_array().unwrap() {
                 keys.insert(
                     item["s_key"].as_str().unwrap().to_string(),
-                    (item["secret"].as_bool().unwrap_or(false), item["s_value"].clone()),
+                    (
+                        item["secret"].as_bool().unwrap_or(false),
+                        item["s_value"].clone(),
+                    ),
                 );
             }
         }
         for spec in EMAIL_BRIDGES.iter().chain(SMS_BRIDGES) {
             for field in spec.fields() {
                 let key = bridge_setting(spec.key, field.name);
-                let (secret, default) = keys.get(&key).unwrap_or_else(|| panic!("`{key}` is not seeded"));
+                let (secret, default) = keys
+                    .get(&key)
+                    .unwrap_or_else(|| panic!("`{key}` is not seeded"));
                 assert_eq!(*secret, field.secret, "{key}: secret flag");
                 if let Some(expected) = field.default {
                     assert_eq!(default, expected, "{key}: default");
@@ -210,9 +320,16 @@ mod tests {
             }
         }
         for kind in TYPES {
-            assert!(keys.contains_key(&provider_setting(kind)), "{kind} provider setting");
+            assert!(
+                keys.contains_key(&provider_setting(kind)),
+                "{kind} provider setting"
+            );
         }
-        for key in ["communications.email.from_address", "communications.email.from_name", "communications.sms.sender"] {
+        for key in [
+            "communications.email.from_address",
+            "communications.email.from_name",
+            "communications.sms.sender",
+        ] {
             assert!(keys.contains_key(key), "{key}");
         }
     }
@@ -227,7 +344,11 @@ mod tests {
             include_str!("../../../../seeds/settings/chatter.json"),
             include_str!("../../../../seeds/settings/bridges.json"),
         ];
-        let (mut labels, mut keys, mut groups) = (std::collections::HashSet::new(), std::collections::HashSet::new(), std::collections::HashSet::new());
+        let (mut labels, mut keys, mut groups) = (
+            std::collections::HashSet::new(),
+            std::collections::HashSet::new(),
+            std::collections::HashSet::new(),
+        );
         for file in files {
             let seed: Value = serde_json::from_str(file).unwrap();
             for group in seed["groups"].as_array().unwrap() {
@@ -236,7 +357,10 @@ mod tests {
                 for item in group["items"].as_array().unwrap() {
                     let label = item["label"].as_str().unwrap().to_string();
                     let key = item["s_key"].as_str().unwrap().to_string();
-                    assert!(labels.insert(label.clone()), "label `{label}` is used twice");
+                    assert!(
+                        labels.insert(label.clone()),
+                        "label `{label}` is used twice"
+                    );
                     assert!(keys.insert(key.clone()), "key `{key}` is used twice");
                 }
             }
@@ -251,7 +375,11 @@ mod tests {
                 .iter()
                 .filter(|f| f.required)
                 .map(|f| (f.name.to_string(), "x".to_string()))
-                .chain(spec.options.iter().filter_map(|f| f.default.map(|d| (f.name.to_string(), d.to_string()))))
+                .chain(
+                    spec.options
+                        .iter()
+                        .filter_map(|f| f.default.map(|d| (f.name.to_string(), d.to_string()))),
+                )
                 .collect()
         };
         for spec in EMAIL_BRIDGES {
@@ -268,7 +396,9 @@ mod tests {
     fn the_secret_flag_marks_exactly_the_credentials() {
         for spec in EMAIL_BRIDGES.iter().chain(SMS_BRIDGES) {
             for field in spec.fields() {
-                let looks_secret = ["key", "token", "password"].iter().any(|word| field.name.contains(word));
+                let looks_secret = ["key", "token", "password"]
+                    .iter()
+                    .any(|word| field.name.contains(word));
                 assert_eq!(field.secret, looks_secret, "{}.{}", spec.key, field.name);
             }
         }

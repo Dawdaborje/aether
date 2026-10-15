@@ -3,7 +3,9 @@
 Notifications are driven by the kernel and delivered with server-sent events (SSE):
 one-way, over plain HTTP, one connection per browser tab. Nothing travels from the
 browser to the server on that connection; marking as read and listing are ordinary
-requests.
+requests. Live UI refresh (lists updating when another tab writes via `db::*`) uses the
+same SSE stream’s transient `event` frames—not a separate WebSocket. SurrealDB’s `ws://`
+link is only between the kernel and the database.
 
 ## How it works
 
@@ -39,7 +41,8 @@ notify its own visitor.
 ## Endpoints
 
 - `GET /api/ui/notifications/stream`: the event stream. Events: `notification` (with
-  `id`), `event` (a transient plugin event, members only), `resync`, and `reconnect`
+  `id`), `event` (a transient plugin or kernel UI event, members only—including
+  `aether` / `data.changed` after `db::*` mutates), `resync`, and `reconnect`
   (the server ends the stream after `stream_lifetime_secs`; the browser reopens it, which
   checks its session again).
 - `GET /api/ui/notifications?unread=1&limit=50`: the list, newest first, with `unread`.

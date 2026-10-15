@@ -14,6 +14,7 @@ What the kernel offers a plugin today, and so what an SDK wraps:
 | Area | Commands | Capability |
 |---|---|---|
 | Data | `db::get`, `db::find`, `db::create`, `db::update`, `db::delete`, `db::increment` | `db::query`, `db::mutate` |
+| Reports | `report::query`, `report::export` | `report::query`, `report::export` |
 | Data (atomic) | `db::transaction` | `db::transaction`, `db::mutate` |
 | Cache | `cache::get`, `cache::set`, `cache::invalidate`, `cache::clear` | same names |
 | Files | `storage::read`, `storage::write`, `storage::delete`, `storage::list` | same names |
@@ -27,7 +28,7 @@ What the kernel offers a plugin today, and so what an SDK wraps:
 | Many calls at once | `parallel::fan_out(..).send(items)`, `parallel::join(..)`, `parallel::progress` (Rust SDK; built on the scheduler, no new host command) | `scheduler::enqueue` |
 | Notifications | `notify::send` | `notify::send`, `notify::public` |
 | Live events | `events::emit` | `events::emit` |
-| Who is calling | `context::get` | none |
+| Who is calling | `context::get` (includes working `company` when set) | none |
 
 There is no raw SurQL: a plugin names a model it was granted, and the kernel builds the query,
 scoped to the organization and audited. Bridge and event-subscription

@@ -11,13 +11,25 @@
 		identifierFor,
 		type CreatedOrganization
 	} from '$lib/org/createOrganization';
+	import type { OrganizationProfile } from '$lib/org/api';
 
-	let { open = $bindable(false) }: { open: boolean } = $props();
+	let {
+		open = $bindable(false),
+		parents = [],
+		onCreated
+	}: {
+		open: boolean;
+		/** Existing orgs offered as parent. */
+		parents?: OrganizationProfile[];
+		onCreated?: () => void | Promise<void>;
+	} = $props();
 
 	let name = $state('');
 	let identifier = $state('');
 	/** The identifier follows the name until the person edits it. */
 	let identifierEdited = $state(false);
+	let description = $state('');
+	let parent = $state('');
 	let mode = $state<'new' | 'existing'>('new');
 	let username = $state('');
 	let email = $state('');
@@ -30,7 +42,7 @@
 	// Start empty each time the dialog opens.
 	$effect(() => {
 		if (!open) return;
-		name = identifier = username = email = password = login = '';
+		name = identifier = description = parent = username = email = password = login = '';
 		identifierEdited = false;
 		mode = 'new';
 		failed = null;
@@ -57,12 +69,15 @@
 			created = await createOrganization({
 				name,
 				identifier,
+				description,
+				parent: parent || undefined,
 				member:
 					mode === 'existing'
 						? { mode, login }
 						: { mode, username, email, password }
 			});
 			await orgStore.load();
+			await onCreated?.();
 		} catch (error) {
 			failed = error instanceof Error ? error.message : 'The organization could not be created.';
 		} finally {
@@ -85,7 +100,8 @@
 			<Dialog.Header>
 				<Dialog.Title>{created.organization.name} is ready</Dialog.Title>
 				<Dialog.Description>
-					Its database, files and first member are set up. Install apps into it from the desk.
+					Its database, files and first member are set up. Open it to add a logo and description, or
+					install apps from the desk.
 				</Dialog.Description>
 			</Dialog.Header>
 			<p class="text-xs text-muted-foreground">
@@ -93,7 +109,11 @@
 				<span class="font-mono break-all">{created.files}</span>
 			</p>
 			<Dialog.Footer>
-				<Button variant="outline" onclick={() => (open = false)}>Done</Button>
+				<Button
+					variant="outline"
+					href={resolve(`/desk/organizations/${created.organization.db_name}/overview`)}
+					onclick={() => (open = false)}>Open details</Button
+				>
 				{#if orgStore.mode !== 'address'}
 					<Button disabled={orgStore.switching} onclick={() => enter(created!.organization.db_name)}>
 						Enter organization
@@ -104,7 +124,7 @@
 			<Dialog.Header>
 				<Dialog.Title>Create organization</Dialog.Title>
 				<Dialog.Description>
-					An organization has its own database and files, and starts with one member.
+					An organization has its own database and files, and starts with one member (the owner).
 				</Dialog.Description>
 			</Dialog.Header>
 			<form class="space-y-5" onsubmit={submit}>
@@ -123,14 +143,39 @@
 							autocomplete="off"
 						/>
 						<p class="text-xs text-muted-foreground">
-							Names its database and folder, and is what a subdomain or header uses. Letters, digits
-							and underscores; it cannot be changed later.
+							Names its database and folder. Letters, digits and underscores; it cannot be changed
+							later.
 						</p>
 					</div>
+					<div class="space-y-1.5">
+						<Label for="org-description">Description</Label>
+						<textarea
+							id="org-description"
+							bind:value={description}
+							rows="2"
+							class="border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:ring-ring flex w-full rounded-md border px-3 py-2 text-sm focus-visible:ring-2 focus-visible:outline-none"
+							placeholder="What this organization is for"
+						></textarea>
+					</div>
+					{#if parents.length > 0}
+						<div class="space-y-1.5">
+							<Label for="org-parent">Parent organization</Label>
+							<select
+								id="org-parent"
+								bind:value={parent}
+								class="border-input bg-background focus-visible:ring-ring flex h-10 w-full rounded-md border px-3 text-sm focus-visible:ring-2 focus-visible:outline-none"
+							>
+								<option value="">None</option>
+								{#each parents as org (org.db_name)}
+									<option value={org.db_name}>{org.name} ({org.db_name})</option>
+								{/each}
+							</select>
+						</div>
+					{/if}
 				</div>
 
 				<fieldset class="space-y-3">
-					<legend class="text-sm font-semibold">First member</legend>
+					<legend class="text-sm font-semibold">First member (owner)</legend>
 					<div class="inline-flex rounded-md border border-border p-0.5 text-sm">
 						{#each [['new', 'New user'], ['existing', 'Existing user']] as const as [value, label] (value)}
 							<button

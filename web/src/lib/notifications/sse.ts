@@ -39,7 +39,8 @@ export async function readEventStream(
 			const line = buffer.slice(0, newline);
 			buffer = buffer.slice(newline).replace(/^(\r\n|\n|\r)/, '');
 			if (line === '') dispatch();
-			else if (line.startsWith(':')) continue; // a keep-alive comment
+			else if (line.startsWith(':'))
+				continue; // a keep-alive comment
 			else {
 				const colon = line.indexOf(':');
 				const field = colon < 0 ? line : line.slice(0, colon);

@@ -53,7 +53,9 @@ export async function apiFetch(
 		if (token) headers.set(CSRF_HEADER, token);
 	}
 
-	return fetchFn(input, { credentials: 'include', ...init, headers });
+	// Auth and org answers must never be served from the HTTP cache: a stale
+	// `/api/auth/me` would show the wrong user after another tab signed in.
+	return fetchFn(input, { ...init, credentials: 'include', cache: 'no-store', headers });
 }
 
 /** Exposed for unit tests. */

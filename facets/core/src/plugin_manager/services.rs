@@ -103,7 +103,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_forward_compatible_manifest() -> Result<(), crate::plugin_manager::models::plugin_def::ManifestError> {
+    fn parses_forward_compatible_manifest()
+    -> Result<(), crate::plugin_manager::models::plugin_def::ManifestError> {
         let toml = r#"
 [plugin]
 name = "partner"
@@ -152,7 +153,8 @@ enabled = true
     }
 
     #[test]
-    fn reads_the_public_declarations() -> Result<(), crate::plugin_manager::models::plugin_def::ManifestError> {
+    fn reads_the_public_declarations()
+    -> Result<(), crate::plugin_manager::models::plugin_def::ManifestError> {
         let manifest = PluginManifest::parse(
             r#"
 [plugin]

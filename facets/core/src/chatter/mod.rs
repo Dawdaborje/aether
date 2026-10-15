@@ -21,8 +21,6 @@ pub use store::{Kind, Message, NewMessage};
 
 use std::time::Duration;
 
-use surrealdb::types::SurrealValue;
-
 use crate::state::AppState;
 use crate::tenancy::OrgRef;
 
@@ -36,14 +34,12 @@ pub const ENABLED_SETTING: &str = "chatter.enabled";
 /// Used when the setting is missing or not a number; the seeded value is the same.
 pub const DEFAULT_RETENTION_DAYS: u32 = 30;
 
-#[derive(Debug, SurrealValue)]
-struct OrgName {
-    db_name: String,
-}
-
 /// An organization named by its database, which is not always `org_<slug>`.
 pub fn org_ref(db_name: &str) -> OrgRef {
-    OrgRef { slug: db_name.to_string(), db_name: db_name.to_string() }
+    OrgRef {
+        slug: db_name.to_string(),
+        db_name: db_name.to_string(),
+    }
 }
 
 /// The trash retention for an organization, from settings.
@@ -85,7 +81,9 @@ pub fn spawn_cleanup(state: &AppState) -> tokio::task::JoinHandle<()> {
         loop {
             match cleanup(&state).await {
                 Ok(0) => {}
-                Ok(removed) => log::info!("Chatter cleanup removed {removed} message(s) from the trash"),
+                Ok(removed) => {
+                    log::info!("Chatter cleanup removed {removed} message(s) from the trash")
+                }
                 Err(error) => log::warn!("Chatter cleanup failed: {error}"),
             }
             tokio::time::sleep(CLEANUP_INTERVAL).await;
@@ -94,14 +92,12 @@ pub fn spawn_cleanup(state: &AppState) -> tokio::task::JoinHandle<()> {
 }
 
 async fn cleanup(state: &AppState) -> Result<u64, surrealdb::Error> {
-    let core = state.core().await?;
-    let mut response = core.query("SELECT db_name FROM org_databases;").await?.check()?;
-    let organizations: Vec<OrgName> = response.take(0)?;
+    let organizations = crate::access::org_databases::list_cached(state).await?;
     let mut removed = 0;
-    for organization in organizations {
-        let org = org_ref(&organization.db_name);
+    for db_name in organizations {
+        let org = org_ref(&db_name);
         let days = retention_days(state, &org).await;
-        let db = state.org(&organization.db_name).await?;
+        let db = state.org(&db_name).await?;
         removed += store::purge(&db, days).await?;
     }
     Ok(removed)

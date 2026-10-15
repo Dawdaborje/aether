@@ -166,7 +166,8 @@ impl PluginDefinition {
 
     /// Whether the code is a script (Rhai or Lua).
     pub fn is_script(&self) -> bool {
-        self.wasm_file.as_deref().is_none_or(str::is_empty) && self.script.as_deref().is_some_and(|s| !s.is_empty())
+        self.wasm_file.as_deref().is_none_or(str::is_empty)
+            && self.script.as_deref().is_some_and(|s| !s.is_empty())
     }
 
     /// Copy `[plugin.meta]` into flat `kind` / `workspace` when those are unset.
@@ -275,43 +276,84 @@ impl PluginEventDef {
 
     /// Check everything a manifest can get wrong, so a plugin is refused when it is loaded.
     pub fn validate(&self, plugin: &PluginDefinition) -> Result<(), String> {
-        let plain = |part: &str| plain_name(part, |c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-');
+        let plain = |part: &str| {
+            plain_name(part, |c| {
+                c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-'
+            })
+        };
         let holds = |capability: &str| plugin.capabilities.iter().any(|held| held == capability);
         match self.direction() {
             "emit" => {
                 if !plain(&self.name) {
-                    return Err(format!("emitted event `{}`: use 1 to 64 lower-case letters, digits, `_` or `-` (no dots)", self.name));
+                    return Err(format!(
+                        "emitted event `{}`: use 1 to 64 lower-case letters, digits, `_` or `-` (no dots)",
+                        self.name
+                    ));
                 }
                 if !holds("events::emit") {
-                    return Err(format!("`{}` is emitted, so the plugin needs the capability `events::emit`", self.name));
+                    return Err(format!(
+                        "`{}` is emitted, so the plugin needs the capability `events::emit`",
+                        self.name
+                    ));
                 }
             }
             "listen" => {
                 let Some((source, event)) = self.name.split_once('.') else {
-                    return Err(format!("listened event `{}` is named <plugin>.<event>, such as `chat.message_posted`", self.name));
+                    return Err(format!(
+                        "listened event `{}` is named <plugin>.<event>, such as `chat.message_posted`",
+                        self.name
+                    ));
                 };
                 if !plain(source) || !plain(event) {
-                    return Err(format!("listened event `{}`: both parts use lower-case letters, digits, `_` or `-`", self.name));
+                    return Err(format!(
+                        "listened event `{}`: both parts use lower-case letters, digits, `_` or `-`",
+                        self.name
+                    ));
                 }
-                if source != plugin.name && !plugin.dependencies.iter().any(|dependency| dependency == source) {
-                    return Err(format!("`{}` comes from `{source}`, which must be listed under `dependencies`", self.name));
+                if source != plugin.name
+                    && !plugin
+                        .dependencies
+                        .iter()
+                        .any(|dependency| dependency == source)
+                {
+                    return Err(format!(
+                        "`{}` comes from `{source}`, which must be listed under `dependencies`",
+                        self.name
+                    ));
                 }
                 if self.handler.as_deref().is_none_or(str::is_empty) {
-                    return Err(format!("listened event `{}` names no `handler` function", self.name));
+                    return Err(format!(
+                        "listened event `{}` names no `handler` function",
+                        self.name
+                    ));
                 }
                 if !holds("events::subscribe") {
-                    return Err(format!("`{}` is listened to, so the plugin needs the capability `events::subscribe`", self.name));
+                    return Err(format!(
+                        "`{}` is listened to, so the plugin needs the capability `events::subscribe`",
+                        self.name
+                    ));
                 }
                 if self.max_attempts.is_some_and(|n| !(1..=20).contains(&n)) {
-                    return Err(format!("listened event `{}`: max_attempts is 1 to 20", self.name));
+                    return Err(format!(
+                        "listened event `{}`: max_attempts is 1 to 20",
+                        self.name
+                    ));
                 }
                 if let Some(queue) = &self.queue {
                     if !plain(queue) {
-                        return Err(format!("listened event `{}`: a queue name is lower-case letters, digits, `_` and `-`", self.name));
+                        return Err(format!(
+                            "listened event `{}`: a queue name is lower-case letters, digits, `_` and `-`",
+                            self.name
+                        ));
                     }
                 }
             }
-            other => return Err(format!("event `{}`: direction is `emit` or `listen`, not `{other}`", self.name)),
+            other => {
+                return Err(format!(
+                    "event `{}`: direction is `emit` or `listen`, not `{other}`",
+                    self.name
+                ));
+            }
         }
         Ok(())
     }
@@ -348,7 +390,12 @@ pub struct PluginI18nDef {
     pub default: String,
 }
 
-/// `[app]`: makes the plugin a tile on the Apps launcher.
+/// `[app]`: makes the plugin its own tile on the Apps launcher.
+///
+/// Workspace membership places the tile in a folder with siblings. Thin modules
+/// (one sidebar menu or fewer) are folded into the workspace host tile unless
+/// `standalone = true` (Frappe: small modules live in the host sidebar; big ones
+/// keep a desktop icon).
 ///
 /// ```toml
 /// [app]
@@ -356,6 +403,9 @@ pub struct PluginI18nDef {
 /// icon = "message-square"     # a lucide icon name; the tile shows a letter if unknown
 /// route = "/chat"             # a page of this plugin; what the tile opens
 /// description = "Team messaging"
+/// standalone = true           # keep this tile even with a single menu (optional)
+/// folder = "Time"             # join/create a named folder (same workspace category)
+/// roles = ["hr_user"]         # optional; omit = any member may see the tile
 /// ```
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PluginAppDef {
@@ -366,6 +416,18 @@ pub struct PluginAppDef {
     pub route: String,
     #[serde(default)]
     pub description: Option<String>,
+    /// Keep a launcher tile even when the plugin has only one menu entry.
+    #[serde(default)]
+    pub standalone: bool,
+    /// Named folder on the Apps home screen; plugins that share the same
+    /// `folder` (within a workspace) appear together. Install category stays
+    /// the workspace.
+    #[serde(default)]
+    pub folder: Option<String>,
+    /// Roles that may see this app tile (OR). Short names become `<plugin>.name`.
+    /// Empty = any organization member.
+    #[serde(default)]
+    pub roles: Vec<String>,
 }
 
 /// Full `plugin.toml` document. Unknown top-level tables are ignored by serde.
@@ -465,26 +527,46 @@ fn default_debounce_ms() -> u64 {
 impl PluginWatchDef {
     /// Check everything a manifest can get wrong, so a plugin is refused when it is loaded.
     pub fn validate(&self) -> Result<(), String> {
-        if !plain_name(&self.name, |c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-') {
-            return Err(format!("watch name `{}`: use 1 to 64 lower-case letters, digits, `_` or `-`", self.name));
+        if !plain_name(&self.name, |c| {
+            c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-'
+        }) {
+            return Err(format!(
+                "watch name `{}`: use 1 to 64 lower-case letters, digits, `_` or `-`",
+                self.name
+            ));
         }
         if self.function.is_empty() {
             return Err(format!("watch `{}` names no function", self.name));
         }
-        crate::plugin_files::safe_relative(&self.path).map_err(|e| format!("watch `{}`: {e}", self.name))?;
+        crate::plugin_files::safe_relative(&self.path)
+            .map_err(|e| format!("watch `{}`: {e}", self.name))?;
         if self.events.is_empty() {
-            return Err(format!("watch `{}` lists no events; use some of {WATCH_EVENTS:?}", self.name));
+            return Err(format!(
+                "watch `{}` lists no events; use some of {WATCH_EVENTS:?}",
+                self.name
+            ));
         }
-        if let Some(bad) = self.events.iter().find(|event| !WATCH_EVENTS.contains(&event.as_str())) {
-            return Err(format!("watch `{}`: `{bad}` is not an event; use some of {WATCH_EVENTS:?}", self.name));
+        if let Some(bad) = self
+            .events
+            .iter()
+            .find(|event| !WATCH_EVENTS.contains(&event.as_str()))
+        {
+            return Err(format!(
+                "watch `{}`: `{bad}` is not an event; use some of {WATCH_EVENTS:?}",
+                self.name
+            ));
         }
         if let Some(pattern) = &self.pattern {
-            globset::Glob::new(pattern).map_err(|e| format!("watch `{}`: pattern `{pattern}`: {e}", self.name))?;
+            globset::Glob::new(pattern)
+                .map_err(|e| format!("watch `{}`: pattern `{pattern}`: {e}", self.name))?;
         }
         if !(50..=60_000).contains(&self.debounce_ms) {
             return Err(format!("watch `{}`: debounce_ms is 50 to 60000", self.name));
         }
-        if self.poll_secs.is_some_and(|secs| !(1..=3600).contains(&secs)) {
+        if self
+            .poll_secs
+            .is_some_and(|secs| !(1..=3600).contains(&secs))
+        {
             return Err(format!("watch `{}`: poll_secs is 1 to 3600", self.name));
         }
         if self.max_attempts.is_some_and(|n| !(1..=20).contains(&n)) {
@@ -493,9 +575,14 @@ impl PluginWatchDef {
         if let Some(queue) = &self.queue {
             let ok = !queue.is_empty()
                 && queue.len() <= 40
-                && queue.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-');
+                && queue
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-');
             if !ok {
-                return Err(format!("watch `{}`: a queue name is lower-case letters, digits, `_` and `-`", self.name));
+                return Err(format!(
+                    "watch `{}`: a queue name is lower-case letters, digits, `_` and `-`",
+                    self.name
+                ));
             }
         }
         Ok(())
@@ -535,6 +622,21 @@ impl CommandArgDef {
 /// function = "import_rates"
 /// help = "Fetch the exchange rates for a day"
 /// args = [{ name = "date", help = "YYYY-MM-DD, default today" }]
+///
+/// # Master data (Odoo `data` / Frappe fixtures): the kernel runs these after
+/// # install / upgrade into an organization. Prefer idempotent seed functions.
+/// [[command]]
+/// name = "seed"
+/// function = "seed_currencies"
+/// on_install = true
+/// on_upgrade = true
+///
+/// # Desk demo data for one model (not run on install). Desk passes `count`.
+/// [[command]]
+/// name = "demo_currency"
+/// function = "generate_demo_currency"
+/// demo_model = "currency"
+/// args = [{ name = "count", type = "int", default = 10 }]
 /// ```
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct PluginCommandDef {
@@ -544,6 +646,16 @@ pub struct PluginCommandDef {
     pub help: String,
     #[serde(default)]
     pub args: Vec<CommandArgDef>,
+    /// Run this command (empty args) when the plugin is first installed in an organization.
+    #[serde(default)]
+    pub on_install: bool,
+    /// Run this command (empty args) when the plugin is upgraded in an organization.
+    #[serde(default)]
+    pub on_upgrade: bool,
+    /// When set, Desk lists this command as a demo generator for that model name.
+    /// Not a lifecycle seed: do not combine with `on_install` / `on_upgrade`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub demo_model: Option<String>,
 }
 
 /// A role a plugin offers: something an administrator gives to people, which the plugin's code
@@ -566,8 +678,13 @@ pub struct PluginRoleDef {
 
 impl PluginRoleDef {
     pub fn validate(&self) -> Result<(), String> {
-        if !plain_name(&self.name, |c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
-            return Err(format!("role name `{}`: use 1 to 64 lower-case letters, digits or `_`", self.name));
+        if !plain_name(&self.name, |c| {
+            c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'
+        }) {
+            return Err(format!(
+                "role name `{}`: use 1 to 64 lower-case letters, digits or `_`",
+                self.name
+            ));
         }
         Ok(())
     }
@@ -580,25 +697,62 @@ fn plain_name(name: &str, allowed: fn(char) -> bool) -> bool {
 impl PluginCommandDef {
     /// Check everything a manifest can get wrong, so a plugin is refused when it is loaded.
     pub fn validate(&self) -> Result<(), String> {
-        if !plain_name(&self.name, |c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-') {
-            return Err(format!("command name `{}`: use 1 to 64 lower-case letters, digits, `_` or `-`", self.name));
+        if !plain_name(&self.name, |c| {
+            c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-'
+        }) {
+            return Err(format!(
+                "command name `{}`: use 1 to 64 lower-case letters, digits, `_` or `-`",
+                self.name
+            ));
         }
         if self.function.is_empty() {
             return Err(format!("command `{}` names no function", self.name));
         }
+        if let Some(model) = &self.demo_model {
+            if !plain_name(model, |c| {
+                c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'
+            }) {
+                return Err(format!(
+                    "command `{}`: demo_model `{}` uses 1 to 64 lower-case letters, digits or `_`",
+                    self.name, model
+                ));
+            }
+            if self.on_install || self.on_upgrade {
+                return Err(format!(
+                    "command `{}`: demo_model cannot be combined with on_install / on_upgrade (demo data is not master-data seed)",
+                    self.name
+                ));
+            }
+        }
         let mut seen = std::collections::HashSet::new();
         for arg in &self.args {
-            if !plain_name(&arg.name, |c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
-                return Err(format!("command `{}`: argument name `{}` uses 1 to 64 lower-case letters, digits or `_`", self.name, arg.name));
+            if !plain_name(&arg.name, |c| {
+                c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'
+            }) {
+                return Err(format!(
+                    "command `{}`: argument name `{}` uses 1 to 64 lower-case letters, digits or `_`",
+                    self.name, arg.name
+                ));
             }
             if !seen.insert(arg.name.clone()) {
-                return Err(format!("command `{}`: two arguments are named `{}`", self.name, arg.name));
+                return Err(format!(
+                    "command `{}`: two arguments are named `{}`",
+                    self.name, arg.name
+                ));
             }
             if !ARG_TYPES.contains(&arg.kind()) {
-                return Err(format!("command `{}`: argument `{}` has type `{}`; use one of {ARG_TYPES:?}", self.name, arg.name, arg.kind()));
+                return Err(format!(
+                    "command `{}`: argument `{}` has type `{}`; use one of {ARG_TYPES:?}",
+                    self.name,
+                    arg.name,
+                    arg.kind()
+                ));
             }
             if arg.required && arg.default.is_some() {
-                return Err(format!("command `{}`: argument `{}` is required, so it needs no default", self.name, arg.name));
+                return Err(format!(
+                    "command `{}`: argument `{}` is required, so it needs no default",
+                    self.name, arg.name
+                ));
             }
             if let Some(default) = &arg.default {
                 let fits = match arg.kind() {
@@ -609,8 +763,19 @@ impl PluginCommandDef {
                     _ => true,
                 };
                 if !fits {
-                    return Err(format!("command `{}`: the default of `{}` is not a {}", self.name, arg.name, arg.kind()));
+                    return Err(format!(
+                        "command `{}`: the default of `{}` is not a {}",
+                        self.name,
+                        arg.name,
+                        arg.kind()
+                    ));
                 }
+            }
+            if arg.name == "count" && self.demo_model.is_some() && arg.kind() != "int" {
+                return Err(format!(
+                    "command `{}`: demo generator argument `count` must be type `int`",
+                    self.name
+                ));
             }
         }
         Ok(())
@@ -674,38 +839,69 @@ impl PluginManifest {
         if manifest.plugin.capabilities.iter().any(|c| c == REMOVED) {
             return Err(ManifestError::RawSurql("capabilities"));
         }
-        if manifest.plugin.public_capabilities.iter().any(|c| c == REMOVED) {
+        if manifest
+            .plugin
+            .public_capabilities
+            .iter()
+            .any(|c| c == REMOVED)
+        {
             return Err(ManifestError::RawSurql("public_capabilities"));
         }
         let mut seen = std::collections::HashSet::new();
         for task in &manifest.schedule {
-            task.validate().map_err(|error| ManifestError::Schedule(error.to_string()))?;
+            task.validate()
+                .map_err(|error| ManifestError::Schedule(error.to_string()))?;
             if !seen.insert(task.name.clone()) {
-                return Err(ManifestError::Schedule(format!("two tasks are named `{}`", task.name)));
+                return Err(ManifestError::Schedule(format!(
+                    "two tasks are named `{}`",
+                    task.name
+                )));
             }
         }
         let mut names = std::collections::HashSet::new();
+        let mut demo_models = std::collections::HashSet::new();
         for command in &manifest.command {
             command.validate().map_err(ManifestError::Command)?;
             if !names.insert(command.name.clone()) {
-                return Err(ManifestError::Command(format!("two commands are named `{}`", command.name)));
+                return Err(ManifestError::Command(format!(
+                    "two commands are named `{}`",
+                    command.name
+                )));
+            }
+            if let Some(model) = &command.demo_model {
+                if !demo_models.insert(model.clone()) {
+                    return Err(ManifestError::Command(format!(
+                        "two commands claim demo_model `{model}`"
+                    )));
+                }
             }
         }
         let mut watches = std::collections::HashSet::new();
         for watch in &manifest.watch {
             watch.validate().map_err(ManifestError::Watch)?;
             if !watches.insert(watch.name.clone()) {
-                return Err(ManifestError::Watch(format!("two watches are named `{}`", watch.name)));
+                return Err(ManifestError::Watch(format!(
+                    "two watches are named `{}`",
+                    watch.name
+                )));
             }
         }
         let mut roles = std::collections::HashSet::new();
         for role in &manifest.roles {
             role.validate().map_err(ManifestError::Role)?;
             if !roles.insert(role.name.clone()) {
-                return Err(ManifestError::Role(format!("two roles are named `{}`", role.name)));
+                return Err(ManifestError::Role(format!(
+                    "two roles are named `{}`",
+                    role.name
+                )));
             }
         }
-        if let Some(unknown) = manifest.plugin.bridges.iter().find(|name| crate::bridges::find(name).is_none()) {
+        if let Some(unknown) = manifest
+            .plugin
+            .bridges
+            .iter()
+            .find(|name| crate::bridges::find(name).is_none())
+        {
             return Err(ManifestError::Bridge(format!(
                 "`{unknown}` is not a bridge plugins can call; use some of: {}",
                 crate::bridges::names()
@@ -713,9 +909,14 @@ impl PluginManifest {
         }
         let mut events = std::collections::HashSet::new();
         for event in &manifest.events {
-            event.validate(&manifest.plugin).map_err(ManifestError::Event)?;
+            event
+                .validate(&manifest.plugin)
+                .map_err(ManifestError::Event)?;
             if !events.insert((event.direction().to_string(), event.name.clone())) {
-                return Err(ManifestError::Event(format!("`{}` is declared twice", event.name)));
+                return Err(ManifestError::Event(format!(
+                    "`{}` is declared twice",
+                    event.name
+                )));
             }
         }
         manifest.normalize();
@@ -742,7 +943,10 @@ mod command_tests {
              args = [{ name = \"date\" }, { name = \"days\", type = \"int\", default = 7 }, { name = \"force\", type = \"bool\", required = true }]\n",
         )?;
         let command = &manifest.command[0];
-        assert_eq!((command.name.as_str(), command.function.as_str()), ("import_rates", "import"));
+        assert_eq!(
+            (command.name.as_str(), command.function.as_str()),
+            ("import_rates", "import")
+        );
         assert_eq!(command.args[0].kind(), "string");
         assert_eq!(command.args[1].kind(), "int");
         assert!(command.args[2].required);
@@ -751,52 +955,121 @@ mod command_tests {
 
     #[test]
     fn watches_are_read_with_defaults_and_checked() -> Result<(), ManifestError> {
-        let manifest = parse("[[watch]]\nname = \"invoices\"\npath = \"inbox\"\nfunction = \"import\"\npattern = \"*.csv\"\n")?;
+        let manifest = parse(
+            "[[watch]]\nname = \"invoices\"\npath = \"inbox\"\nfunction = \"import\"\npattern = \"*.csv\"\n",
+        )?;
         let watch = &manifest.watch[0];
-        assert_eq!((watch.events.as_slice(), watch.debounce_ms, watch.recursive), (["created".to_string(), "modified".to_string()].as_slice(), 500, false));
+        assert_eq!(
+            (watch.events.as_slice(), watch.debounce_ms, watch.recursive),
+            (
+                ["created".to_string(), "modified".to_string()].as_slice(),
+                500,
+                false
+            )
+        );
         for (label, text) in [
             ("name", "[[watch]]\nname = \"Bad\"\nfunction = \"f\"\n"),
             ("function", "[[watch]]\nname = \"w\"\nfunction = \"\"\n"),
-            ("escape", "[[watch]]\nname = \"w\"\nfunction = \"f\"\npath = \"../elsewhere\"\n"),
-            ("absolute", "[[watch]]\nname = \"w\"\nfunction = \"f\"\npath = \"/etc\"\n"),
-            ("event", "[[watch]]\nname = \"w\"\nfunction = \"f\"\nevents = [\"opened\"]\n"),
-            ("no events", "[[watch]]\nname = \"w\"\nfunction = \"f\"\nevents = []\n"),
-            ("glob", "[[watch]]\nname = \"w\"\nfunction = \"f\"\npattern = \"[\"\n"),
-            ("debounce", "[[watch]]\nname = \"w\"\nfunction = \"f\"\ndebounce_ms = 5\n"),
-            ("poll", "[[watch]]\nname = \"w\"\nfunction = \"f\"\npoll_secs = 0\n"),
-            ("duplicate", "[[watch]]\nname = \"w\"\nfunction = \"f\"\n[[watch]]\nname = \"w\"\nfunction = \"g\"\n"),
+            (
+                "escape",
+                "[[watch]]\nname = \"w\"\nfunction = \"f\"\npath = \"../elsewhere\"\n",
+            ),
+            (
+                "absolute",
+                "[[watch]]\nname = \"w\"\nfunction = \"f\"\npath = \"/etc\"\n",
+            ),
+            (
+                "event",
+                "[[watch]]\nname = \"w\"\nfunction = \"f\"\nevents = [\"opened\"]\n",
+            ),
+            (
+                "no events",
+                "[[watch]]\nname = \"w\"\nfunction = \"f\"\nevents = []\n",
+            ),
+            (
+                "glob",
+                "[[watch]]\nname = \"w\"\nfunction = \"f\"\npattern = \"[\"\n",
+            ),
+            (
+                "debounce",
+                "[[watch]]\nname = \"w\"\nfunction = \"f\"\ndebounce_ms = 5\n",
+            ),
+            (
+                "poll",
+                "[[watch]]\nname = \"w\"\nfunction = \"f\"\npoll_secs = 0\n",
+            ),
+            (
+                "duplicate",
+                "[[watch]]\nname = \"w\"\nfunction = \"f\"\n[[watch]]\nname = \"w\"\nfunction = \"g\"\n",
+            ),
         ] {
-            assert!(matches!(parse(text), Err(ManifestError::Watch(_))), "{label}");
+            assert!(
+                matches!(parse(text), Err(ManifestError::Watch(_))),
+                "{label}"
+            );
         }
         Ok(())
     }
 
     #[test]
-    fn events_are_checked_against_the_plugins_dependencies_and_capabilities() -> Result<(), ManifestError> {
+    fn events_are_checked_against_the_plugins_dependencies_and_capabilities()
+    -> Result<(), ManifestError> {
         let with = |extra: &str| {
             PluginManifest::parse(&format!(
                 "[plugin]\nname = \"crm\"\nversion = \"1\"\ndependencies = [\"chat\"]\ncapabilities = [\"events::emit\", \"events::subscribe\"]\n{extra}"
             ))
         };
-        let ok = with("[[events]]\nname = \"lead_won\"\n[[events]]\nname = \"chat.message_posted\"\ndirection = \"listen\"\nhandler = \"on_message\"\n")?;
+        let ok = with(
+            "[[events]]\nname = \"lead_won\"\n[[events]]\nname = \"chat.message_posted\"\ndirection = \"listen\"\nhandler = \"on_message\"\n",
+        )?;
         assert_eq!(ok.events[0].direction(), "emit");
         assert_eq!(ok.events[1].direction(), "listen");
         for (label, text) in [
             ("dot in an emitted name", "[[events]]\nname = \"a.b\"\n"),
-            ("listen without a plugin part", "[[events]]\nname = \"posted\"\ndirection = \"listen\"\nhandler = \"h\"\n"),
-            ("not a dependency", "[[events]]\nname = \"billing.paid\"\ndirection = \"listen\"\nhandler = \"h\"\n"),
-            ("no handler", "[[events]]\nname = \"chat.x\"\ndirection = \"listen\"\n"),
-            ("direction", "[[events]]\nname = \"x\"\ndirection = \"both\"\n"),
-            ("duplicate", "[[events]]\nname = \"x\"\n[[events]]\nname = \"x\"\n"),
+            (
+                "listen without a plugin part",
+                "[[events]]\nname = \"posted\"\ndirection = \"listen\"\nhandler = \"h\"\n",
+            ),
+            (
+                "not a dependency",
+                "[[events]]\nname = \"billing.paid\"\ndirection = \"listen\"\nhandler = \"h\"\n",
+            ),
+            (
+                "no handler",
+                "[[events]]\nname = \"chat.x\"\ndirection = \"listen\"\n",
+            ),
+            (
+                "direction",
+                "[[events]]\nname = \"x\"\ndirection = \"both\"\n",
+            ),
+            (
+                "duplicate",
+                "[[events]]\nname = \"x\"\n[[events]]\nname = \"x\"\n",
+            ),
         ] {
-            assert!(matches!(with(text), Err(ManifestError::Event(_))), "{label}");
+            assert!(
+                matches!(with(text), Err(ManifestError::Event(_))),
+                "{label}"
+            );
         }
         // Without the capabilities, declaring either direction is refused.
-        let bare = |extra: &str| PluginManifest::parse(&format!("[plugin]\nname = \"p\"\nversion = \"1\"\ndependencies = [\"chat\"]\n{extra}"));
-        assert!(matches!(bare("[[events]]\nname = \"x\"\n"), Err(ManifestError::Event(_))));
-        assert!(matches!(bare("[[events]]\nname = \"chat.x\"\ndirection = \"listen\"\nhandler = \"h\"\n"), Err(ManifestError::Event(_))));
+        let bare = |extra: &str| {
+            PluginManifest::parse(&format!(
+                "[plugin]\nname = \"p\"\nversion = \"1\"\ndependencies = [\"chat\"]\n{extra}"
+            ))
+        };
+        assert!(matches!(
+            bare("[[events]]\nname = \"x\"\n"),
+            Err(ManifestError::Event(_))
+        ));
+        assert!(matches!(
+            bare("[[events]]\nname = \"chat.x\"\ndirection = \"listen\"\nhandler = \"h\"\n"),
+            Err(ManifestError::Event(_))
+        ));
         // A plugin may listen to its own events.
-        let own = PluginManifest::parse("[plugin]\nname = \"p\"\nversion = \"1\"\ncapabilities = [\"events::subscribe\"]\n[[events]]\nname = \"p.x\"\ndirection = \"listen\"\nhandler = \"h\"\n")?;
+        let own = PluginManifest::parse(
+            "[plugin]\nname = \"p\"\nversion = \"1\"\ncapabilities = [\"events::subscribe\"]\n[[events]]\nname = \"p.x\"\ndirection = \"listen\"\nhandler = \"h\"\n",
+        )?;
         assert_eq!(own.events.len(), 1);
         Ok(())
     }
@@ -804,15 +1077,66 @@ mod command_tests {
     #[test]
     fn a_bad_command_refuses_the_plugin_with_a_reason() {
         for (label, text) in [
-            ("name", "[[command]]\nname = \"Bad Name\"\nfunction = \"f\"\n"),
+            (
+                "name",
+                "[[command]]\nname = \"Bad Name\"\nfunction = \"f\"\n",
+            ),
             ("function", "[[command]]\nname = \"x\"\nfunction = \"\"\n"),
-            ("type", "[[command]]\nname = \"x\"\nfunction = \"f\"\nargs = [{ name = \"a\", type = \"date\" }]\n"),
-            ("duplicate arg", "[[command]]\nname = \"x\"\nfunction = \"f\"\nargs = [{ name = \"a\" }, { name = \"a\" }]\n"),
-            ("required default", "[[command]]\nname = \"x\"\nfunction = \"f\"\nargs = [{ name = \"a\", required = true, default = \"v\" }]\n"),
-            ("default type", "[[command]]\nname = \"x\"\nfunction = \"f\"\nargs = [{ name = \"a\", type = \"int\", default = \"v\" }]\n"),
-            ("duplicate", "[[command]]\nname = \"x\"\nfunction = \"f\"\n[[command]]\nname = \"x\"\nfunction = \"g\"\n"),
+            (
+                "type",
+                "[[command]]\nname = \"x\"\nfunction = \"f\"\nargs = [{ name = \"a\", type = \"date\" }]\n",
+            ),
+            (
+                "duplicate arg",
+                "[[command]]\nname = \"x\"\nfunction = \"f\"\nargs = [{ name = \"a\" }, { name = \"a\" }]\n",
+            ),
+            (
+                "required default",
+                "[[command]]\nname = \"x\"\nfunction = \"f\"\nargs = [{ name = \"a\", required = true, default = \"v\" }]\n",
+            ),
+            (
+                "default type",
+                "[[command]]\nname = \"x\"\nfunction = \"f\"\nargs = [{ name = \"a\", type = \"int\", default = \"v\" }]\n",
+            ),
+            (
+                "duplicate",
+                "[[command]]\nname = \"x\"\nfunction = \"f\"\n[[command]]\nname = \"x\"\nfunction = \"g\"\n",
+            ),
+            (
+                "demo_model case",
+                "[[command]]\nname = \"demo\"\nfunction = \"f\"\ndemo_model = \"Bad\"\n",
+            ),
+            (
+                "demo with install",
+                "[[command]]\nname = \"demo\"\nfunction = \"f\"\ndemo_model = \"currency\"\non_install = true\n",
+            ),
+            (
+                "demo count type",
+                "[[command]]\nname = \"demo\"\nfunction = \"f\"\ndemo_model = \"currency\"\nargs = [{ name = \"count\", type = \"string\" }]\n",
+            ),
+            (
+                "duplicate demo_model",
+                "[[command]]\nname = \"demo_a\"\nfunction = \"f\"\ndemo_model = \"currency\"\n\
+                 [[command]]\nname = \"demo_b\"\nfunction = \"g\"\ndemo_model = \"currency\"\n",
+            ),
         ] {
-            assert!(matches!(parse(text), Err(ManifestError::Command(_))), "{label}");
+            assert!(
+                matches!(parse(text), Err(ManifestError::Command(_))),
+                "{label}"
+            );
         }
+    }
+
+    #[test]
+    fn demo_model_commands_are_read() -> Result<(), ManifestError> {
+        let manifest = parse(
+            "[[command]]\nname = \"demo_currency\"\nfunction = \"generate_demo_currency\"\n\
+             demo_model = \"currency\"\nargs = [{ name = \"count\", type = \"int\", default = 10 }]\n",
+        )?;
+        let command = &manifest.command[0];
+        assert_eq!(command.demo_model.as_deref(), Some("currency"));
+        assert!(!command.on_install);
+        assert_eq!(command.args[0].kind(), "int");
+        Ok(())
     }
 }

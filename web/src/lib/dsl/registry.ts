@@ -1,6 +1,8 @@
 import type { Component } from 'svelte';
 import PageShell from '$lib/components/widgets/PageShell.svelte';
 import HeaderWidget from '$lib/components/widgets/HeaderWidget.svelte';
+import SaveWidget from '$lib/components/widgets/SaveWidget.svelte';
+import StatusbarWidget from '$lib/components/widgets/StatusbarWidget.svelte';
 import NotebookWidget from '$lib/components/widgets/NotebookWidget.svelte';
 import GroupWidget from '$lib/components/widgets/GroupWidget.svelte';
 import ListViewWidget from '$lib/components/widgets/ListViewWidget.svelte';
@@ -31,7 +33,8 @@ export const widgetRegistry: Record<string, WidgetComponent> = {
 	page: PageShell as WidgetComponent,
 	header: HeaderWidget as WidgetComponent,
 	footer: HeaderWidget as WidgetComponent,
-	statusbar: HeaderWidget as WidgetComponent,
+	statusbar: StatusbarWidget as WidgetComponent,
+	save: SaveWidget as WidgetComponent,
 	notebook: NotebookWidget as WidgetComponent,
 	group: GroupWidget as WidgetComponent,
 	view: ViewRouter as WidgetComponent,

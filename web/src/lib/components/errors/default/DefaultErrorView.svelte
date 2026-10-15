@@ -19,8 +19,12 @@
 </script>
 
 <div class="flex min-h-[60vh] items-center justify-center p-6">
-	<div class="w-full max-w-md space-y-4 rounded-lg border border-border bg-card p-8 text-card-foreground">
-		<p class="text-sm font-medium tracking-widest text-muted-foreground uppercase">Error {status}</p>
+	<div
+		class="w-full max-w-md space-y-4 rounded-lg border border-border bg-card p-8 text-card-foreground"
+	>
+		<p class="text-sm font-medium tracking-widest text-muted-foreground uppercase">
+			Error {status}
+		</p>
 		<h1 class="text-2xl font-semibold tracking-tight">{title}</h1>
 		<p class="text-sm text-muted-foreground">{message}</p>
 		{#if detail}

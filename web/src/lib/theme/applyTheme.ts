@@ -10,7 +10,13 @@ export function applyTheme(theme: ThemeConfig) {
 
 	const root = document.documentElement;
 	// Clear anything an earlier version of the app wrote inline.
-	for (const key of [...Object.keys(theme.tokens.light), 'radius', 'font-sans']) {
+	for (const key of [
+		...Object.keys(theme.tokens.light),
+		'radius',
+		'font-sans',
+		'font-mono',
+		'font-heading'
+	]) {
 		root.style.removeProperty(`--${key}`);
 	}
 
@@ -26,8 +32,55 @@ export function applyTheme(theme: ThemeConfig) {
 		Object.entries(tokens)
 			.map(([key, value]) => `--${key}: ${value};`)
 			.join('');
-	const shared = `--radius: ${theme.tokens.radius}; --font-sans: ${theme.tokens.fontSans};`;
+	const { radius, fontSans, fontMono, fontHeading } = theme.tokens;
+	const shared = [
+		`--radius: ${radius};`,
+		`--font-sans: ${fontSans};`,
+		fontMono ? `--font-mono: ${fontMono};` : '',
+		// Headings use the body font unless the theme names one.
+		`--font-heading: ${fontHeading || 'var(--font-sans)'};`
+	].join(' ');
 	style.textContent = `:root { ${rules(theme.tokens.light)} ${shared} } .dark { ${rules(theme.tokens.dark)} ${shared} }`;
+
+	// Spacing scale: `layout.css` reads `[data-density]`.
+	root.dataset.density = theme.tokens.density ?? 'comfortable';
+	applyFavicon(theme.shell?.branding?.favicon ?? null);
+	applyStylesheet(theme.shell?.css ?? '');
+}
+
+/**
+ * The theme's own stylesheet, after the stock styles so it wins. The server has already
+ * refused anything that fetches or runs; text content cannot add markup either way.
+ */
+function applyStylesheet(css: string) {
+	const id = 'aether-theme-css';
+	let style = document.getElementById(id) as HTMLStyleElement | null;
+	if (!css) {
+		style?.remove();
+		return;
+	}
+	if (!style) {
+		style = document.createElement('style');
+		style.id = id;
+		document.head.appendChild(style);
+	}
+	style.textContent = css;
+}
+
+/** The theme's favicon, or the app's own (`static/favicon`) when it has none. */
+function applyFavicon(href: string | null) {
+	let link = document.querySelector<HTMLLinkElement>('link[rel="icon"][data-theme-icon]');
+	if (!href) {
+		link?.remove();
+		return;
+	}
+	if (!link) {
+		link = document.createElement('link');
+		link.rel = 'icon';
+		link.dataset.themeIcon = '';
+		document.head.appendChild(link);
+	}
+	link.href = href;
 }
 
 export function resolveColorMode(mode: ThemeConfig['colorMode']): 'light' | 'dark' {
@@ -41,5 +94,7 @@ export function resolveColorMode(mode: ThemeConfig['colorMode']): 'light' | 'dar
 export function applyColorMode(mode: ThemeConfig['colorMode']) {
 	if (typeof document === 'undefined') return;
 	const resolved = resolveColorMode(mode);
-	document.documentElement.classList.toggle('dark', resolved === 'dark');
+	const root = document.documentElement;
+	root.classList.toggle('dark', resolved === 'dark');
+	root.style.colorScheme = resolved;
 }

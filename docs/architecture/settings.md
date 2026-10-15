@@ -1,11 +1,13 @@
 # Settings
 
-Settings are part of the developer desk: only developers (superusers) can read or
-change them, in the web app and through the API (`/api/settings/...` answers `403`
-to anyone else).
+Settings live under the desk (`/desk/settings`). **Developers** (superusers) can
+read and change global defaults and any organization's overrides. The
+**organization owner** and members with `org_admin` can open Settings for the
+current organization and save **organization overrides** only (the API refuses
+them without an organization context). Other members get `403`.
 
 The screen is a navigation of groups (General, Notifications, Security & Privacy,
-Appearance) beside the selected group's settings, shown as one card of rows. A row
+User Interface, Appearance) beside the selected group's settings, shown as one card of rows. A row
 shows:
 
 - the label, a **source badge** (`Default`, or `Organization` when this
@@ -29,7 +31,6 @@ be shared between processes.
 
 ## Settings added by the kernel
 
-Besides the groups above, *Email*, *SMS* and a group for each provider (SMTP, Resend, Twilio, Termii,
-Africa's Talking) configure [communication](communication.md), and *Scheduler* configures
-[background jobs](scheduler.md). They are seeded by `aether --seed` like the rest. Every setting's label
-and key must be unique across the whole catalog.
+Besides the groups above, *Communication* holds email, SMS and every provider (SMTP, Resend, Twilio,
+Termii, Africa's Talking), and *Scheduler* configures [background jobs](scheduler.md). They are seeded
+by `aether --seed` like the rest. Every setting's label and key must be unique across the whole catalog.

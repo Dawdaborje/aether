@@ -2,6 +2,7 @@ pub mod args;
 pub mod db;
 pub mod generation;
 pub mod initialization;
+pub mod logging;
 pub mod organization;
 pub mod commands;
 pub mod plugin_manager;

@@ -3,7 +3,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import ThemePreview from '$lib/components/settings/ThemePreview.svelte';
 	import { orgStore } from '$lib/org/orgStore.svelte';
-	import { enterpriseTheme, themeStore } from '$lib/theme';
+	import { defaultTheme, themeStore } from '$lib/theme';
 	import { onMount } from 'svelte';
 
 	interface ThemeEntry {
@@ -20,7 +20,7 @@
 	let busy = $state<string | null>(null);
 	let error = $state('');
 
-	const builtIn = enterpriseTheme.tokens.light;
+	const builtIn = defaultTheme.tokens.light;
 
 	async function load() {
 		const res = await apiFetch('/api/ui/themes');
@@ -111,7 +111,7 @@
 						<p class="text-xs text-muted-foreground">Built-in default</p>
 					</div>
 					{#if active === null}
-						<span class="text-[10px] font-semibold tracking-widest text-primary uppercase">Active</span>
+						<span class="text-xs font-semibold tracking-widest text-primary uppercase">Active</span>
 					{:else}
 						<Button
 							size="sm"
@@ -140,7 +140,7 @@
 							</p>
 						</div>
 						{#if active === theme.name}
-							<span class="text-[10px] font-semibold tracking-widest text-primary uppercase">Active</span>
+							<span class="text-xs font-semibold tracking-widest text-primary uppercase">Active</span>
 						{:else}
 							<Button
 								size="sm"

@@ -1,16 +1,10 @@
 <script lang="ts">
-	import { authSession } from '$lib/auth/session.svelte';
-	import { themeStore } from '$lib/theme';
-	import { builtInNav } from '../nav';
-	import EnterpriseShell from '../shell/EnterpriseShell.svelte';
+	import { defaultLayout } from '../composed/builtins';
+	import ComposedLayout from '../composed/ComposedLayout.svelte';
 
 	let { children } = $props();
-
-	// The organization's theme may bring its own navigation; otherwise the
-	// built-in one (Apps, plus Settings for developers).
-	const nav = $derived(themeStore.theme.nav ?? builtInNav(authSession.isDeveloper));
 </script>
 
-<EnterpriseShell {nav}>
+<ComposedLayout def={defaultLayout}>
 	{@render children()}
-</EnterpriseShell>
+</ComposedLayout>

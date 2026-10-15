@@ -135,7 +135,10 @@ pub async fn after(
         .await?
         .check()?;
     let rows: Vec<Row> = response.take(0)?;
-    Ok(rows.into_iter().map(|row| row.into_notification(false)).collect())
+    Ok(rows
+        .into_iter()
+        .map(|row| row.into_notification(false))
+        .collect())
 }
 
 pub async fn unread_count(db: &Surreal<Client>, viewer: &Viewer) -> Result<u64, surrealdb::Error> {
@@ -161,7 +164,11 @@ pub async fn mark_read(
     actor: &str,
     ids: Option<Vec<String>>,
 ) -> Result<u64, surrealdb::Error> {
-    let only = if ids.is_some() { " AND ulid IN $ids" } else { "" };
+    let only = if ids.is_some() {
+        " AND ulid IN $ids"
+    } else {
+        ""
+    };
     let mut response = db
         .query(format!(
             "LET $unread = SELECT VALUE ulid FROM notifications \

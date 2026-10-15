@@ -5,7 +5,7 @@
 //! actor. The server does not need to be running.
 
 use aether_core::{
-    plugin_manager::commands::{self, CommandError},
+    plugin_manager::commands::{self, CommandError, LifecyclePhase, LifecycleSeedReport},
     state::AppState,
 };
 
@@ -23,9 +23,15 @@ fn operating_system_user() -> String {
 }
 
 async fn state_for(ctx: DbContext) -> Result<AppState, String> {
-    AppState::new(ctx.db.clone(), ctx.config, ctx.namespace, ctx.database)
-        .await
-        .map_err(|error| format!("could not start the kernel: {error}"))
+    AppState::new(
+        ctx.db.clone(),
+        ctx.config,
+        ctx.namespace,
+        ctx.database,
+        ctx.config_path,
+    )
+    .await
+    .map_err(|error| format!("could not start the kernel: {error}"))
 }
 
 /// Print the commands of the plugins installed in `org`.
@@ -59,6 +65,45 @@ pub async fn list(ctx: DbContext, org: &str) -> Result<(), String> {
     }
     println!("\nRun one with: aether --command <plugin>.<command> --org {org} [--arg key=value ...]");
     Ok(())
+}
+
+/// Run each plugin's `on_install` / `on_upgrade` seed commands in `org`.
+pub async fn run_lifecycle_seeds(
+    ctx: DbContext,
+    org: &str,
+    plugins: &[String],
+    phase: LifecyclePhase,
+) -> Result<Vec<LifecycleSeedReport>, String> {
+    if plugins.is_empty() {
+        return Ok(Vec::new());
+    }
+    let state = state_for(ctx).await?;
+    let actor = format!("system:cli:{}", operating_system_user());
+    let reports = commands::run_lifecycle(&state, org, plugins, phase, &actor)
+        .await
+        .map_err(|error| error.to_string())?;
+    for report in &reports {
+        if report.ok {
+            println!(
+                "Seeded {}.{}{}",
+                report.plugin,
+                report.command,
+                report
+                    .detail
+                    .as_ref()
+                    .map(|d| format!(": {d}"))
+                    .unwrap_or_default()
+            );
+        } else {
+            eprintln!(
+                "Seed {}.{} failed: {}",
+                report.plugin,
+                report.command,
+                report.detail.as_deref().unwrap_or("unknown error")
+            );
+        }
+    }
+    Ok(reports)
 }
 
 /// Run `plugin.command` in `org` and print what the function returned.

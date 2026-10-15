@@ -34,10 +34,10 @@ use crate::access::{
 };
 use crate::data_model::{ChatterDef, ModelSchema, VisitorChatter};
 use crate::notifications::{
-    Audience, HubMessage, Level, NewNotification, UiEvent,
-    send as send_notification,
+    Audience, HubMessage, Level, NewNotification, UiEvent, send as send_notification,
 };
 use crate::plugin_manager::access::{anonymous_grants, user_grants};
+use crate::plugin_manager::installed;
 use crate::state::AppState;
 
 /// Longest message or note, in characters.
@@ -54,13 +54,22 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/chatter/people", get(people))
         .route("/api/chatter/{plugin}/{model}/{key}", get(thread))
-        .route("/api/chatter/{plugin}/{model}/{key}/messages", post(post_message))
+        .route(
+            "/api/chatter/{plugin}/{model}/{key}/messages",
+            post(post_message),
+        )
         .route(
             "/api/chatter/{plugin}/{model}/{key}/messages/{id}",
             axum::routing::patch(edit_message).delete(delete_message),
         )
-        .route("/api/chatter/{plugin}/{model}/{key}/messages/{id}/restore", post(restore_message))
-        .route("/api/chatter/{plugin}/{model}/{key}/follow", put(set_following))
+        .route(
+            "/api/chatter/{plugin}/{model}/{key}/messages/{id}/restore",
+            post(restore_message),
+        )
+        .route(
+            "/api/chatter/{plugin}/{model}/{key}/follow",
+            put(set_following),
+        )
 }
 
 fn failure(status: StatusCode, message: impl AsRef<str>) -> Response {
@@ -148,10 +157,12 @@ async fn who(
     uri: &Uri,
 ) -> Result<Identity, Response> {
     let peer_ip = peer.map(|Extension(ConnectInfo(address))| address.ip());
-    identify(state, headers, peer_ip, uri).await.map_err(|error| {
-        let (status, message) = error.http();
-        with_retry_after(failure(status, message))
-    })
+    identify(state, headers, peer_ip, uri)
+        .await
+        .map_err(|error| {
+            let (status, message) = error.http();
+            with_retry_after(failure(status, message))
+        })
 }
 
 fn refuse(identity: &Identity) -> Response {
@@ -164,23 +175,32 @@ fn refuse(identity: &Identity) -> Response {
     }
 }
 
-async fn resolve(state: &AppState, identity: Identity, address: &Address) -> Result<Resolved, Response> {
+async fn resolve(
+    state: &AppState,
+    identity: Identity,
+    address: &Address,
+) -> Result<Resolved, Response> {
     let member = matches!(identity.actor, Actor::User(_));
     let org = state
         .org(&identity.org_db)
         .await
         .map_err(|error| database_failure("organization", error))?;
-    let core = state.core().await.map_err(|error| database_failure("core", error))?;
-
-    let mut response = org
-        .query("SELECT version, is_enabled FROM installed_plugins WHERE plugin_name = $name LIMIT 1;")
-        .bind(("name", address.plugin.clone()))
+    let core = state
+        .core()
         .await
-        .and_then(|response| response.check())
+        .map_err(|error| database_failure("core", error))?;
+
+    let installed = installed::list_cached(&state.cache, &identity.org_db, &org)
+        .await
         .map_err(|error| database_failure("installation", error))?;
-    let installed: Vec<InstalledRow> =
-        response.take(0).map_err(|error| database_failure("installation decode", error))?;
-    let Some(installed) = installed.into_iter().next() else {
+    let Some(installed) = installed
+        .into_iter()
+        .find(|row| row.plugin_name == address.plugin)
+        .map(|row| InstalledRow {
+            version: row.version,
+            is_enabled: row.is_enabled,
+        })
+    else {
         return Err(if member {
             failure(StatusCode::NOT_FOUND, "plugin is not installed")
         } else {
@@ -197,7 +217,10 @@ async fn resolve(state: &AppState, identity: Identity, address: &Address) -> Res
         .await
         .map_err(|error| {
             log::error!("chatter plugin load: {error}");
-            failure(StatusCode::SERVICE_UNAVAILABLE, "plugin version is unavailable")
+            failure(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "plugin version is unavailable",
+            )
         })?;
     let Some(schema) = loaded.schemas.get(&address.model).cloned() else {
         return Err(failure(StatusCode::NOT_FOUND, "no such model"));
@@ -213,7 +236,9 @@ async fn resolve(state: &AppState, identity: Identity, address: &Address) -> Res
     let manifest = &loaded.manifest;
     let (can_read, can_write) = if member {
         let grants = user_grants(manifest, &loaded.schemas);
-        grants.get(&address.model).map_or((false, false), |grant| (grant.can_read, grant.can_write))
+        grants
+            .get(&address.model)
+            .map_or((false, false), |grant| (grant.can_read, grant.can_write))
     } else {
         if chatter.visitors == VisitorChatter::None {
             return Err(refuse(&identity));
@@ -228,17 +253,27 @@ async fn resolve(state: &AppState, identity: Identity, address: &Address) -> Res
             .await
             .and_then(|response| response.check())
             .map_err(|error| database_failure("public pages", error))?;
-        let pages: Vec<PublicPageModels> =
-            response.take(0).map_err(|error| database_failure("public pages decode", error))?;
+        let pages: Vec<PublicPageModels> = response
+            .take(0)
+            .map_err(|error| database_failure("public pages decode", error))?;
         let public: BTreeSet<String> = pages.into_iter().flat_map(|page| page.models).collect();
         let grants = anonymous_grants(manifest, &loaded.schemas, &public);
-        (grants.get(&address.model).is_some_and(|grant| grant.can_read), false)
+        (
+            grants
+                .get(&address.model)
+                .is_some_and(|grant| grant.can_read),
+            false,
+        )
     };
     if !can_read {
         return Err(refuse(&identity));
     }
 
-    let key = address.key.strip_prefix(&format!("{}:", schema.table)).unwrap_or(&address.key).to_string();
+    let key = address
+        .key
+        .strip_prefix(&format!("{}:", schema.table))
+        .unwrap_or(&address.key)
+        .to_string();
     let mut response = org
         .query("SELECT VALUE id FROM type::record($table, $key);")
         .bind(("table", schema.table.clone()))
@@ -246,13 +281,17 @@ async fn resolve(state: &AppState, identity: Identity, address: &Address) -> Res
         .await
         .and_then(|response| response.check())
         .map_err(|error| database_failure("record lookup", error))?;
-    let found: Vec<surrealdb::types::RecordId> =
-        response.take(0).map_err(|error| database_failure("record decode", error))?;
+    let found: Vec<surrealdb::types::RecordId> = response
+        .take(0)
+        .map_err(|error| database_failure("record decode", error))?;
     if found.is_empty() {
         return Err(failure(StatusCode::NOT_FOUND, "no such record"));
     }
 
-    let developer = identity.session.as_ref().is_some_and(|session| session.user.is_super_user);
+    let developer = identity
+        .session
+        .as_ref()
+        .is_some_and(|session| session.user.is_super_user);
     Ok(Resolved::Scope(Box::new(Scope {
         member,
         developer,
@@ -300,8 +339,16 @@ struct OrgNameRow {
 }
 
 /// Names to show for users: the organization's display name, else the account's.
-async fn names(state: &AppState, org: &Surreal<Client>, actors: &[String]) -> HashMap<String, String> {
-    let users: Vec<String> = actors.iter().filter(|actor| actor.starts_with("users:")).cloned().collect();
+async fn names(
+    state: &AppState,
+    org: &Surreal<Client>,
+    actors: &[String],
+) -> HashMap<String, String> {
+    let users: Vec<String> = actors
+        .iter()
+        .filter(|actor| actor.starts_with("users:"))
+        .cloned()
+        .collect();
     let mut out = HashMap::new();
     if users.is_empty() {
         return out;
@@ -360,7 +407,13 @@ fn message_json(message: &Message, names: &HashMap<String, String>) -> Value {
             .get(&message.author)
             .cloned()
             .or_else(|| message.author_name.clone())
-            .unwrap_or_else(|| if message.author == "system" { "System".into() } else { "Someone".into() });
+            .unwrap_or_else(|| {
+                if message.author == "system" {
+                    "System".into()
+                } else {
+                    "Someone".into()
+                }
+            });
         object.insert("author_label".into(), Value::String(author));
     }
     value
@@ -390,7 +443,16 @@ async fn thread(
     let with_trash = query.trash && scope.developer;
     let (table, key) = (scope.table().to_string(), scope.key.clone());
 
-    let messages = match store::thread(&scope.org, &table, &key, &scope.visible_kinds(), with_trash, THREAD_LIMIT).await {
+    let messages = match store::thread(
+        &scope.org,
+        &table,
+        &key,
+        &scope.visible_kinds(),
+        with_trash,
+        THREAD_LIMIT,
+    )
+    .await
+    {
         Ok(messages) => messages,
         Err(error) => return database_failure("thread", error),
     };
@@ -403,7 +465,9 @@ async fn thread(
         Vec::new()
     };
     let trashed = if scope.developer {
-        store::trashed_count(&scope.org, &table, &key).await.unwrap_or(0)
+        store::trashed_count(&scope.org, &table, &key)
+            .await
+            .unwrap_or(0)
     } else {
         0
     };
@@ -417,7 +481,14 @@ async fn thread(
     let me = scope.actor();
     let mine = followers.iter().find(|follower| follower.actor == me);
     let mut tracked = Value::Array(scope.schema.tracked_fields());
-    crate::pages_api::localize_model_text(&state, &scope.identity, &headers, &scope.plugin, &mut tracked).await;
+    crate::pages_api::localize_model_text(
+        &state,
+        &scope.identity,
+        &headers,
+        &scope.plugin,
+        &mut tracked,
+    )
+    .await;
     Json(json!({
         "enabled": true,
         "config": {
@@ -498,7 +569,9 @@ async fn people(
         .iter()
         .filter_map(|actor| {
             let name = names.get(actor)?;
-            name.to_lowercase().contains(&needle).then(|| json!({ "actor": actor, "name": name }))
+            name.to_lowercase()
+                .contains(&needle)
+                .then(|| json!({ "actor": actor, "name": name }))
         })
         .collect();
     people.truncate(8);
@@ -529,10 +602,16 @@ fn default_kind() -> String {
 fn clean_body(text: &str, limit: usize) -> Result<String, Response> {
     let text = text.trim();
     if text.is_empty() {
-        return Err(failure(StatusCode::UNPROCESSABLE_ENTITY, "write something first"));
+        return Err(failure(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "write something first",
+        ));
     }
     if text.chars().count() > limit {
-        return Err(failure(StatusCode::UNPROCESSABLE_ENTITY, format!("at most {limit} characters")));
+        return Err(failure(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!("at most {limit} characters"),
+        ));
     }
     Ok(text.to_string())
 }
@@ -562,8 +641,13 @@ async fn post_inner(
     jar: CookieJar,
 ) -> Response {
     let mut scope = scope_or_return!(state, identity, *address);
-    let Some(kind) = Kind::parse(&request.kind).filter(|kind| matches!(kind, Kind::Message | Kind::Note)) else {
-        return failure(StatusCode::UNPROCESSABLE_ENTITY, "kind must be `message` or `note`");
+    let Some(kind) =
+        Kind::parse(&request.kind).filter(|kind| matches!(kind, Kind::Message | Kind::Note))
+    else {
+        return failure(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "kind must be `message` or `note`",
+        );
     };
     let allowed = match kind {
         Kind::Note => scope.can_note,
@@ -572,7 +656,11 @@ async fn post_inner(
     if !allowed {
         return failure(StatusCode::FORBIDDEN, "you cannot post this here");
     }
-    let limit = if scope.member { MAX_BODY_CHARS } else { MAX_VISITOR_BODY_CHARS };
+    let limit = if scope.member {
+        MAX_BODY_CHARS
+    } else {
+        MAX_VISITOR_BODY_CHARS
+    };
     let body = match clean_body(&request.body, limit) {
         Ok(body) => body,
         Err(response) => return response,
@@ -580,9 +668,16 @@ async fn post_inner(
 
     let mut guest = None;
     if !scope.member {
-        let name = request.guest_name.as_deref().map(str::trim).unwrap_or_default();
+        let name = request
+            .guest_name
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default();
         if name.is_empty() || name.chars().count() > MAX_GUEST_NAME_CHARS {
-            return failure(StatusCode::UNPROCESSABLE_ENTITY, "tell us your name (up to 60 characters)");
+            return failure(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "tell us your name (up to 60 characters)",
+            );
         }
         guest = Some(name.to_string());
         // A visitor identity is issued only now that the post is allowed.
@@ -593,8 +688,14 @@ async fn post_inner(
     }
 
     // Mentions are members of this organization; visitors cannot mention.
-    let mentions = if scope.member { valid_mentions(&scope, &request.mentions).await } else { Vec::new() };
-    let link = request.link.filter(|link| link.starts_with('/') && !link.starts_with("//") && link.len() <= 500);
+    let mentions = if scope.member {
+        valid_mentions(&scope, &request.mentions).await
+    } else {
+        Vec::new()
+    };
+    let link = request
+        .link
+        .filter(|link| link.starts_with('/') && !link.starts_with("//") && link.len() <= 500);
     let author = scope.actor();
     let stored = match store::insert(
         &scope.org,
@@ -621,7 +722,8 @@ async fn post_inner(
         let mut follows = vec![(author.clone(), "commenter")];
         follows.extend(mentions.iter().map(|actor| (actor.clone(), "mention")));
         for (actor, reason) in follows {
-            if let Err(error) = store::follow(&scope.org, &table, &scope.key, &actor, reason).await {
+            if let Err(error) = store::follow(&scope.org, &table, &scope.key, &actor, reason).await
+            {
                 log::warn!("chatter follow {actor}: {error}");
             }
         }
@@ -639,12 +741,21 @@ async fn post_inner(
 
     let names = names(state, &scope.org, std::slice::from_ref(&author)).await;
     let jar = with_visitor_cookie(state, &scope.identity, jar);
-    (StatusCode::CREATED, jar, Json(json!({ "message": message_json(&stored, &names) }))).into_response()
+    (
+        StatusCode::CREATED,
+        jar,
+        Json(json!({ "message": message_json(&stored, &names) })),
+    )
+        .into_response()
 }
 
 /// The mentions that are active members of the organization, without repeats.
 async fn valid_mentions(scope: &Scope, asked: &[String]) -> Vec<String> {
-    let mut wanted: Vec<String> = asked.iter().filter(|actor| actor.starts_with("users:")).cloned().collect();
+    let mut wanted: Vec<String> = asked
+        .iter()
+        .filter(|actor| actor.starts_with("users:"))
+        .cloned()
+        .collect();
     wanted.sort();
     wanted.dedup();
     wanted.truncate(MAX_MENTIONS);
@@ -667,12 +778,21 @@ async fn valid_mentions(scope: &Scope, asked: &[String]) -> Vec<String> {
 }
 
 /// A message tells the record's followers; a note tells only the people it mentions.
-async fn notify(state: &AppState, scope: &Scope, message: &Message, mentions: &[String], link: Option<String>) {
+async fn notify(
+    state: &AppState,
+    scope: &Scope,
+    message: &Message,
+    mentions: &[String],
+    link: Option<String>,
+) {
     let mut recipients: Vec<String> = mentions.to_vec();
     if message.kind == Kind::Message && scope.chatter.followers {
         match store::followers(&scope.org, scope.table(), &scope.key).await {
             Ok(followers) => recipients.extend(
-                followers.into_iter().filter(|follower| !follower.muted).map(|follower| follower.actor),
+                followers
+                    .into_iter()
+                    .filter(|follower| !follower.muted)
+                    .map(|follower| follower.actor),
             ),
             Err(error) => log::warn!("chatter followers for notification: {error}"),
         }
@@ -691,18 +811,31 @@ async fn notify(state: &AppState, scope: &Scope, message: &Message, mentions: &[
         .unwrap_or_else(|| "Someone".into());
     let body = message.body.as_deref().unwrap_or_default();
     let excerpt: String = body.chars().take(EXCERPT_CHARS).collect();
-    let what = if message.kind == Kind::Note { "noted" } else { "wrote" };
+    let what = if message.kind == Kind::Note {
+        "noted"
+    } else {
+        "wrote"
+    };
     let notification = NewNotification {
         source: "chatter".into(),
         level: Level::Info,
         title: format!("{author} {what} on {}", scope.schema.name),
         body: Some(excerpt),
         link,
-        payload: Some(json!({ "plugin": scope.plugin, "model": scope.schema.name, "key": scope.key })),
+        payload: Some(
+            json!({ "plugin": scope.plugin, "model": scope.schema.name, "key": scope.key }),
+        ),
         audience: Audience::Actors { actors: recipients },
         expires_in_secs: None,
     };
-    if let Err(error) = send_notification(&scope.org, &state.notifications, &scope.identity.org_db, notification).await {
+    if let Err(error) = send_notification(
+        &scope.org,
+        &state.notifications,
+        &scope.identity.org_db,
+        notification,
+    )
+    .await
+    {
         log::warn!("chatter notification: {error}");
     }
 }
@@ -717,7 +850,11 @@ struct MessageAddress {
 
 impl MessageAddress {
     fn record(&self) -> Address {
-        Address { plugin: self.plugin.clone(), model: self.model.clone(), key: self.key.clone() }
+        Address {
+            plugin: self.plugin.clone(),
+            model: self.model.clone(),
+            key: self.key.clone(),
+        }
     }
 }
 
@@ -782,7 +919,10 @@ async fn delete_message(
         return failure(StatusCode::FORBIDDEN, "history lines cannot be deleted");
     }
     if existing.author != scope.actor() && !scope.developer {
-        return failure(StatusCode::FORBIDDEN, "you can only delete your own messages");
+        return failure(
+            StatusCode::FORBIDDEN,
+            "you can only delete your own messages",
+        );
     }
     match store::trash(&scope.org, &address.id, &scope.actor()).await {
         Ok(Some(_)) => Json(json!({ "ok": true })).into_response(),
@@ -804,7 +944,10 @@ async fn restore_message(
     };
     let scope = scope_or_return!(state, identity, address.record());
     if !scope.developer {
-        return failure(StatusCode::FORBIDDEN, "only developers can restore from the trash");
+        return failure(
+            StatusCode::FORBIDDEN,
+            "only developers can restore from the trash",
+        );
     }
     match store::restore(&scope.org, &address.id).await {
         Ok(Some(_)) => Json(json!({ "ok": true })).into_response(),

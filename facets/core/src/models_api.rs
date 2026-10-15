@@ -27,9 +27,15 @@ use surrealdb::types::SurrealValue;
 
 use crate::app_dir::AppDir;
 use crate::application::settings_api::require_session;
-use crate::data_model::{ModelDef, apply::{self, Op}, sync_ids};
+use crate::data_model::{
+    ModelDef,
+    apply::{self, Op},
+    sync_ids,
+};
 use crate::plugin_manager::catalog::{PluginSpec, upgrade_plugins};
-use crate::plugin_manager::model_edit::{EditError, merge_models, models_of_version, publish_models, validate_all};
+use crate::plugin_manager::model_edit::{
+    EditError, merge_models, models_of_version, publish_models, validate_all,
+};
 use crate::state::AppState;
 
 pub fn routes() -> Router<AppState> {
@@ -50,8 +56,12 @@ fn database_error(context: &str, error: impl std::fmt::Display) -> Response {
 
 fn edit_failure(error: EditError) -> Response {
     match &error {
-        EditError::PluginNotFound(_) | EditError::VersionNotFound { .. } => failure(StatusCode::NOT_FOUND, error.to_string()),
-        EditError::Invalid(_) | EditError::Models(_) => failure(StatusCode::BAD_REQUEST, error.to_string()),
+        EditError::PluginNotFound(_) | EditError::VersionNotFound { .. } => {
+            failure(StatusCode::NOT_FOUND, error.to_string())
+        }
+        EditError::Invalid(_) | EditError::Models(_) => {
+            failure(StatusCode::BAD_REQUEST, error.to_string())
+        }
         EditError::FilesMissing(_) => failure(StatusCode::CONFLICT, error.to_string()),
         other => database_error("edit", other),
     }
@@ -74,13 +84,19 @@ async fn latest_plugins(state: &AppState) -> Result<Vec<PluginRow>, surrealdb::E
         .check()?;
     let rows: Vec<PluginRow> = response.take(0)?;
     let mut seen = std::collections::BTreeSet::new();
-    Ok(rows.into_iter().filter(|row| seen.insert(row.name.clone())).collect())
+    Ok(rows
+        .into_iter()
+        .filter(|row| seen.insert(row.name.clone()))
+        .collect())
 }
 
 /// The folder the plugin was loaded from, when it is still there.
 async fn source_folder(source_path: Option<&str>) -> Option<PathBuf> {
     let path = PathBuf::from(source_path?);
-    tokio::fs::metadata(path.join("plugin.toml")).await.ok().map(|_| path)
+    tokio::fs::metadata(path.join("plugin.toml"))
+        .await
+        .ok()
+        .map(|_| path)
 }
 
 async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -95,12 +111,45 @@ async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> Respo
         Ok(core) => core,
         Err(error) => return database_error("core", error),
     };
+    // Studio lists catalog plugins (not only org installs); load their i18n for labels.
+    let catalog_pairs: Vec<(String, String)> = plugins
+        .iter()
+        .map(|plugin| (plugin.name.clone(), plugin.version.clone()))
+        .collect();
+    let translator = match crate::plugin_manager::i18n::translator_for(&core, &catalog_pairs).await
+    {
+        Ok(translator) => Some(translator),
+        Err(error) => {
+            log::warn!("models: i18n catalogs: {error}");
+            None
+        }
+    };
+    let chain = studio_locale_chain(&state, &headers);
+
     let mut out = Vec::new();
     for plugin in plugins {
         let models = match models_of_version(&core, &plugin.name, &plugin.version).await {
             Ok(models) => models,
             Err(error) => return edit_failure(error),
         };
+        // Keep raw `%key%` labels for the editor; add `display_label` for the list.
+        let models = models
+            .into_iter()
+            .map(|model| {
+                let display_label = display_label(
+                    model.label.as_deref(),
+                    &model.name,
+                    &plugin.name,
+                    translator.as_ref(),
+                    &chain,
+                );
+                let mut value = serde_json::to_value(&model).unwrap_or(json!({}));
+                if let Some(object) = value.as_object_mut() {
+                    object.insert("display_label".into(), json!(display_label));
+                }
+                value
+            })
+            .collect::<Vec<_>>();
         out.push(json!({
             "name": plugin.name,
             "label": plugin.label,
@@ -110,6 +159,71 @@ async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> Respo
         }));
     }
     Json(json!({ "plugins": out })).into_response()
+}
+
+fn studio_locale_chain(state: &AppState, headers: &HeaderMap) -> Vec<String> {
+    let accepted = headers
+        .get(axum::http::header::ACCEPT_LANGUAGE)
+        .and_then(|value| value.to_str().ok())
+        .map(aether_localization::parse_accept_language)
+        .unwrap_or_default();
+    let server = state.config.i18n.default_locale.as_str();
+    let mut sources: Vec<Option<&str>> = accepted
+        .iter()
+        .map(|locale| Some(locale.as_str()))
+        .collect();
+    sources.push(Some(server));
+    sources.push(Some("en"));
+    aether_localization::fallback_chain(&sources)
+}
+
+/// Resolve `%key%` for list display; fall back to a readable name so the sidebar never shows raw keys.
+fn display_label(
+    label: Option<&str>,
+    name: &str,
+    plugin: &str,
+    translator: Option<&aether_localization::Translator>,
+    chain: &[String],
+) -> String {
+    let raw = label
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or(name);
+    let key = raw
+        .strip_prefix('%')
+        .and_then(|rest| rest.strip_suffix('%'))
+        .filter(|key| {
+            !key.is_empty()
+                && key.len() <= 200
+                && key
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':'))
+        });
+    if let (Some(key), Some(translator)) = (key, translator) {
+        if let Some(text) = translator.translate(plugin, key, &serde_json::Map::new(), chain) {
+            return text;
+        }
+        return humanize_key(key);
+    }
+    if let Some(key) = key {
+        return humanize_key(key);
+    }
+    raw.to_string()
+}
+
+fn humanize_key(key: &str) -> String {
+    let base = key.rsplit('.').next().unwrap_or(key);
+    base.split(['_', '-', ' '])
+        .filter(|part| !part.is_empty())
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[derive(Debug, Deserialize)]
@@ -124,15 +238,28 @@ struct PlanBody {
 fn describe(op: &Op) -> Value {
     match op {
         Op::CreateTable { .. } => json!({ "kind": "create_table" }),
-        Op::DefineField { comment, surql_type, .. } => json!({ "kind": "define_field", "field": comment, "type": surql_type }),
-        Op::DefineIndex { field, unique, .. } => json!({ "kind": "define_index", "field": field, "unique": unique }),
+        Op::DefineField {
+            comment,
+            surql_type,
+            ..
+        } => json!({ "kind": "define_field", "field": comment, "type": surql_type }),
+        Op::DefineIndex { field, unique, .. } => {
+            json!({ "kind": "define_index", "field": field, "unique": unique })
+        }
         Op::RemoveIndex { field, .. } => json!({ "kind": "remove_index", "field": field }),
         Op::DefineEdge { edge, .. } => json!({ "kind": "define_edge", "edge": edge }),
         Op::RebuildEdges { edge, .. } => json!({ "kind": "rebuild_edges", "edge": edge }),
-        Op::DefineCompositeIndex { index, fields, unique, .. } => {
+        Op::DefineCompositeIndex {
+            index,
+            fields,
+            unique,
+            ..
+        } => {
             json!({ "kind": "define_composite_index", "index": index, "fields": fields, "unique": unique })
         }
-        Op::RemoveCompositeIndex { index, .. } => json!({ "kind": "remove_composite_index", "index": index }),
+        Op::RemoveCompositeIndex { index, .. } => {
+            json!({ "kind": "remove_composite_index", "index": index })
+        }
         Op::Backfill { field, .. } => json!({ "kind": "backfill", "field": field }),
     }
 }
@@ -148,7 +275,8 @@ async fn plan_edit(
     }
     let mut model = body.model;
     sync_ids(&mut model);
-    let (merged, base) = match merged_models(&state, &plugin, body.version.as_deref(), &model).await {
+    let (merged, base) = match merged_models(&state, &plugin, body.version.as_deref(), &model).await
+    {
         Ok(found) => found,
         Err(response) => return response,
     };
@@ -172,7 +300,9 @@ async fn plan_edit(
                 "blockers": plan.blockers,
                 "notes": plan.notes,
             }),
-            None => json!({ "organization": organization, "changes": [], "blockers": [], "notes": [] }),
+            None => {
+                json!({ "organization": organization, "changes": [], "blockers": [], "notes": [] })
+            }
         });
     }
     Json(json!({ "model": model, "based_on": base, "organizations": results })).into_response()
@@ -185,17 +315,29 @@ async fn merged_models(
     version: Option<&str>,
     model: &ModelDef,
 ) -> Result<(Vec<ModelDef>, String), Response> {
-    let plugins = latest_plugins(state).await.map_err(|error| database_error("plugins", error))?;
+    let plugins = latest_plugins(state)
+        .await
+        .map_err(|error| database_error("plugins", error))?;
     let base = match version {
         Some(version) => version.to_string(),
         None => plugins
             .iter()
             .find(|row| row.name == plugin)
             .map(|row| row.version.clone())
-            .ok_or_else(|| failure(StatusCode::NOT_FOUND, format!("plugin `{plugin}` is not in the catalog")))?,
+            .ok_or_else(|| {
+                failure(
+                    StatusCode::NOT_FOUND,
+                    format!("plugin `{plugin}` is not in the catalog"),
+                )
+            })?,
     };
-    let core = state.core().await.map_err(|error| database_error("core", error))?;
-    let existing = models_of_version(&core, plugin, &base).await.map_err(edit_failure)?;
+    let core = state
+        .core()
+        .await
+        .map_err(|error| database_error("core", error))?;
+    let existing = models_of_version(&core, plugin, &base)
+        .await
+        .map_err(edit_failure)?;
     let merged = merge_models(&existing, std::slice::from_ref(model)).map_err(edit_failure)?;
     validate_all(&merged).map_err(edit_failure)?;
     Ok((merged, base))
@@ -228,7 +370,8 @@ async fn save_edit(
     }
     let mut model = body.model;
     sync_ids(&mut model);
-    let (merged, base) = match merged_models(&state, &plugin, body.version.as_deref(), &model).await {
+    let (merged, base) = match merged_models(&state, &plugin, body.version.as_deref(), &model).await
+    {
         Ok(found) => found,
         Err(response) => return response,
     };
@@ -240,7 +383,10 @@ async fn save_edit(
             Ok(plugins) => plugins,
             Err(error) => return database_error("plugins", error),
         };
-        let source = plugins.iter().find(|row| row.name == plugin).and_then(|row| row.source_path.clone());
+        let source = plugins
+            .iter()
+            .find(|row| row.name == plugin)
+            .and_then(|row| row.source_path.clone());
         match source_folder(source.as_deref()).await {
             Some(folder) => Some(folder),
             None => {
@@ -287,11 +433,24 @@ async fn save_edit(
         Err(error) => return database_error("core", error),
     };
     let layout = AppDir::new(&state.config.app_dir);
-    let published = match publish_models(&core, &layout, &plugin, Some(&base), std::slice::from_ref(&model)).await {
+    let published = match publish_models(
+        &core,
+        &layout,
+        &plugin,
+        Some(&base),
+        std::slice::from_ref(&model),
+    )
+    .await
+    {
         Ok(published) => published,
         Err(error) => return edit_failure(error),
     };
-    log::info!("model `{}` of plugin `{plugin}` saved as {}", model.name, published.version);
+    crate::plugin_manager::surface::invalidate(&state.cache, &plugin, &published.version);
+    log::info!(
+        "model `{}` of plugin `{plugin}` saved as {}",
+        model.name,
+        published.version
+    );
 
     let file = match &folder {
         Some(folder) => write_model_file(folder, &model).await,
@@ -300,12 +459,28 @@ async fn save_edit(
 
     let mut applied = Vec::new();
     for organization in &body.apply_to {
-        let spec = PluginSpec { name: plugin.clone(), version: Some(published.version.clone()) };
-        let result = upgrade_plugins(&session, &state.namespace, &state.core_database, organization, &[spec]).await;
+        let spec = PluginSpec {
+            name: plugin.clone(),
+            version: Some(published.version.clone()),
+        };
+        let result = upgrade_plugins(
+            &session,
+            &state.namespace,
+            &state.core_database,
+            organization,
+            &[spec],
+        )
+        .await;
         applied.push(match result {
-            Ok(_) => json!({ "organization": organization, "ok": true }),
+            Ok(_) => {
+                crate::plugin_manager::installed::invalidate(&state.cache, organization);
+                json!({ "organization": organization, "ok": true })
+            }
             Err(error) => {
-                log::warn!("upgrading `{organization}` to {} failed: {error}", published.version);
+                log::warn!(
+                    "upgrading `{organization}` to {} failed: {error}",
+                    published.version
+                );
                 json!({ "organization": organization, "ok": false, "error": error.to_string() })
             }
         });

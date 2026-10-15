@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as JsonValue};
 
@@ -5,9 +7,387 @@ use crate::data_model::query::{Unchecked, compile_filter};
 use crate::data_model::{Aggregate, Filter};
 
 use super::context::{ModelGrant, PluginHostContext};
+use super::error::HostError;
 use super::guard;
 use crate::data_model::Operation;
-use super::error::HostError;
+
+/// Soft TTL for ACL-safe active row fills from `db::get`.
+const ROW_CACHE_TTL: Duration = Duration::from_secs(600);
+
+/// Soft TTL for cached `db::find` / `db::count` / `db::aggregate` results. Writes through the
+/// host bump the table generation; the TTL only covers writes made outside this process.
+const QUERY_CACHE_TTL: Duration = Duration::from_secs(120);
+
+fn plugin_cache_ns(ctx: &PluginHostContext) -> String {
+    format!("plugin:{}:{}", ctx.database, ctx.plugin_name)
+}
+
+/// Only cache full rows when the caller has no row-scope SQL and no hidden fields.
+fn row_cache_safe(scope_sql: &str, hidden: &std::collections::HashSet<String>) -> bool {
+    scope_sql.is_empty() && hidden.is_empty()
+}
+
+/// One key for a row, whether the caller passed `key` or `table:key`.
+/// A form route uses the bare key; a saved record's `id` is `table:key`. Those
+/// must hit the same cache entry or a write leaves the form on a stale row.
+fn row_cache_id(table: &str, id: &str) -> String {
+    format!("{table}:{}", strip_table_prefix(id, table))
+}
+
+/// Spellings to drop: the canonical id, the id the caller passed, and the bare key.
+fn row_cache_keys(table: &str, id: &str) -> Vec<String> {
+    let canonical = row_cache_id(table, id);
+    let mut keys = vec![canonical.clone()];
+    if id != canonical {
+        keys.push(id.to_string());
+    }
+    let bare = strip_table_prefix(id, table);
+    if bare != canonical && bare != id {
+        keys.push(bare.to_string());
+    }
+    keys
+}
+
+/// Current write generation of `table` in this organization. Cached rows and query results carry
+/// the generation they were read at; any write bumps it, so a stale entry can never be served,
+/// whichever plugin (or code path) did the write.
+fn table_gen(ctx: &PluginHostContext, table: &str) -> Option<u64> {
+    let services = ctx.services().ok()?;
+    Some(services.cache.table_gen(&ctx.database, table))
+}
+
+/// A cached read, with what the audit trail needs to record it again on a hit.
+struct Cached {
+    data: JsonValue,
+    /// `table:key` of every record the original read returned.
+    ids: Vec<String>,
+    /// Rows the original statement produced (`record_count` of the audit row).
+    n: usize,
+}
+
+fn gen_wrap(stamp: u64, data: &JsonValue, ids: &[String], n: usize) -> Option<Vec<u8>> {
+    serde_json::to_vec(&serde_json::json!({ "g": stamp, "d": data, "ids": ids, "n": n })).ok()
+}
+
+fn gen_unwrap(bytes: &[u8], stamp: u64) -> Option<Cached> {
+    let mut value: JsonValue = serde_json::from_slice(bytes).ok()?;
+    if value.get("g").and_then(JsonValue::as_u64)? != stamp {
+        return None;
+    }
+    let ids = value
+        .get("ids")?
+        .as_array()?
+        .iter()
+        .filter_map(|id| id.as_str().map(str::to_string))
+        .collect();
+    let n = value.get("n").and_then(JsonValue::as_u64)? as usize;
+    Some(Cached {
+        data: value.get_mut("d")?.take(),
+        ids,
+        n,
+    })
+}
+
+/// Record a read that was answered from Mantle. Same row as an uncached read writes, minus the
+/// `SELECT`; if it cannot be written the read fails, exactly as an uncached one would.
+async fn audit_cached(
+    ctx: &PluginHostContext,
+    model: &str,
+    table: &str,
+    cached: &Cached,
+) -> Result<(), HostError> {
+    let query = ctx
+        .db
+        .query(
+            r#"
+            CREATE data_access SET
+                request_id = $__audit_request,
+                actor_type = $__audit_actor_type,
+                actor_id = $__audit_actor_id,
+                plugin = $__audit_plugin,
+                function_name = $__audit_function,
+                model = $__audit_model,
+                table_name = $__audit_table,
+                operation = 'read',
+                record_ids = array::map($__ids, |$i| type::record($i)),
+                record_count = $__count,
+                ip = $__audit_ip;
+            "#,
+        )
+        .bind(("__audit_request", ctx.audit.request_id.clone()))
+        .bind(("__audit_actor_type", ctx.audit.actor.kind().to_string()))
+        .bind(("__audit_actor_id", ctx.audit.actor.id().map(str::to_string)))
+        .bind(("__audit_plugin", ctx.plugin_name.clone()))
+        .bind(("__audit_function", ctx.function.clone()))
+        .bind(("__audit_model", model.to_string()))
+        .bind(("__audit_table", table.to_string()))
+        .bind(("__ids", cached.ids.clone()))
+        .bind(("__count", cached.n as i64))
+        .bind(("__audit_ip", ctx.audit.ip.clone()));
+    checked(query.await.map_err(map_db_error)?)?;
+    Ok(())
+}
+
+/// Ids of the records in `rows`, as the audit row stores them.
+pub(super) fn record_ids_of(rows: &[JsonValue]) -> Vec<String> {
+    rows.iter()
+        .filter_map(|row| record_id_of(row).map(str::to_string))
+        .collect()
+}
+
+/// Wait for any fill of `key` already under way (and re-check the cache afterwards).
+async fn flight(ctx: &PluginHostContext, key: &str) -> Option<crate::cache::Flight> {
+    let services = ctx.services().ok()?;
+    Some(services.cache.flight(key).await)
+}
+
+fn mantle_get_row(
+    ctx: &PluginHostContext,
+    model: &str,
+    table: &str,
+    id: &str,
+) -> Option<Cached> {
+    let services = ctx.services().ok()?;
+    let stamp = table_gen(ctx, table)?;
+    let value = services
+        .cache
+        .get_row(&plugin_cache_ns(ctx), model, &row_cache_id(table, id))
+        .ok()??;
+    gen_unwrap(value.as_slice(), stamp)
+}
+
+fn mantle_put_row(
+    ctx: &PluginHostContext,
+    model: &str,
+    table: &str,
+    id: &str,
+    stamp: u64,
+    data: &JsonValue,
+    ids: &[String],
+    n: usize,
+) {
+    let Ok(services) = ctx.services() else {
+        return;
+    };
+    let Some(bytes) = gen_wrap(stamp, data, ids, n) else {
+        return;
+    };
+    let _ = services.cache.set_row(
+        &plugin_cache_ns(ctx),
+        model,
+        &row_cache_id(table, id),
+        bytes,
+        Some(ROW_CACHE_TTL),
+    );
+}
+
+/// Other nodes keep their own L1: tell them this table changed.
+pub(super) fn announce(ctx: &PluginHostContext, table: &str) {
+    let Ok(services) = ctx.services() else {
+        return;
+    };
+    if !services.cache.coherence_signals() {
+        return;
+    }
+    if let Some(core) = &services.core {
+        crate::plugin_manager::mantle_signals::announce_table_write(
+            core.clone(),
+            &ctx.database,
+            table,
+        );
+    }
+}
+
+/// A write to `table`: bump its generation (every cached row, list and aggregate of the table,
+/// in every plugin, is now stale) and drop the written row's own entries.
+fn mantle_bust_row(ctx: &PluginHostContext, model: &str, table: &str, id: Option<&str>) {
+    let Ok(services) = ctx.services() else {
+        return;
+    };
+    services.cache.bump_table_gen(&ctx.database, table);
+    announce(ctx, table);
+    // A written child row also rewrites the totals of the records it belongs to.
+    if let Some(schema) = ctx.models.get(model).and_then(|grant| grant.schema.as_ref()) {
+        for link in &schema.parents {
+            services.cache.bump_table_gen(&ctx.database, &link.schema.table);
+            announce(ctx, &link.schema.table);
+        }
+    }
+    let Some(id) = id else {
+        return;
+    };
+    let ns = plugin_cache_ns(ctx);
+    for key in row_cache_keys(table, id) {
+        let _ = services.cache.invalidate_row(&ns, model, &key);
+    }
+}
+
+/// Stable key for a query: the exact SQL, its binds and the fields hidden from the caller.
+/// Two callers get the same entry only when they would run the same statement and see the
+/// same fields, so the row-scope rules stay respected.
+pub(super) fn query_hash(
+    table: &str,
+    body: &str,
+    binds: &[(String, JsonValue)],
+    hidden: &std::collections::HashSet<String>,
+) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hidden: Vec<&String> = hidden.iter().collect();
+    hidden.sort();
+    let mut hasher = Sha256::new();
+    hasher.update(table.as_bytes());
+    hasher.update([0]);
+    hasher.update(body.as_bytes());
+    hasher.update([0]);
+    hasher.update(serde_json::to_vec(binds).unwrap_or_default());
+    hasher.update([0]);
+    hasher.update(serde_json::to_vec(&hidden).unwrap_or_default());
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+fn mantle_get_list(
+    ctx: &PluginHostContext,
+    model: &str,
+    table: &str,
+    hash: &str,
+) -> Option<Cached> {
+    let services = ctx.services().ok()?;
+    let stamp = table_gen(ctx, table)?;
+    let value = services
+        .cache
+        .get_list(&plugin_cache_ns(ctx), model, hash)
+        .ok()??;
+    gen_unwrap(value.as_slice(), stamp)
+}
+
+fn mantle_put_list(
+    ctx: &PluginHostContext,
+    model: &str,
+    hash: &str,
+    stamp: u64,
+    data: &JsonValue,
+    ids: &[String],
+    n: usize,
+) {
+    let Ok(services) = ctx.services() else {
+        return;
+    };
+    let Some(bytes) = gen_wrap(stamp, data, ids, n) else {
+        return;
+    };
+    let _ = services.cache.set_list(
+        &plugin_cache_ns(ctx),
+        model,
+        hash,
+        bytes,
+        Some(QUERY_CACHE_TTL),
+    );
+}
+
+fn mantle_get_agg(
+    ctx: &PluginHostContext,
+    model: &str,
+    table: &str,
+    name: &str,
+    hash: &str,
+) -> Option<Cached> {
+    let services = ctx.services().ok()?;
+    let stamp = table_gen(ctx, table)?;
+    let value = services
+        .cache
+        .get_agg(&plugin_cache_ns(ctx), model, name, hash)
+        .ok()??;
+    gen_unwrap(value.as_slice(), stamp)
+}
+
+fn mantle_put_agg(
+    ctx: &PluginHostContext,
+    model: &str,
+    name: &str,
+    hash: &str,
+    stamp: u64,
+    data: &JsonValue,
+    n: usize,
+) {
+    let Ok(services) = ctx.services() else {
+        return;
+    };
+    let Some(bytes) = gen_wrap(stamp, data, &[], n) else {
+        return;
+    };
+    let _ = services.cache.set_agg(
+        &plugin_cache_ns(ctx),
+        model,
+        name,
+        hash,
+        bytes,
+        Some(QUERY_CACHE_TTL),
+    );
+}
+
+/// Newest write generation among `tables`. A write to any of them raises it, because a bump
+/// always lands above every value handed out before.
+fn tables_stamp(ctx: &PluginHostContext, tables: &[&str]) -> Option<u64> {
+    let services = ctx.services().ok()?;
+    tables
+        .iter()
+        .map(|table| services.cache.table_gen(&ctx.database, table))
+        .max()
+}
+
+/// Run a read that touches several tables behind Mantle: serve a fresh entry (still auditing
+/// the read), let one caller fill a missing one, and stamp the result with the generation seen
+/// *before* the query. `fill` returns the data to cache, the ids read and the row count.
+pub(super) async fn cached_read<F, Fut>(
+    ctx: &PluginHostContext,
+    model: &str,
+    audit_table: &str,
+    tables: &[&str],
+    name: &'static str,
+    hash: &str,
+    fill: F,
+) -> Result<JsonValue, HostError>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<(JsonValue, Vec<String>, usize), HostError>>,
+{
+    let Some(services) = ctx.services().ok() else {
+        return Ok(fill().await?.0);
+    };
+    let ns = plugin_cache_ns(ctx);
+    let lookup = |stamp: u64| -> Option<Cached> {
+        let value = services.cache.get_agg(&ns, model, name, hash).ok()??;
+        gen_unwrap(value.as_slice(), stamp)
+    };
+    let Some(stamp) = tables_stamp(ctx, tables) else {
+        return Ok(fill().await?.0);
+    };
+    if let Some(cached) = lookup(stamp) {
+        audit_cached(ctx, model, audit_table, &cached).await?;
+        return Ok(cached.data);
+    }
+    let _flight = services
+        .cache
+        .flight(&format!("{ns}|agg|{model}|{name}|{hash}"))
+        .await;
+    // Re-read after waiting: whoever held the flight has stored it, or a write moved on.
+    let stamp = tables_stamp(ctx, tables).unwrap_or(stamp);
+    if let Some(cached) = lookup(stamp) {
+        audit_cached(ctx, model, audit_table, &cached).await?;
+        return Ok(cached.data);
+    }
+    let (data, ids, n) = fill().await?;
+    if let Some(bytes) = gen_wrap(stamp, &data, &ids, n) {
+        let _ = services
+            .cache
+            .set_agg(&ns, model, name, hash, bytes, Some(QUERY_CACHE_TTL));
+    }
+    Ok(data)
+}
 
 #[derive(Debug, Deserialize)]
 pub struct GetRequest {
@@ -97,11 +477,7 @@ pub(super) fn require_model<'a>(
 }
 
 pub(super) fn validate_ident(name: &str) -> Result<(), HostError> {
-    if name.is_empty()
-        || !name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_')
-    {
+    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return Err(HostError::InvalidPayload(format!(
             "invalid identifier `{name}`"
         )));
@@ -113,9 +489,10 @@ fn validate_field_name(name: &str) -> Result<(), HostError> {
     validate_ident(name)
 }
 
-pub(super) fn parse_req<T: serde::de::DeserializeOwned>(payload: &JsonValue) -> Result<T, HostError> {
-    serde_json::from_value(payload.clone())
-        .map_err(|e| HostError::InvalidPayload(e.to_string()))
+pub(super) fn parse_req<T: serde::de::DeserializeOwned>(
+    payload: &JsonValue,
+) -> Result<T, HostError> {
+    serde_json::from_value(payload.clone()).map_err(|e| HostError::InvalidPayload(e.to_string()))
 }
 
 /// Rows a single `db::find` may return, whatever limit the plugin asks for.
@@ -181,15 +558,21 @@ impl Extra {
 /// write itself, so a change cannot be made without its record (and a failed write leaves none).
 /// Nothing is added unless the model switched chatter on.
 fn chatter_extra(grant: &ModelGrant, operation: &str) -> Result<Extra, HostError> {
-    let Some(schema) = &grant.schema else { return Ok(Extra::default()) };
-    let Some(chatter) = &schema.chatter else { return Ok(Extra::default()) };
+    let Some(schema) = &grant.schema else {
+        return Ok(Extra::default());
+    };
+    let Some(chatter) = &schema.chatter else {
+        return Ok(Extra::default());
+    };
     let line = "CREATE chatter_messages SET ulid = rand::ulid(), model_id = $__table, \
                 author = $__cm_author, plugin = $__audit_plugin";
     let mut extra = Extra::default();
     match operation {
         "create" => {
             let key = "<string> record::id($rows[0].id)";
-            extra.after.push(format!("{line}, record_key = {key}, kind = 'system', body = 'created';"));
+            extra.after.push(format!(
+                "{line}, record_key = {key}, kind = 'system', body = 'created';"
+            ));
             if chatter.followers {
                 extra.after.push(format!(
                     "IF $__cm_author != 'system' {{ CREATE chatter_followers SET model_id = $__table, \
@@ -204,7 +587,9 @@ fn chatter_extra(grant: &ModelGrant, operation: &str) -> Result<Extra, HostError
                 ids.push(format!("'{id}'"));
             }
             let ids = ids.join(", ");
-            extra.before.push("LET $__before = (SELECT * FROM ONLY type::record($__table, $__key));".into());
+            extra.before.push(
+                "LET $__before = (SELECT * FROM ONLY type::record($__table, $__key));".into(),
+            );
             extra.after.push(format!(
                 "LET $__changed = array::filter([{ids}], |$k| $__before[$k] != $rows[0][$k]);"
             ));
@@ -220,7 +605,10 @@ fn chatter_extra(grant: &ModelGrant, operation: &str) -> Result<Extra, HostError
                  WHERE model_id = $__table AND record_key = $__key AND record_deleted_at = NONE;"
                     .into(),
             );
-            extra.after.push("DELETE chatter_followers WHERE model_id = $__table AND record_key = $__key;".into());
+            extra.after.push(
+                "DELETE chatter_followers WHERE model_id = $__table AND record_key = $__key;"
+                    .into(),
+            );
         }
         _ => {}
     }
@@ -280,7 +668,10 @@ pub(super) async fn run_audited(
         .bind(("__audit_table", access.table.to_string()))
         .bind(("__audit_operation", access.operation.to_string()))
         .bind(("__audit_ip", ctx.audit.ip.clone()))
-        .bind(("__cm_author", ctx.audit.actor.id().unwrap_or("system").to_string()));
+        .bind((
+            "__cm_author",
+            ctx.audit.actor.id().unwrap_or("system").to_string(),
+        ));
     for (name, value) in binds {
         query = query.bind((name, value));
     }
@@ -296,14 +687,18 @@ pub(super) fn map_db_error(error: surrealdb::Error) -> HostError {
         return HostError::Denied(message.trim_end_matches(['\'', '"']).to_string());
     }
     match text.split_once("aether: ") {
-        Some((_, message)) => HostError::InvalidPayload(message.trim_end_matches(['\'', '"']).to_string()),
+        Some((_, message)) => {
+            HostError::InvalidPayload(message.trim_end_matches(['\'', '"']).to_string())
+        }
         None => HostError::Db(error),
     }
 }
 
 /// A response with every statement succeeded. When one fails inside a transaction the others
 /// come back as "not executed", so the statement that actually failed is the one to report.
-fn checked(mut response: surrealdb::IndexedResults) -> Result<surrealdb::IndexedResults, HostError> {
+fn checked(
+    mut response: surrealdb::IndexedResults,
+) -> Result<surrealdb::IndexedResults, HostError> {
     let errors = response.take_errors();
     if errors.is_empty() {
         return Ok(response);
@@ -343,7 +738,10 @@ fn add_record_check(
 
 pub(super) fn record_binds(grant: &ModelGrant, id: &str) -> Vec<(String, JsonValue)> {
     vec![
-        ("__table".to_string(), JsonValue::String(grant.table.clone())),
+        (
+            "__table".to_string(),
+            JsonValue::String(grant.table.clone()),
+        ),
         (
             "__key".to_string(),
             JsonValue::String(strip_table_prefix(id, &grant.table).to_string()),
@@ -384,11 +782,64 @@ pub(super) struct Injection {
     pub(super) value_sql: String,
 }
 
+/// Tell connected browsers that a model row changed (transient SSE; no plugin listeners).
+fn publish_data_changed(ctx: &PluginHostContext, model: &str, op: &str, id: Option<&str>) {
+    if ctx.database.is_empty() || model.is_empty() {
+        return;
+    }
+    ctx.notifications.publish(
+        &ctx.database,
+        crate::notifications::HubMessage::Event(std::sync::Arc::new(
+            crate::notifications::UiEvent {
+                plugin: "aether".into(),
+                event: "data.changed".into(),
+                payload: serde_json::json!({
+                    "model": model,
+                    "op": op,
+                    "id": id,
+                }),
+            },
+        )),
+    );
+}
+
+fn mutate_op(operation: &str) -> Option<&'static str> {
+    match operation {
+        "create" => Some("create"),
+        "update" => Some("update"),
+        "delete" => Some("delete"),
+        _ => None,
+    }
+}
+
+fn record_id_of(data: &JsonValue) -> Option<&str> {
+    data.get("id").and_then(JsonValue::as_str)
+}
+
 async fn run_plan(ctx: &PluginHostContext, plan: Plan<'_>) -> Result<JsonValue, HostError> {
+    let model = plan.access.model.clone();
+    let op = mutate_op(plan.access.operation);
     let grant = plan.grant;
-    let rows = run_audited(ctx, plan.access, &plan.body, &plan.ids, plan.binds, plan.extra).await?;
+    let rows = run_audited(
+        ctx,
+        plan.access,
+        &plan.body,
+        &plan.ids,
+        plan.binds,
+        plan.extra,
+    )
+    .await?;
     let (hidden, _) = guard::field_limits(ctx, grant).await?;
-    Ok(serde_json::json!({ "ok": true, "data": rows.into_iter().next().map(|row| guard::strip(&hidden, decode(grant, row))) }))
+    let data = rows
+        .into_iter()
+        .next()
+        .map(|row| guard::strip(&hidden, decode(grant, row)));
+    if let Some(op) = op {
+        let id = data.as_ref().and_then(record_id_of);
+        publish_data_changed(ctx, &model, op, id);
+        mantle_bust_row(ctx, &model, &grant.table, id);
+    }
+    Ok(serde_json::json!({ "ok": true, "data": data }))
 }
 
 /// A record as the plugin sees it: field names, not the ids it is stored under.
@@ -409,39 +860,91 @@ pub async fn db_get(ctx: &PluginHostContext, payload: &JsonValue) -> Result<Json
         return Ok(serde_json::json!({ "ok": true, "data": JsonValue::Null }));
     };
     let (hidden, _) = guard::field_limits(ctx, grant).await?;
+    // ACL-safe Mantle hit: unrestricted row scope, no hidden fields, no expand.
+    let cacheable = req.expand.is_empty() && row_cache_safe(&scope.sql, &hidden);
+    let mut _flight = None;
+    if cacheable {
+        if let Some(cached) = mantle_get_row(ctx, &req.model, &grant.table, &req.id) {
+            audit_cached(ctx, &req.model, &grant.table, &cached).await?;
+            return Ok(serde_json::json!({ "ok": true, "data": cached.data }));
+        }
+        // One caller fills the entry; the rest wait and find it.
+        let key = format!(
+            "{}|row|{}|{}",
+            plugin_cache_ns(ctx),
+            req.model,
+            row_cache_id(&grant.table, &req.id)
+        );
+        _flight = flight(ctx, &key).await;
+        if _flight.is_some()
+            && let Some(cached) = mantle_get_row(ctx, &req.model, &grant.table, &req.id)
+        {
+            audit_cached(ctx, &req.model, &grant.table, &cached).await?;
+            return Ok(serde_json::json!({ "ok": true, "data": cached.data }));
+        }
+    }
+    // Read the generation before the query: a write that lands meanwhile makes the entry stale.
+    let stamp_before = table_gen(ctx, &grant.table);
     let mut binds = record_binds(grant, &req.id);
     binds.extend(scope.binds);
     let body = if scope.sql.is_empty() {
         "LET $rows = SELECT * FROM type::record($__table, $__key);".to_string()
     } else {
-        format!("LET $rows = SELECT * FROM type::record($__table, $__key) WHERE {};", scope.sql)
+        format!(
+            "LET $rows = SELECT * FROM type::record($__table, $__key) WHERE {};",
+            scope.sql
+        )
     };
     let rows = run_audited(
         ctx,
-        Access { operation: "read", model: req.model.clone(), table: &grant.table },
+        Access {
+            operation: "read",
+            model: req.model.clone(),
+            table: &grant.table,
+        },
         &body,
         RECORD_ID,
         binds,
         Extra::default(),
     )
     .await?;
-    let mut records: Vec<JsonValue> = rows.into_iter().take(1).map(|row| guard::strip(&hidden, decode(grant, row))).collect();
+    let mut records: Vec<JsonValue> = rows
+        .into_iter()
+        .take(1)
+        .map(|row| guard::strip(&hidden, decode(grant, row)))
+        .collect();
     if let (Some(schema), false) = (&grant.schema, req.expand.is_empty()) {
         super::nested::expand(ctx, schema, &mut records, &req.expand).await?;
     }
-    Ok(serde_json::json!({ "ok": true, "data": records.into_iter().next() }))
+    let data = records.into_iter().next();
+    if let Some(ref row) = data {
+        if req.expand.is_empty() && row_cache_safe(&scope.sql, &hidden) && !row.is_null() {
+            if let Some(stamp) = stamp_before {
+                let ids = record_ids_of(std::slice::from_ref(row));
+                mantle_put_row(ctx, &req.model, &grant.table, &req.id, stamp, row, &ids, 1);
+            }
+        }
+    }
+    Ok(serde_json::json!({ "ok": true, "data": data }))
 }
 
 /// The `WHERE` condition for a filter over `grant`'s model, with the values it binds (the table
 /// is always bound as `$__table`), narrowed by what the model's rules let the caller read. The
 /// condition is empty when everything matches. `None`: the rules let the caller read nothing.
 /// Also answers which fields the caller may not see.
-async fn guarded_condition(
+pub(super) async fn guarded_condition(
     ctx: &PluginHostContext,
     grant: &ModelGrant,
     model: &str,
     filter: &Map<String, JsonValue>,
-) -> Result<Option<(String, Vec<(String, JsonValue)>, std::collections::HashSet<String>)>, HostError> {
+) -> Result<
+    Option<(
+        String,
+        Vec<(String, JsonValue)>,
+        std::collections::HashSet<String>,
+    )>,
+    HostError,
+> {
     let parsed = Filter::parse(filter)?;
     let (hidden, _) = guard::field_limits(ctx, grant).await?;
     guard::check_unreadable(&hidden, parsed.fields(), model)?;
@@ -449,8 +952,13 @@ async fn guarded_condition(
         Some(schema) => compile_filter(&parsed, schema.as_ref(), "f")?,
         None => compile_filter(&parsed, &Unchecked, "f")?,
     };
-    let Some(scope) = guard::scope(ctx, grant, Operation::Read, "r").await? else { return Ok(None) };
-    let mut binds = vec![("__table".to_string(), JsonValue::String(grant.table.clone()))];
+    let Some(scope) = guard::scope(ctx, grant, Operation::Read, "r").await? else {
+        return Ok(None);
+    };
+    let mut binds = vec![(
+        "__table".to_string(),
+        JsonValue::String(grant.table.clone()),
+    )];
     binds.extend(compiled.binds);
     binds.extend(scope.binds);
     let condition = match (compiled.sql.is_empty(), scope.sql.is_empty()) {
@@ -470,6 +978,77 @@ pub struct CountRequest {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct SearchRequest {
+    pub model: String,
+    /// Free-text needle; expanded to `or` of `{ field: { like: q } }` over `fields`.
+    #[serde(default)]
+    pub q: Option<String>,
+    /// Fields to search when `q` is set. Empty + non-empty `q` is an error.
+    #[serde(default)]
+    pub fields: Vec<String>,
+    #[serde(default)]
+    pub filter: Map<String, JsonValue>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub offset: Option<u32>,
+    #[serde(default)]
+    pub order: Option<String>,
+    #[serde(default)]
+    pub expand: Vec<String>,
+}
+
+/// Merge a free-text `q` into a filter as an OR of case-insensitive `like` clauses.
+///
+/// Empty / whitespace `q` leaves `filter` unchanged. Non-empty `q` with no `fields` is an error.
+pub fn expand_search_filter(
+    filter: Map<String, JsonValue>,
+    q: Option<&str>,
+    fields: &[String],
+) -> Result<Map<String, JsonValue>, HostError> {
+    let needle = q.map(str::trim).filter(|v| !v.is_empty());
+    let Some(needle) = needle else {
+        return Ok(filter);
+    };
+    if fields.is_empty() {
+        return Err(HostError::InvalidPayload(
+            "db::search: `q` is set but `fields` is empty".into(),
+        ));
+    }
+    for field in fields {
+        let trimmed = field.trim();
+        if trimmed.is_empty() {
+            return Err(HostError::InvalidPayload(
+                "db::search: empty field name in `fields`".into(),
+            ));
+        }
+        validate_field_name(trimmed)?;
+    }
+    let likes: Vec<JsonValue> = fields
+        .iter()
+        .map(|field| {
+            let name = field.trim();
+            serde_json::json!({ name: { "like": needle } })
+        })
+        .collect();
+    if filter.is_empty() {
+        return Ok(Map::from_iter([(
+            "or".to_string(),
+            JsonValue::Array(likes),
+        )]));
+    }
+    let text_clause = JsonValue::Object(Map::from_iter([(
+        "or".to_string(),
+        JsonValue::Array(likes),
+    )]));
+    // AND the caller's filter with the free-text OR group.
+    Ok(Map::from_iter([(
+        "and".to_string(),
+        JsonValue::Array(vec![JsonValue::Object(filter), text_clause]),
+    )]))
+}
+
+#[derive(Debug, Deserialize)]
 pub struct AggregateRequest {
     pub model: String,
     #[serde(default)]
@@ -480,11 +1059,16 @@ pub struct AggregateRequest {
 }
 
 /// How many records match a filter, without reading them.
-pub async fn db_count(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
+pub async fn db_count(
+    ctx: &PluginHostContext,
+    payload: &JsonValue,
+) -> Result<JsonValue, HostError> {
     ctx.require_cap("db::query")?;
     let req: CountRequest = parse_req(payload)?;
     let grant = require_model(ctx, &req.model, false)?;
-    let Some((condition, binds, _)) = guarded_condition(ctx, grant, &req.model, &req.filter).await? else {
+    let Some((condition, binds, _)) =
+        guarded_condition(ctx, grant, &req.model, &req.filter).await?
+    else {
         return Ok(serde_json::json!({ "ok": true, "data": 0 }));
     };
     let mut body = String::from("LET $rows = SELECT count() AS n FROM type::table($__table)");
@@ -493,9 +1077,32 @@ pub async fn db_count(ctx: &PluginHostContext, payload: &JsonValue) -> Result<Js
         body.push_str(&condition);
     }
     body.push_str(" GROUP ALL;");
+    let hash = query_hash(
+        &grant.table,
+        &body,
+        &binds,
+        &std::collections::HashSet::new(),
+    );
+    if let Some(cached) = mantle_get_agg(ctx, &req.model, &grant.table, "count", &hash) {
+        audit_cached(ctx, &req.model, &grant.table, &cached).await?;
+        return Ok(serde_json::json!({ "ok": true, "data": cached.data }));
+    }
+    let flight_key = format!("{}|agg|{}|count|{hash}", plugin_cache_ns(ctx), req.model);
+    let _flight = flight(ctx, &flight_key).await;
+    if _flight.is_some()
+        && let Some(cached) = mantle_get_agg(ctx, &req.model, &grant.table, "count", &hash)
+    {
+        audit_cached(ctx, &req.model, &grant.table, &cached).await?;
+        return Ok(serde_json::json!({ "ok": true, "data": cached.data }));
+    }
+    let stamp_before = table_gen(ctx, &grant.table);
     let rows = run_audited(
         ctx,
-        Access { operation: "read", model: req.model.clone(), table: &grant.table },
+        Access {
+            operation: "read",
+            model: req.model.clone(),
+            table: &grant.table,
+        },
         &body,
         "[]",
         binds,
@@ -503,17 +1110,37 @@ pub async fn db_count(ctx: &PluginHostContext, payload: &JsonValue) -> Result<Js
     )
     .await?;
     // No matching record leaves no group at all.
-    let count = rows.first().and_then(|row| row.get("n")).and_then(JsonValue::as_u64).unwrap_or(0);
+    let count = rows
+        .first()
+        .and_then(|row| row.get("n"))
+        .and_then(JsonValue::as_u64)
+        .unwrap_or(0);
+    if let Some(stamp) = stamp_before {
+        mantle_put_agg(
+            ctx,
+            &req.model,
+            "count",
+            &hash,
+            stamp,
+            &JsonValue::from(count),
+            rows.len(),
+        );
+    }
     Ok(serde_json::json!({ "ok": true, "data": count }))
 }
 
 /// Grouped figures over the records that match a filter: counts, sums, averages, minimums and
 /// maximums, per value of the `group_by` fields (or one row for the whole set).
-pub async fn db_aggregate(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
+pub async fn db_aggregate(
+    ctx: &PluginHostContext,
+    payload: &JsonValue,
+) -> Result<JsonValue, HostError> {
     ctx.require_cap("db::query")?;
     let req: AggregateRequest = parse_req(payload)?;
     let grant = require_model(ctx, &req.model, false)?;
-    let Some((condition, binds, hidden)) = guarded_condition(ctx, grant, &req.model, &req.filter).await? else {
+    let Some((condition, binds, hidden)) =
+        guarded_condition(ctx, grant, &req.model, &req.filter).await?
+    else {
         return Ok(serde_json::json!({ "ok": true, "data": [] }));
     };
     let aggregate = Aggregate::parse(&req.group_by, &req.aggs)?;
@@ -532,15 +1159,34 @@ pub async fn db_aggregate(ctx: &PluginHostContext, payload: &JsonValue) -> Resul
         body.push_str(&condition);
     }
     body.push_str(&format!(" {group} LIMIT {MAX_ROWS_PER_FIND};"));
+    let hash = query_hash(&grant.table, &body, &binds, &hidden);
+    if let Some(cached) = mantle_get_agg(ctx, &req.model, &grant.table, "aggregate", &hash) {
+        audit_cached(ctx, &req.model, &grant.table, &cached).await?;
+        return Ok(serde_json::json!({ "ok": true, "data": cached.data }));
+    }
+    let flight_key = format!("{}|agg|{}|aggregate|{hash}", plugin_cache_ns(ctx), req.model);
+    let _flight = flight(ctx, &flight_key).await;
+    if _flight.is_some()
+        && let Some(cached) = mantle_get_agg(ctx, &req.model, &grant.table, "aggregate", &hash)
+    {
+        audit_cached(ctx, &req.model, &grant.table, &cached).await?;
+        return Ok(serde_json::json!({ "ok": true, "data": cached.data }));
+    }
+    let stamp_before = table_gen(ctx, &grant.table);
     let rows = run_audited(
         ctx,
-        Access { operation: "read", model: req.model.clone(), table: &grant.table },
+        Access {
+            operation: "read",
+            model: req.model.clone(),
+            table: &grant.table,
+        },
         &body,
         "[]",
         binds,
         Extra::default(),
     )
     .await?;
+    let produced = rows.len();
     let rows: Vec<JsonValue> = rows
         .into_iter()
         .map(|mut row| {
@@ -553,7 +1199,11 @@ pub async fn db_aggregate(ctx: &PluginHostContext, payload: &JsonValue) -> Resul
             row
         })
         .collect();
-    Ok(serde_json::json!({ "ok": true, "data": rows }))
+    let data = JsonValue::Array(rows);
+    if let Some(stamp) = stamp_before {
+        mantle_put_agg(ctx, &req.model, "aggregate", &hash, stamp, &data, produced);
+    }
+    Ok(serde_json::json!({ "ok": true, "data": data }))
 }
 
 pub async fn db_find(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
@@ -563,7 +1213,11 @@ pub async fn db_find(ctx: &PluginHostContext, payload: &JsonValue) -> Result<Jso
     if !req.expand.is_empty() {
         let grant = require_model(ctx, &req.model, false)?;
         if let Some(schema) = &grant.schema {
-            let mut rows: Vec<JsonValue> = reply.get("data").and_then(JsonValue::as_array).cloned().unwrap_or_default();
+            let mut rows: Vec<JsonValue> = reply
+                .get("data")
+                .and_then(JsonValue::as_array)
+                .cloned()
+                .unwrap_or_default();
             super::nested::expand(ctx, schema, &mut rows, &req.expand).await?;
             reply["data"] = JsonValue::Array(rows);
         }
@@ -571,13 +1225,56 @@ pub async fn db_find(ctx: &PluginHostContext, payload: &JsonValue) -> Result<Jso
     Ok(reply)
 }
 
+/// Faceted / free-text list helper: expand `q` over `fields`, then find + count.
+///
+/// Returns `{ ok: true, data: { rows, total } }`.
+pub async fn db_search(
+    ctx: &PluginHostContext,
+    payload: &JsonValue,
+) -> Result<JsonValue, HostError> {
+    ctx.require_cap("db::query")?;
+    let req: SearchRequest = parse_req(payload)?;
+    let filter = expand_search_filter(req.filter, req.q.as_deref(), &req.fields)?;
+    let find_payload = serde_json::json!({
+        "model": req.model,
+        "filter": filter,
+        "limit": req.limit,
+        "offset": req.offset,
+        "order": req.order,
+        "expand": req.expand,
+    });
+    let count_payload = serde_json::json!({
+        "model": find_payload["model"],
+        "filter": find_payload["filter"],
+    });
+    let find_reply = db_find(ctx, &find_payload).await?;
+    let count_reply = db_count(ctx, &count_payload).await?;
+    let rows = find_reply
+        .get("data")
+        .cloned()
+        .unwrap_or(JsonValue::Array(vec![]));
+    let total = count_reply
+        .get("data")
+        .cloned()
+        .unwrap_or(JsonValue::from(0));
+    Ok(serde_json::json!({
+        "ok": true,
+        "data": { "rows": rows, "total": total }
+    }))
+}
+
 /// `db::find` without the rows of child fields.
-pub(super) async fn find_records(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
+pub(super) async fn find_records(
+    ctx: &PluginHostContext,
+    payload: &JsonValue,
+) -> Result<JsonValue, HostError> {
     ctx.require_cap("db::query")?;
     let req: FindRequest = parse_req(payload)?;
     let grant = require_model(ctx, &req.model, false)?;
 
-    let Some((condition, mut binds, hidden)) = guarded_condition(ctx, grant, &req.model, &req.filter).await? else {
+    let Some((condition, mut binds, hidden)) =
+        guarded_condition(ctx, grant, &req.model, &req.filter).await?
+    else {
         return Ok(serde_json::json!({ "ok": true, "data": [] }));
     };
     let mut body = String::from("LET $rows = SELECT * FROM type::table($__table)");
@@ -592,43 +1289,88 @@ pub(super) async fn find_records(ctx: &PluginHostContext, payload: &JsonValue) -
             None => (order.as_str(), ""),
         };
         guard::check_unreadable(&hidden, [name], &req.model)?;
-        let column = match &grant.schema {
-            Some(schema) => schema.column_id(name)?.to_string(),
-            None => name.to_string(),
+        // `id` is the record id, not a model field. Lists sort `-id` for newest first.
+        let column = if name == "id" {
+            "id".to_string()
+        } else {
+            match &grant.schema {
+                Some(schema) => schema.column_id(name)?.to_string(),
+                None => name.to_string(),
+            }
         };
         validate_field_name(&column)?;
         body.push_str(&format!(" ORDER BY {column}{direction}"));
     }
-    let limit = req.limit.map_or(MAX_ROWS_PER_FIND, |limit| limit.min(MAX_ROWS_PER_FIND));
+    let limit = req
+        .limit
+        .map_or(MAX_ROWS_PER_FIND, |limit| limit.min(MAX_ROWS_PER_FIND));
     body.push_str(&format!(" LIMIT {limit}"));
     if let Some(offset) = req.offset {
         body.push_str(&format!(" START {offset}"));
     }
     body.push(';');
 
+    let hash = query_hash(&grant.table, &body, &binds, &hidden);
+    if let Some(cached) = mantle_get_list(ctx, &req.model, &grant.table, &hash) {
+        audit_cached(ctx, &req.model, &grant.table, &cached).await?;
+        return Ok(serde_json::json!({ "ok": true, "data": cached.data }));
+    }
+    let flight_key = format!("{}|list|{}|{hash}", plugin_cache_ns(ctx), req.model);
+    let _flight = flight(ctx, &flight_key).await;
+    if _flight.is_some()
+        && let Some(cached) = mantle_get_list(ctx, &req.model, &grant.table, &hash)
+    {
+        audit_cached(ctx, &req.model, &grant.table, &cached).await?;
+        return Ok(serde_json::json!({ "ok": true, "data": cached.data }));
+    }
+    let stamp_before = table_gen(ctx, &grant.table);
+
     let rows = run_audited(
         ctx,
-        Access { operation: "read", model: req.model.clone(), table: &grant.table },
+        Access {
+            operation: "read",
+            model: req.model.clone(),
+            table: &grant.table,
+        },
         &body,
         "$rows.id",
         binds,
         Extra::default(),
     )
     .await?;
-    let rows: Vec<JsonValue> = rows.into_iter().map(|row| guard::strip(&hidden, decode(grant, row))).collect();
-    Ok(serde_json::json!({ "ok": true, "data": rows }))
+    let rows: Vec<JsonValue> = rows
+        .into_iter()
+        .map(|row| guard::strip(&hidden, decode(grant, row)))
+        .collect();
+    let ids = record_ids_of(&rows);
+    let n = rows.len();
+    let data = JsonValue::Array(rows);
+    if let Some(stamp) = stamp_before {
+        mantle_put_list(ctx, &req.model, &hash, stamp, &data, &ids, n);
+    }
+    Ok(serde_json::json!({ "ok": true, "data": data }))
 }
 
-pub async fn db_create(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
+pub async fn db_create(
+    ctx: &PluginHostContext,
+    payload: &JsonValue,
+) -> Result<JsonValue, HostError> {
     ctx.require_cap("db::mutate")?;
     let req: CreateRequest = parse_req(payload)?;
     if let Some(reply) = super::nested::create(ctx, &req).await? {
         return Ok(reply);
     }
-    run_plan(ctx, plan_create_with(ctx, req.model, req.data, Options::default()).await?).await
+    run_plan(
+        ctx,
+        plan_create_with(ctx, req.model, req.data, Options::default()).await?,
+    )
+    .await
 }
 
-async fn plan_create<'a>(ctx: &'a PluginHostContext, payload: &JsonValue) -> Result<Plan<'a>, HostError> {
+async fn plan_create<'a>(
+    ctx: &'a PluginHostContext,
+    payload: &JsonValue,
+) -> Result<Plan<'a>, HostError> {
     let req: CreateRequest = parse_req(payload)?;
     plan_create_with(ctx, req.model, req.data, Options::default()).await
 }
@@ -646,7 +1388,9 @@ pub(super) async fn plan_create_with<'a>(
     }
     let (_, locked) = guard::field_limits(ctx, grant).await?;
     guard::check_locked(&locked, given.keys(), &model)?;
-    let scope = guard::scope(ctx, grant, Operation::Create, "d8").await?.ok_or_else(|| guard::denied(&model, "create"))?;
+    let scope = guard::scope(ctx, grant, Operation::Create, "d8")
+        .await?
+        .ok_or_else(|| guard::denied(&model, "create"))?;
     // Checked against the model and keyed by field id, or (without one) as given.
     let data = match (&grant.schema, &options.inject) {
         (Some(schema), Some(inject)) => schema.encode_create_row(&given, &inject.field)?,
@@ -658,7 +1402,10 @@ pub(super) async fn plan_create_with<'a>(
     }
 
     let mut binds = vec![
-        ("__table".to_string(), JsonValue::String(grant.table.clone())),
+        (
+            "__table".to_string(),
+            JsonValue::String(grant.table.clone()),
+        ),
         ("__data".to_string(), JsonValue::Object(data.clone())),
     ];
     let mut extra = chatter_extra(grant, "create")?;
@@ -666,8 +1413,12 @@ pub(super) async fn plan_create_with<'a>(
     if let Some(schema) = &grant.schema {
         super::graph::create_extra(schema, &data, &mut binds, &mut extra);
         super::graph::link_checks(schema, &data, &mut binds, &mut extra);
-        let injected = options.inject.as_ref().map(|i| (i.column.as_str(), i.value_sql.as_str()));
-        content = super::integrity::create_content(schema, &data, injected, &mut binds, &mut extra)?;
+        let injected = options
+            .inject
+            .as_ref()
+            .map(|i| (i.column.as_str(), i.value_sql.as_str()));
+        content =
+            super::integrity::create_content(schema, &data, injected, &mut binds, &mut extra)?;
         super::integrity::derived_fields(schema, &mut extra)?;
         if !options.defer_checks {
             super::integrity::model_checks(schema, "$rows", &mut binds, &mut extra)?;
@@ -676,14 +1427,25 @@ pub(super) async fn plan_create_with<'a>(
             super::integrity::refresh_parents(schema, &mut extra)?;
         }
     }
-    if let (Some((field, states)), Some(schema)) = (guard::workflow_initial(ctx, grant).await?, &grant.schema) {
+    if let (Some((field, states)), Some(schema)) =
+        (guard::workflow_initial(ctx, grant).await?, &grant.schema)
+    {
         let column = schema.column_id(&field)?;
         validate_field_name(column)?;
         extra.after.push(format!(
             "IF array::len((SELECT VALUE id FROM $rows[0].id WHERE {column} IN $d30010)) = 0 {{ THROW $d30011; }};"
         ));
-        binds.push(("d30011".to_string(), JsonValue::String(format!("aether-denied: a new `{model}` record starts as {}", states.join(" or ")))));
-        binds.push(("d30010".to_string(), JsonValue::Array(states.into_iter().map(JsonValue::String).collect())));
+        binds.push((
+            "d30011".to_string(),
+            JsonValue::String(format!(
+                "aether-denied: a new `{model}` record starts as {}",
+                states.join(" or ")
+            )),
+        ));
+        binds.push((
+            "d30010".to_string(),
+            JsonValue::Array(states.into_iter().map(JsonValue::String).collect()),
+        ));
     }
     if !scope.sql.is_empty() {
         // The new record must be one the rules let this person create; if not, the whole write is undone.
@@ -694,7 +1456,11 @@ pub(super) async fn plan_create_with<'a>(
         binds.extend(scope.binds);
     }
     Ok(Plan {
-        access: Access { operation: "create", model: model, table: &grant.table },
+        access: Access {
+            operation: "create",
+            model: model,
+            table: &grant.table,
+        },
         grant,
         body: format!("LET $rows = (CREATE type::table($__table) CONTENT {content} RETURN AFTER);"),
         ids: "$rows.id".into(),
@@ -703,16 +1469,32 @@ pub(super) async fn plan_create_with<'a>(
     })
 }
 
-pub async fn db_update(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
+pub async fn db_update(
+    ctx: &PluginHostContext,
+    payload: &JsonValue,
+) -> Result<JsonValue, HostError> {
     ctx.require_cap("db::mutate")?;
     let req: UpdateRequest = parse_req(payload)?;
     if let Some(reply) = super::nested::update(ctx, &req).await? {
+        bust_model_row(ctx, &req.model, &req.id);
         return Ok(reply);
     }
-    run_plan(ctx, plan_update_with(ctx, req.model, req.id, req.data, Options::default()).await?).await
+    let model = req.model.clone();
+    let id = req.id.clone();
+    let out = run_plan(
+        ctx,
+        plan_update_with(ctx, req.model, req.id, req.data, Options::default()).await?,
+    )
+    .await?;
+    // The returned row id and the id the caller passed can differ (`key` vs `table:key`).
+    bust_model_row(ctx, &model, &id);
+    Ok(out)
 }
 
-async fn plan_update<'a>(ctx: &'a PluginHostContext, payload: &JsonValue) -> Result<Plan<'a>, HostError> {
+async fn plan_update<'a>(
+    ctx: &'a PluginHostContext,
+    payload: &JsonValue,
+) -> Result<Plan<'a>, HostError> {
     let req: UpdateRequest = parse_req(payload)?;
     plan_update_with(ctx, req.model, req.id, req.data, Options::default()).await
 }
@@ -728,7 +1510,9 @@ pub(super) async fn plan_update_with<'a>(
     let grant = require_model(ctx, &model, true)?;
     let (_, locked) = guard::field_limits(ctx, grant).await?;
     guard::check_locked(&locked, data.keys(), &model)?;
-    let scope = guard::scope(ctx, grant, Operation::Write, "d8").await?.ok_or_else(|| guard::denied(&model, "change"))?;
+    let scope = guard::scope(ctx, grant, Operation::Write, "d8")
+        .await?
+        .ok_or_else(|| guard::denied(&model, "change"))?;
     let mut binds = record_binds(grant, &id);
     let mut extra = chatter_extra(grant, "update")?;
     add_record_check(&mut extra, &mut binds, scope, &model, "change");
@@ -736,7 +1520,10 @@ pub(super) async fn plan_update_with<'a>(
         Some(schema) => {
             // One statement that sets the changed columns (by id) and clears the ones set to null.
             let (set, clear) = schema.encode_update(&data)?;
-            workflow_move(ctx, grant, schema, &set, &clear, &model, &mut binds, &mut extra).await?;
+            workflow_move(
+                ctx, grant, schema, &set, &clear, &model, &mut binds, &mut extra,
+            )
+            .await?;
             super::graph::update_extra(schema, &set, &clear, &mut binds, &mut extra);
             super::graph::link_checks(schema, &set, &mut binds, &mut extra);
             super::integrity::derived_fields(schema, &mut extra)?;
@@ -768,11 +1555,16 @@ pub(super) async fn plan_update_with<'a>(
                 validate_field_name(key)?;
             }
             binds.push(("__data".to_string(), JsonValue::Object(data)));
-            "LET $rows = (UPDATE type::record($__table, $__key) MERGE $__data RETURN AFTER);".to_string()
+            "LET $rows = (UPDATE type::record($__table, $__key) MERGE $__data RETURN AFTER);"
+                .to_string()
         }
     };
     Ok(Plan {
-        access: Access { operation: "update", model: model, table: &grant.table },
+        access: Access {
+            operation: "update",
+            model: model,
+            table: &grant.table,
+        },
         grant,
         body,
         ids: RECORD_ID.into(),
@@ -795,17 +1587,28 @@ async fn workflow_move(
     binds: &mut Vec<(String, JsonValue)>,
     extra: &mut Extra,
 ) -> Result<(), HostError> {
-    let Some(workflow) = grant.rules.as_ref().and_then(|rules| rules.workflow.as_ref()) else { return Ok(()) };
+    let Some(workflow) = grant
+        .rules
+        .as_ref()
+        .and_then(|rules| rules.workflow.as_ref())
+    else {
+        return Ok(());
+    };
     let column = schema.column_id(&workflow.field)?.to_string();
-    let refuse = |to: &str| HostError::Denied(format!("you may not move this `{model}` record to `{to}`"));
+    let refuse =
+        |to: &str| HostError::Denied(format!("you may not move this `{model}` record to `{to}`"));
     if clear.contains(&column) {
         return match guard::workflow_scope(ctx, grant, "", "d9").await? {
             Some(scope) if scope.sql.is_empty() => Ok(()),
             _ => Err(refuse("(nothing)")),
         };
     }
-    let Some(to) = set.get(&column).and_then(JsonValue::as_str) else { return Ok(()) };
-    let Some(scope) = guard::workflow_scope(ctx, grant, to, "d9").await? else { return Err(refuse(to)) };
+    let Some(to) = set.get(&column).and_then(JsonValue::as_str) else {
+        return Ok(());
+    };
+    let Some(scope) = guard::workflow_scope(ctx, grant, to, "d9").await? else {
+        return Err(refuse(to));
+    };
     if scope.sql.is_empty() {
         return Ok(());
     }
@@ -814,33 +1617,51 @@ async fn workflow_move(
         scope.sql
     ));
     binds.extend(scope.binds);
-    binds.push(("d30012".to_string(), JsonValue::String(format!("aether-denied: you may not move this `{model}` record to `{to}` from its state now"))));
+    binds.push((
+        "d30012".to_string(),
+        JsonValue::String(format!(
+            "aether-denied: you may not move this `{model}` record to `{to}` from its state now"
+        )),
+    ));
     Ok(())
 }
 
 /// Add to a number field in place. The addition happens in the database, in one statement, so two
 /// callers incrementing at once both count: use it for counters and sequences, never read, add and
 /// write back.
-pub async fn db_increment(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
+pub async fn db_increment(
+    ctx: &PluginHostContext,
+    payload: &JsonValue,
+) -> Result<JsonValue, HostError> {
     run_plan(ctx, plan_increment(ctx, payload).await?).await
 }
 
-async fn plan_increment<'a>(ctx: &'a PluginHostContext, payload: &JsonValue) -> Result<Plan<'a>, HostError> {
+async fn plan_increment<'a>(
+    ctx: &'a PluginHostContext,
+    payload: &JsonValue,
+) -> Result<Plan<'a>, HostError> {
     ctx.require_cap("db::mutate")?;
     let req: IncrementRequest = parse_req(payload)?;
     let grant = require_model(ctx, &req.model, true)?;
     let (column, by) = match &grant.schema {
-        Some(schema) => (schema.numeric_column(&req.field)?.to_string(), schema.increment_by(&req.field, &req.by)?),
+        Some(schema) => (
+            schema.numeric_column(&req.field)?.to_string(),
+            schema.increment_by(&req.field, &req.by)?,
+        ),
         None => (req.field.clone(), req.by.clone()),
     };
     let number = by.as_f64().filter(|n| n.is_finite());
     let Some(number) = number else {
-        return Err(HostError::InvalidPayload("`by` must be a finite number".into()));
+        return Err(HostError::InvalidPayload(
+            "`by` must be a finite number".into(),
+        ));
     };
     validate_field_name(&column)?;
     let (_, locked) = guard::field_limits(ctx, grant).await?;
     guard::check_locked(&locked, [&req.field], &req.model)?;
-    let scope = guard::scope(ctx, grant, Operation::Write, "d8").await?.ok_or_else(|| guard::denied(&req.model, "change"))?;
+    let scope = guard::scope(ctx, grant, Operation::Write, "d8")
+        .await?
+        .ok_or_else(|| guard::denied(&req.model, "change"))?;
     let mut binds = record_binds(grant, &req.id);
     // A whole `by` stays a whole number in the database.
     let by = if number.fract() == 0.0 && number.abs() < 9e15 {
@@ -855,7 +1676,11 @@ async fn plan_increment<'a>(ctx: &'a PluginHostContext, payload: &JsonValue) -> 
     let mut extra = chatter_extra(grant, "update")?;
     add_record_check(&mut extra, &mut binds, scope, &req.model, "change");
     Ok(Plan {
-        access: Access { operation: "update", model: req.model, table: &grant.table },
+        access: Access {
+            operation: "update",
+            model: req.model,
+            table: &grant.table,
+        },
         grant,
         body,
         ids: RECORD_ID.into(),
@@ -864,16 +1689,31 @@ async fn plan_increment<'a>(ctx: &'a PluginHostContext, payload: &JsonValue) -> 
     })
 }
 
-pub async fn db_delete(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
+pub async fn db_delete(
+    ctx: &PluginHostContext,
+    payload: &JsonValue,
+) -> Result<JsonValue, HostError> {
     ctx.require_cap("db::mutate")?;
     let req: DeleteRequest = parse_req(payload)?;
     if let Some(reply) = super::nested::delete(ctx, &req).await? {
+        bust_model_row(ctx, &req.model, &req.id);
         return Ok(reply);
     }
-    run_plan(ctx, plan_delete_with(ctx, req.model, req.id, Options::default()).await?).await
+    let model = req.model.clone();
+    let id = req.id.clone();
+    let out = run_plan(
+        ctx,
+        plan_delete_with(ctx, req.model, req.id, Options::default()).await?,
+    )
+    .await?;
+    bust_model_row(ctx, &model, &id);
+    Ok(out)
 }
 
-async fn plan_delete<'a>(ctx: &'a PluginHostContext, payload: &JsonValue) -> Result<Plan<'a>, HostError> {
+async fn plan_delete<'a>(
+    ctx: &'a PluginHostContext,
+    payload: &JsonValue,
+) -> Result<Plan<'a>, HostError> {
     let req: DeleteRequest = parse_req(payload)?;
     plan_delete_with(ctx, req.model, req.id, Options::default()).await
 }
@@ -886,7 +1726,9 @@ pub(super) async fn plan_delete_with<'a>(
 ) -> Result<Plan<'a>, HostError> {
     ctx.require_cap("db::mutate")?;
     let grant = require_model(ctx, &model, true)?;
-    let scope = guard::scope(ctx, grant, Operation::Delete, "d8").await?.ok_or_else(|| guard::denied(&model, "delete"))?;
+    let scope = guard::scope(ctx, grant, Operation::Delete, "d8")
+        .await?
+        .ok_or_else(|| guard::denied(&model, "delete"))?;
     let mut binds = record_binds(grant, &id);
     let mut extra = chatter_extra(grant, "delete")?;
     if let Some(schema) = &grant.schema {
@@ -897,7 +1739,11 @@ pub(super) async fn plan_delete_with<'a>(
     }
     add_record_check(&mut extra, &mut binds, scope, &model, "delete");
     Ok(Plan {
-        access: Access { operation: "delete", model: model, table: &grant.table },
+        access: Access {
+            operation: "delete",
+            model: model,
+            table: &grant.table,
+        },
         grant,
         body: "LET $rows = (DELETE type::record($__table, $__key) RETURN BEFORE);".into(),
         ids: RECORD_ID.into(),
@@ -911,12 +1757,24 @@ pub const MAX_TRANSACTION_OPS: usize = 50;
 
 /// Variables each write declares for itself. In a transaction every write gets its own copy
 /// (`$rows_0`, `$rows_1`, …) so one cannot overwrite another's.
-const PER_WRITE_VARIABLES: &[&str] =
-    &["rows", "__table", "__key", "__data", "__by", "__before", "__changed", "__audit_model", "__audit_table", "__audit_operation"];
+const PER_WRITE_VARIABLES: &[&str] = &[
+    "rows",
+    "__table",
+    "__key",
+    "__data",
+    "__by",
+    "__before",
+    "__changed",
+    "__audit_model",
+    "__audit_table",
+    "__audit_operation",
+];
 
 fn is_per_write(name: &str) -> bool {
     PER_WRITE_VARIABLES.contains(&name)
-        || (name.len() > 1 && name.starts_with('d') && name[1..].bytes().all(|byte| byte.is_ascii_digit()))
+        || (name.len() > 1
+            && name.starts_with('d')
+            && name[1..].bytes().all(|byte| byte.is_ascii_digit()))
 }
 
 /// `text` with every per-write variable (`$rows`, `$__table`, `$d0`, …) renamed by `suffix`.
@@ -926,7 +1784,9 @@ fn rename_variables(text: &str, suffix: &str) -> String {
     while let Some(dollar) = rest.find('$') {
         out.push_str(&rest[..=dollar]);
         rest = &rest[dollar + 1..];
-        let end = rest.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(rest.len());
+        let end = rest
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len());
         let (name, tail) = rest.split_at(end);
         out.push_str(name);
         if is_per_write(name) {
@@ -944,7 +1804,10 @@ fn rename_variables(text: &str, suffix: &str) -> String {
 /// plugin's capabilities and model grants exactly as when sent alone, and each leaves its own
 /// audit row (and chatter entries), all inside the one transaction. The answer's `data` lists
 /// each write's record, in order.
-pub async fn db_transaction(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
+pub async fn db_transaction(
+    ctx: &PluginHostContext,
+    payload: &JsonValue,
+) -> Result<JsonValue, HostError> {
     ctx.require_cap("db::transaction")?;
     let ops = payload
         .get("ops")
@@ -970,7 +1833,9 @@ pub async fn db_transaction(ctx: &PluginHostContext, payload: &JsonValue) -> Res
             ))),
         }
         .map_err(|error| match error {
-            HostError::InvalidPayload(message) => HostError::InvalidPayload(format!("write {index}: {message}")),
+            HostError::InvalidPayload(message) => {
+                HostError::InvalidPayload(format!("write {index}: {message}"))
+            }
             other => other,
         })?;
         plans.push(plan);
@@ -982,7 +1847,10 @@ pub async fn db_transaction(ctx: &PluginHostContext, payload: &JsonValue) -> Res
 
 /// Run several writes in one transaction, each with its own copy of the per-write variables, and
 /// answer each write's record (or null), decoded as the plugin sees it.
-pub(super) async fn run_composed(ctx: &PluginHostContext, plans: &[Plan<'_>]) -> Result<Vec<JsonValue>, HostError> {
+pub(super) async fn run_composed(
+    ctx: &PluginHostContext,
+    plans: &[Plan<'_>],
+) -> Result<Vec<JsonValue>, HostError> {
     let mut hiddens = Vec::with_capacity(plans.len());
     for plan in plans {
         hiddens.push(guard::field_limits(ctx, plan.grant).await?.0);
@@ -1008,14 +1876,30 @@ pub(super) async fn run_composed(ctx: &PluginHostContext, plans: &[Plan<'_>]) ->
         statement_count += plan.extra.before.len() + 2 + plan.extra.after.len();
         returned.push(format!("$rows{suffix}"));
         for (name, value) in &plan.binds {
-            let name = if is_per_write(name) { format!("{name}{suffix}") } else { name.clone() };
+            let name = if is_per_write(name) {
+                format!("{name}{suffix}")
+            } else {
+                name.clone()
+            };
             binds.push((name, value.clone()));
         }
-        binds.push((format!("__audit_model{suffix}"), JsonValue::String(plan.access.model.clone())));
-        binds.push((format!("__audit_table{suffix}"), JsonValue::String(plan.access.table.to_string())));
-        binds.push((format!("__audit_operation{suffix}"), JsonValue::String(plan.access.operation.to_string())));
+        binds.push((
+            format!("__audit_model{suffix}"),
+            JsonValue::String(plan.access.model.clone()),
+        ));
+        binds.push((
+            format!("__audit_table{suffix}"),
+            JsonValue::String(plan.access.table.to_string()),
+        ));
+        binds.push((
+            format!("__audit_operation{suffix}"),
+            JsonValue::String(plan.access.operation.to_string()),
+        ));
     }
-    statements.push_str(&format!("RETURN [{}];\nCOMMIT TRANSACTION;", returned.join(", ")));
+    statements.push_str(&format!(
+        "RETURN [{}];\nCOMMIT TRANSACTION;",
+        returned.join(", ")
+    ));
 
     let mut query = ctx
         .db
@@ -1026,7 +1910,10 @@ pub(super) async fn run_composed(ctx: &PluginHostContext, plans: &[Plan<'_>]) ->
         .bind(("__audit_plugin", ctx.plugin_name.clone()))
         .bind(("__audit_function", ctx.function.clone()))
         .bind(("__audit_ip", ctx.audit.ip.clone()))
-        .bind(("__cm_author", ctx.audit.actor.id().unwrap_or("system").to_string()));
+        .bind((
+            "__cm_author",
+            ctx.audit.actor.id().unwrap_or("system").to_string(),
+        ));
     for (name, value) in binds {
         query = query.bind((name, value));
     }
@@ -1036,9 +1923,32 @@ pub(super) async fn run_composed(ctx: &PluginHostContext, plans: &[Plan<'_>]) ->
         .into_iter()
         .zip(plans)
         .zip(&hiddens)
-        .map(|((rows, plan), hidden)| rows.into_iter().next().map_or(JsonValue::Null, |row| guard::strip(hidden, decode(plan.grant, row))))
+        .map(|((rows, plan), hidden)| {
+            rows.into_iter().next().map_or(JsonValue::Null, |row| {
+                guard::strip(hidden, decode(plan.grant, row))
+            })
+        })
         .collect();
+    for (plan, row) in plans.iter().zip(&data) {
+        if let Some(op) = mutate_op(plan.access.operation) {
+            let id = if row.is_null() {
+                None
+            } else {
+                record_id_of(row)
+            };
+            publish_data_changed(ctx, &plan.access.model, op, id);
+            mantle_bust_row(ctx, &plan.access.model, plan.access.table, id);
+        }
+    }
     Ok(data)
+}
+
+fn bust_model_row(ctx: &PluginHostContext, model: &str, id: &str) {
+    let Ok(grant) = require_model(ctx, model, true) else {
+        return;
+    };
+    let table = grant.table.clone();
+    mantle_bust_row(ctx, model, &table, Some(id));
 }
 
 pub(super) fn strip_table_prefix<'a>(id: &'a str, table: &str) -> &'a str {
@@ -1054,12 +1964,32 @@ mod tests {
         let text = "LET $rows = (UPDATE type::record($__table, $__key) SET a = $d0, b = $d12 RETURN AFTER); \
                     $rows[0].id; $__cm_author; $__audit_plugin; |$k| $__before[$k]; $d; $data";
         let renamed = rename_variables(text, "_3");
-        assert!(renamed.contains("LET $rows_3 = (UPDATE type::record($__table_3, $__key_3) SET a = $d0_3, b = $d12_3"));
+        assert!(renamed.contains(
+            "LET $rows_3 = (UPDATE type::record($__table_3, $__key_3) SET a = $d0_3, b = $d12_3"
+        ));
         assert!(renamed.contains("$rows_3[0].id"));
-        assert!(renamed.contains("$__before_3[$k]"), "lambda variables are not renamed");
+        assert!(
+            renamed.contains("$__before_3[$k]"),
+            "lambda variables are not renamed"
+        );
         for shared in ["$__cm_author;", "$__audit_plugin;", "$d;", "$data"] {
-            assert!(renamed.contains(shared), "{shared} must stay as it is: {renamed}");
+            assert!(
+                renamed.contains(shared),
+                "{shared} must stay as it is: {renamed}"
+            );
         }
+    }
+
+    #[test]
+    fn row_cache_id_is_the_same_for_a_bare_key_and_a_record_id() {
+        let table = "mdl_employee";
+        let bare = "422r544m9rghrhuwbgya";
+        let full = format!("{table}:{bare}");
+        assert_eq!(row_cache_id(table, bare), full);
+        assert_eq!(row_cache_id(table, &full), full);
+        let keys = row_cache_keys(table, &full);
+        assert!(keys.contains(&full));
+        assert!(keys.contains(&bare.to_string()));
     }
 
     #[test]
@@ -1067,8 +1997,80 @@ mod tests {
         for good in ["body", "created_at", "chat_message", "A1"] {
             assert!(validate_ident(good).is_ok(), "{good}");
         }
-        for bad in ["", "a b", "a;b", "a.b", "a-b", "x) OR true --", "type::table"] {
+        for bad in [
+            "",
+            "a b",
+            "a;b",
+            "a.b",
+            "a-b",
+            "x) OR true --",
+            "type::table",
+        ] {
             assert!(validate_ident(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn empty_q_leaves_the_filter_alone() {
+        let filter = Map::from_iter([("status".into(), JsonValue::String("active".into()))]);
+        let fields = vec!["name".into()];
+        let expanded = expand_search_filter(filter.clone(), Some("  "), &fields).unwrap();
+        assert_eq!(expanded, filter);
+        let expanded = expand_search_filter(filter.clone(), None, &fields).unwrap();
+        assert_eq!(expanded, filter);
+    }
+
+    #[test]
+    fn q_without_fields_is_rejected() {
+        let err = expand_search_filter(Map::new(), Some("ann"), &[]).unwrap_err();
+        assert!(matches!(err, HostError::InvalidPayload(_)));
+    }
+
+    #[test]
+    fn q_becomes_an_or_of_likes_anded_with_the_caller_filter() {
+        let filter = Map::from_iter([("status".into(), JsonValue::String("active".into()))]);
+        let fields = vec!["name".into(), "email".into()];
+        let expanded = expand_search_filter(filter, Some("ann"), &fields).unwrap();
+        assert_eq!(
+            JsonValue::Object(expanded),
+            serde_json::json!({
+                "and": [
+                    { "status": "active" },
+                    { "or": [
+                        { "name": { "like": "ann" } },
+                        { "email": { "like": "ann" } }
+                    ] }
+                ]
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn publish_data_changed_reaches_org_subscribers() {
+        use crate::kernel::host::test_support::dummy_ctx;
+        use crate::notifications::HubMessage;
+
+        let mut ctx = dummy_ctx(&[]);
+        ctx.database = "org_acme".into();
+        let mut receiver = ctx.notifications.subscribe("org_acme");
+
+        publish_data_changed(&ctx, "employee", "create", Some("employee:1"));
+
+        let HubMessage::Event(event) = receiver.recv().await.unwrap() else {
+            panic!("expected a transient event");
+        };
+        assert_eq!(event.plugin, "aether");
+        assert_eq!(event.event, "data.changed");
+        assert_eq!(event.payload["model"], "employee");
+        assert_eq!(event.payload["op"], "create");
+        assert_eq!(event.payload["id"], "employee:1");
+    }
+
+    #[test]
+    fn mutate_op_maps_writes_only() {
+        assert_eq!(mutate_op("create"), Some("create"));
+        assert_eq!(mutate_op("update"), Some("update"));
+        assert_eq!(mutate_op("delete"), Some("delete"));
+        assert_eq!(mutate_op("read"), None);
     }
 }

@@ -1,31 +1,62 @@
 <script lang="ts">
-	import type { FieldType, PageNode } from '$lib/dsl/types';
+	import type { PageNode } from '$lib/dsl/types';
+	import { numberStep, resolveField } from '$lib/dsl/resolveFieldType';
+	import { Switch } from '$lib/components/ui/switch';
+	import FileField from '$lib/media/FileField.svelte';
+	import ImageField from '$lib/media/ImageField.svelte';
 	import { Input } from '$lib/components/ui/input';
 	import { Textarea } from '$lib/components/ui/textarea';
-	import { Label } from '$lib/components/ui/label';
 	import { Badge } from '$lib/components/ui/badge';
 	import { NativeSelect } from '$lib/components/ui/native-select';
-	import { getFormState } from '$lib/pages/pageContext.svelte';
+	import { Field, FieldLabel, FieldContent, FieldDescription } from '$lib/components/ui/field';
+	import { recordOptions, recordTitles } from '$lib/records/titles';
+	import { SearchPicker, type SearchPickerItem } from '$lib/components/ui/search-picker';
+	import {
+		getFormState,
+		getPageState,
+		keyOf,
+		rowsOf,
+		text as attrText
+	} from '$lib/pages/pageContext.svelte';
 
 	let { node }: { node: PageNode } = $props();
 
-	const fieldType = $derived(
-		(typeof node.fieldType === 'string' ? node.fieldType : 'char') as FieldType
+	// What the page says, then what the model says (the server adds `model*` hints).
+	const resolved = $derived(resolveField(node));
+	/// `source` on many2one/link: plugin function that returns rows to pick from.
+	const linkSource = $derived(attrText(node.source) ?? '');
+	const declaredLink = $derived(node.fieldType === 'many2one' || node.fieldType === 'link');
+	/**
+	 * Related fields use SearchPicker. A link the model knows about but the page gave no
+	 * `source` for stays a text box (there is nothing to pick from), rather than an error.
+	 */
+	/// A link the model points at a model for needs no `source`: the kernel lists that model's
+	/// records by their `title_field`.
+	const kernelTarget = $derived(!linkSource && resolved.target ? resolved.target : '');
+	const isLink = $derived(
+		declaredLink ||
+			(resolved.fieldType === 'link' &&
+				(Boolean(linkSource) || Boolean(kernelTarget) || !resolved.inferred))
 	);
+	const fieldType = $derived(isLink ? 'link' : resolved.fieldType);
 	const name = $derived(typeof node.name === 'string' ? node.name : '');
-	const label = $derived(String(node.label ?? node.name ?? 'Field'));
-	const required = $derived(node.required === true);
-	const options = $derived(
-		Array.isArray(node.options)
-			? (node.options as string[])
-			: typeof node.options === 'string'
-				? node.options.split(',').map((option) => option.trim()).filter(Boolean)
-				: []
+	const label = $derived(resolved.label);
+	const required = $derived(resolved.required);
+	const help = $derived(resolved.help);
+	const options = $derived(resolved.options);
+	const step = $derived(numberStep(resolved));
+	const optionLabelField = $derived(
+		attrText(node.optionLabel) ?? attrText(node.option_label) ?? ''
 	);
+	const entityLabel = $derived(attrText(node.entity) ?? label.toLowerCase() + 's');
 
 	// Inside a form the field edits the form's values; elsewhere it only holds its own.
 	const form = getFormState();
+	const page = getPageState();
 	let own = $state<unknown>('');
+	let linkItems = $state<SearchPickerItem[]>([]);
+	let linkLoading = $state(false);
+	let linkError = $state<string | null>(null);
 	const id = $props.id();
 
 	const value = {
@@ -37,90 +68,271 @@
 			else own = next;
 		}
 	};
+
+	function labelOfRow(row: Record<string, unknown>): string {
+		const preferred = optionLabelField ? row[optionLabelField] : undefined;
+		if (typeof preferred === 'string' && preferred.trim()) return preferred;
+		for (const key of ['display_name', 'name', 'title', 'label', 'code', 'employee_no'] as const) {
+			const raw = row[key];
+			if (typeof raw === 'string' && raw.trim()) return raw;
+		}
+		const key = keyOf(row.id);
+		return key || 'Untitled';
+	}
+
+	function sublabelOfRow(row: Record<string, unknown>): string | undefined {
+		for (const key of ['code', 'employee_no', 'email', 'work_email'] as const) {
+			const raw = row[key];
+			if (typeof raw === 'string' && raw.trim() && raw !== labelOfRow(row)) return raw;
+		}
+		return undefined;
+	}
+
+	function sameId(a: string, b: string): boolean {
+		if (!a || !b) return false;
+		return a === b || keyOf(a) === keyOf(b) || a === keyOf(b) || keyOf(a) === b;
+	}
+
+	const linkValue = $derived.by(() => {
+		const raw = String(value.current ?? '').trim();
+		if (!raw) return null;
+		const match = linkItems.find((item) => sameId(item.id, raw));
+		return match?.id ?? raw;
+	});
+
+	$effect(() => {
+		if (isLink && !linkSource && kernelTarget && page) {
+			let cancelled = false;
+			linkLoading = true;
+			linkError = null;
+			void recordOptions(page.plugin, kernelTarget, '', 200).then(async (options) => {
+				if (cancelled) return;
+				let items: SearchPickerItem[] = options.map((option) => ({
+					id: option.id,
+					label: option.title
+				}));
+				// The record the field holds may not be among the first ones listed.
+				const current = String(value.current ?? '');
+				if (current && !items.some((item) => sameId(item.id, current))) {
+					const found = await recordTitles(page.plugin, kernelTarget, [current]);
+					const title = found[current];
+					if (title) items = [{ id: current, label: title }, ...items];
+				}
+				if (cancelled) return;
+				linkItems = items;
+				linkLoading = false;
+			});
+			return () => {
+				cancelled = true;
+			};
+		}
+		if (!isLink || !linkSource || !page) {
+			linkItems = [];
+			linkError = null;
+			return;
+		}
+		let cancelled = false;
+		linkLoading = true;
+		linkError = null;
+		void page.call(linkSource, { ...page.params, limit: 500 }).then((result) => {
+			if (cancelled) return;
+			linkLoading = false;
+			if (!result.ok) {
+				linkItems = [];
+				linkError = result.error;
+				return;
+			}
+			linkItems = rowsOf(result.data)
+				.map((row) => ({
+					id: String(row.id ?? ''),
+					label: labelOfRow(row),
+					sublabel: sublabelOfRow(row)
+				}))
+				.filter((item) => item.id);
+		});
+		return () => {
+			cancelled = true;
+		};
+	});
 </script>
 
-<div class="space-y-1.5">
-	{#if node.type !== 'badge' && node.type !== 'avatar' && fieldType !== 'boolean'}
-		<Label for={id} class="text-xs font-medium text-muted-foreground">
-			{label}{#if required}<span class="text-destructive"> *</span>{/if}
-		</Label>
-	{/if}
-
-	{#if fieldType === 'text'}
-		<Textarea
-			{id}
-			rows={3}
-			{required}
-			placeholder={label}
-			value={String(value.current)}
-			oninput={(event) => (value.current = event.currentTarget.value)}
-		/>
-	{:else if fieldType === 'boolean'}
-		<label class="flex items-center gap-2 text-sm">
-			<input
-				type="checkbox"
-				class="size-4 rounded border-input"
-				checked={value.current === true}
-				onchange={(event) => (value.current = event.currentTarget.checked)}
-			/>
-			{label}
-		</label>
-	{:else if fieldType === 'selection'}
-		<NativeSelect
-			{id}
-			{required}
-			value={String(value.current)}
-			onchange={(event) => (value.current = event.currentTarget.value)}
-		>
-			<option value="">Select…</option>
-			{#each options as option (option)}
-				<option value={option}>{option}</option>
-			{/each}
-		</NativeSelect>
-	{:else if fieldType === 'badge' || node.type === 'badge'}
-		<Badge>{String(value.current || label)}</Badge>
-	{:else if fieldType === 'avatar' || node.type === 'avatar'}
-		{@const text = String(value.current || label || '?')}
-		{@const initials = text
+{#if fieldType === 'badge' || node.type === 'badge'}
+	<Badge>{String(value.current || label)}</Badge>
+{:else if fieldType === 'avatar' || node.type === 'avatar'}
+	{@const text = String(value.current || label || '?')}
+	{@const initials =
+		text
 			.trim()
 			.split(/\s+/)
 			.slice(0, 2)
 			.map((p) => p[0]?.toUpperCase() ?? '')
 			.join('') || '?'}
-		<span
-			class="inline-flex size-8 items-center justify-center rounded-full bg-muted text-xs font-medium text-muted-foreground"
-			title={text}
-		>
-			{initials}
-		</span>
-	{:else if fieldType === 'progress'}
-		{@const raw = value.current}
-		{@const pct = Math.max(
-			0,
-			Math.min(100, typeof raw === 'number' ? raw : Number(raw) || 0)
-		)}
-		<div class="h-2 w-full overflow-hidden rounded-full bg-muted" title="{pct}%">
-			<div class="h-full bg-primary transition-[width]" style="width: {pct}%"></div>
-		</div>
-	{:else}
-		{@const numeric = fieldType === 'integer' || fieldType === 'float' || fieldType === 'currency'}
-		<Input
-			{id}
-			{required}
-			type={numeric
-				? 'number'
-				: fieldType === 'date'
-					? 'date'
-					: fieldType === 'datetime'
-						? 'datetime-local'
-						: 'text'}
-			step={fieldType === 'float' || fieldType === 'currency' ? 'any' : undefined}
-			placeholder={label}
-			value={String(value.current)}
-			oninput={(event) => {
-				const raw = event.currentTarget.value;
-				value.current = numeric ? (raw === '' ? '' : Number(raw)) : raw;
-			}}
+	<span
+		class="inline-flex size-8 items-center justify-center rounded-full bg-muted text-xs font-medium text-muted-foreground"
+		title={text}
+	>
+		{initials}
+	</span>
+{:else if fieldType === 'progress'}
+	{@const raw = value.current}
+	{@const pct = Math.max(0, Math.min(100, typeof raw === 'number' ? raw : Number(raw) || 0))}
+	<div class="h-2 w-full overflow-hidden rounded-full bg-muted" title="{pct}%">
+		<div class="h-full bg-primary transition-[width]" style="width: {pct}%"></div>
+	</div>
+{:else if fieldType === 'image' || fieldType === 'binary' || fieldType === 'file'}
+	<Field data-part="form.field" data-field={name}>
+		<FieldLabel for={id} class="text-xs font-medium text-muted-foreground">
+			{label}{#if required}<span class="text-destructive"> *</span>{/if}
+		</FieldLabel>
+		<FieldContent>
+			{#if fieldType === 'file'}
+				<FileField
+					{id}
+					value={value.current}
+					multiple={resolved.multiple}
+					onchange={(next) => (value.current = next)}
+				/>
+			{:else}
+				<ImageField
+					{id}
+					value={value.current}
+					multiple={resolved.multiple}
+					avatar={node.avatar === true}
+					onchange={(next) => (value.current = next)}
+				/>
+			{/if}
+			{#if help}
+				<FieldDescription>{help}</FieldDescription>
+			{/if}
+		</FieldContent>
+	</Field>
+{:else if fieldType === 'boolean'}
+	<label class="flex items-center gap-2.5 text-sm" data-part="form.field" data-field={name}>
+		<Switch
+			checked={value.current === true}
+			onCheckedChange={(checked) => (value.current = checked)}
 		/>
+		<span>
+			{label}{#if required}<span class="text-destructive"> *</span>{/if}
+		</span>
+	</label>
+	{#if help}
+		<p class="text-xs text-muted-foreground">{help}</p>
 	{/if}
-</div>
+{:else if fieldType === 'many2many'}
+	{@const picked = Array.isArray(value.current) ? (value.current as unknown[]) : []}
+	<Field data-part="form.field" data-field={name}>
+		<FieldLabel class="text-xs font-medium text-muted-foreground">{label}</FieldLabel>
+		<FieldContent>
+			<div class="flex flex-wrap gap-1.5">
+				{#each picked as item (String(item))}
+					<Badge variant="secondary">{keyOf(item)}</Badge>
+				{:else}
+					<span class="text-sm text-muted-foreground">None</span>
+				{/each}
+			</div>
+			{#if help}
+				<FieldDescription>{help}</FieldDescription>
+			{/if}
+		</FieldContent>
+	</Field>
+{:else if fieldType === 'json'}
+	<Field data-part="form.field" data-field={name}>
+		<FieldLabel class="text-xs font-medium text-muted-foreground">{label}</FieldLabel>
+		<FieldContent>
+			<pre
+				class="max-h-48 overflow-auto rounded-md border border-border bg-muted p-3 font-mono text-xs">{JSON.stringify(
+					value.current === '' ? null : value.current,
+					null,
+					2
+				)}</pre>
+		</FieldContent>
+	</Field>
+{:else if isLink}
+	<Field data-part="form.field" data-field={name}>
+		<FieldLabel for={id} class="text-xs font-medium text-muted-foreground">
+			{label}{#if required}<span class="text-destructive"> *</span>{/if}
+		</FieldLabel>
+		<FieldContent>
+			{#if !linkSource && !kernelTarget}
+				<p class="text-xs text-destructive">
+					Link field needs a <code class="text-xs">source</code> function.
+				</p>
+			{:else}
+				<SearchPicker
+					items={linkItems}
+					value={linkValue}
+					placeholder={linkLoading ? 'Loading…' : `Select ${label.toLowerCase()}…`}
+					searchPlaceholder={`Search ${entityLabel}…`}
+					{entityLabel}
+					clearable={!required}
+					onchange={(next) => {
+						value.current = next || '';
+					}}
+				/>
+				{#if linkError}
+					<p class="text-xs text-destructive" role="alert">{linkError}</p>
+				{/if}
+			{/if}
+			{#if help}
+				<FieldDescription>{help}</FieldDescription>
+			{/if}
+		</FieldContent>
+	</Field>
+{:else}
+	<Field data-part="form.field" data-field={name}>
+		<FieldLabel for={id} class="text-xs font-medium text-muted-foreground">
+			{label}{#if required}<span class="text-destructive"> *</span>{/if}
+		</FieldLabel>
+		<FieldContent>
+			{#if fieldType === 'text'}
+				<Textarea
+					{id}
+					rows={3}
+					{required}
+					placeholder={label}
+					value={String(value.current)}
+					oninput={(event) => (value.current = event.currentTarget.value)}
+				/>
+			{:else if fieldType === 'selection'}
+				<NativeSelect
+					{id}
+					{required}
+					value={String(value.current)}
+					onchange={(event) => (value.current = event.currentTarget.value)}
+				>
+					<option value="">Select…</option>
+					{#each options as option (option.value)}
+						<option value={option.value}>{option.label}</option>
+					{/each}
+				</NativeSelect>
+			{:else}
+				{@const numeric =
+					fieldType === 'integer' || fieldType === 'float' || fieldType === 'currency'}
+				<!-- A decimal travels as text (`"12.50"`), so editing it never rounds through a float. -->
+				{@const decimal = fieldType === 'decimal'}
+				<Input
+					{id}
+					{required}
+					type={numeric || decimal
+						? 'number'
+						: fieldType === 'date'
+							? 'date'
+							: fieldType === 'datetime'
+								? 'datetime-local'
+								: 'text'}
+					{step}
+					placeholder={label}
+					value={String(value.current)}
+					oninput={(event) => {
+						const raw = event.currentTarget.value;
+						value.current = numeric ? (raw === '' ? '' : Number(raw)) : raw;
+					}}
+				/>
+			{/if}
+			{#if help}
+				<FieldDescription>{help}</FieldDescription>
+			{/if}
+		</FieldContent>
+	</Field>
+{/if}

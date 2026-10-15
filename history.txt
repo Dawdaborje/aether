@@ -1,0 +1,13 @@
+#V2
+SELECT name, version, workspace, is_active, app.label AS app_label, app.description AS app_desc, app.route AS route FROM plugins WHERE app != NONE AND (string::lowercase(name) CONTAINS 'attendance' OR string::lowercase(app.label) CONTAINS 'attendance' OR string::lowercase(app.description) CONTAINS 'attendance' OR string::lowercase(app.description) CONTAINS 'punch');
+SELECT name, version, is_active FROM plugins WHERE name = 'hr_attendance';
+SELECT name, count() AS versions FROM plugins WHERE app != NONE AND is_active = true GROUP BY name;
+INFO FOR NS;
+SELECT slug, name, database FROM organizations LIMIT 20;
+SELECT plugin_name, version, is_enabled FROM installed_plugins WHERE plugin_name = 'hr_attendance' OR string::lowercase(plugin_name) CONTAINS 'attendance';
+SELECT plugin_name, version, is_enabled FROM installed_plugins WHERE is_enabled = true AND plugin_name IN ['hr_attendance', 'hr', 'hr_leave', 'calendar'];
+SELECT plugin_name, count() AS n FROM installed_plugins WHERE is_enabled = true GROUP BY plugin_name;
+SELECT id, label, icon, color FROM gl_settings_groups ORDER BY label;
+SELECT meta::id(id) AS iid, id FROM gl_settings_items LIMIT 1;
+SELECT record::id(id) AS iid FROM gl_settings_items LIMIT 1;
+USE NS aether DB core; SELECT name, db_name, owner_user_id FROM organizations; SELECT id, username, email, is_super_user FROM users WHERE username CONTAINS "hrms" OR email CONTAINS "hrms"; SELECT organization_id, user_id, deleted_at FROM organization_users;

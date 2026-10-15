@@ -24,7 +24,12 @@ fn escape(text: &str) -> String {
 
 /// A complete HTML error page. `detail` is shown under the message; it is
 /// escaped here, so callers may pass request data such as the path.
-pub fn error_page_html(status: StatusCode, title: &str, message: &str, detail: Option<&str>) -> String {
+pub fn error_page_html(
+    status: StatusCode,
+    title: &str,
+    message: &str,
+    detail: Option<&str>,
+) -> String {
     let detail = detail
         .map(|detail| format!("<p class=\"detail\"><code>{}</code></p>", escape(detail)))
         .unwrap_or_default();
@@ -113,7 +118,12 @@ mod tests {
 
     #[test]
     fn page_escapes_request_data() {
-        let html = error_page_html(StatusCode::NOT_FOUND, "Not found", "m", Some("/<script>alert(1)</script>"));
+        let html = error_page_html(
+            StatusCode::NOT_FOUND,
+            "Not found",
+            "m",
+            Some("/<script>alert(1)</script>"),
+        );
         assert!(html.contains("404"));
         assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
         assert!(!html.contains("<script>alert"));
@@ -122,9 +132,15 @@ mod tests {
     #[test]
     fn browsers_get_html_and_api_clients_get_json() {
         let mut browser = HeaderMap::new();
-        browser.insert(header::ACCEPT, header::HeaderValue::from_static("text/html,*/*"));
+        browser.insert(
+            header::ACCEPT,
+            header::HeaderValue::from_static("text/html,*/*"),
+        );
         assert!(wants_html(&Uri::from_static("/nope"), &browser));
-        assert!(!wants_html(&Uri::from_static("/api/nope"), &browser), "API paths are always JSON");
+        assert!(
+            !wants_html(&Uri::from_static("/api/nope"), &browser),
+            "API paths are always JSON"
+        );
         assert!(!wants_html(&Uri::from_static("/nope"), &HeaderMap::new()));
     }
 }

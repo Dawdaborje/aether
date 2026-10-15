@@ -2,14 +2,29 @@
 
 ## Starting and stopping
 
-`aether --serve` needs an initialized database (`aether --init` once; it
-reports clearly if you forgot).
+`aether --serve` needs an initialized database (`aether --init` once for a
+fresh install; it reports clearly if you forgot). After upgrading Aether,
+apply new core migrations with `aether --migrate` (migrations only — no
+re-seed and no new developer account).
 
 Ctrl+C or SIGTERM shuts it down gracefully: it stops accepting connections,
 lets in-flight requests finish (for up to 10 seconds, since open event streams (SSE)
 would otherwise hold it open), stops background tasks, signs the
 database session out and exits with status 0. All requests share one websocket
 to SurrealDB, which closes when the process exits.
+
+Process logs go to stderr by default; set `[logging] file = true` (or
+`--log-file` / `--log-dir`) to also append under `app_dir`. See
+[logging.md](logging.md).
+
+## Loading plugins while the server runs
+
+On Desk Apps (`/desk/apps`), developers can **Reload from disk** (re-reads
+`plugin_paths` in `aether.toml` and loads into the catalog) or **Upload zip**
+(a package or workspace archive). That only updates the catalog — install or
+upgrade into organizations stays a separate step. For auto-upgrade of every
+org that already has a plugin when sources change, use `--serve --watch`
+instead (development only).
 
 ## The developer account
 

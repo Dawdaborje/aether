@@ -1,0 +1,21 @@
+{
+  "groups": [
+    {
+      "id": "general",
+      "label": "General Settings",
+      "color": "blue",
+      "icon": "settings",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "domain",
+          "label": "Domain",
+          "s_key": "domain",
+          "s_value": "",
+          "description": "The address people use to reach this application.",
+          "long_description": "Used for the links in emails, such as invitations and password resets. Enter a host name like app.example.com, or a full address like https://app.example.com. Leave it empty to use the server's own address, which is usually localhost. Organizations can override it with their own domain."
+        }
+      ]
+    }
+  ]
+}

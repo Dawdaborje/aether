@@ -31,6 +31,17 @@ pub struct Organization {
     pub id: RecordId,
     pub name: String,
     pub db_name: String,
+    /// Core `users:…` id of the organization owner (transferable; admins are separate).
+    #[serde(default)]
+    pub owner_user_id: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Parent organization's `db_name`, when this org sits under another.
+    #[serde(default)]
+    pub parent_db_name: Option<String>,
+    /// Filename under `app_dir/orgs/<db>/` for the logo (`logo.png`, …).
+    #[serde(default)]
+    pub logo_file: Option<String>,
     pub date_created: Datetime,
     pub date_updated: Datetime,
 }
@@ -39,6 +50,11 @@ pub struct Organization {
 pub struct NewOrganization {
     pub name: String,
     pub db_name: String,
+    pub owner_user_id: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub parent_db_name: Option<String>,
     pub date_created: Datetime,
     pub date_updated: Datetime,
 }
@@ -63,6 +79,10 @@ pub struct OrganizationUser {
     pub organization_id: String,
     pub user_id: String,
     pub date_created: Datetime,
+    #[serde(default)]
+    pub deleted_at: Option<Datetime>,
+    #[serde(default)]
+    pub deleted_by: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
@@ -72,6 +92,10 @@ pub struct OrgUser {
     pub is_active: bool,
     pub date_created: Datetime,
     pub date_updated: Datetime,
+    #[serde(default)]
+    pub deleted_at: Option<Datetime>,
+    #[serde(default)]
+    pub deleted_by: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]

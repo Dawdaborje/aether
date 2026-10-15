@@ -190,6 +190,20 @@ bind = "127.0.0.1:7895"    # where a standalone scheduler's control API listens
 A job is stopped if it runs longer than `lease_secs` minus a few seconds; plugin calls are also bound
 by the plugin runtime's own limits (10 s and 2 million operations for Rhai scripts).
 
+## Desk: inspect and control schedules
+
+Developers can open **Desk → Schedules** (or **Organizations → [org] → Schedules**) to see the
+`scheduled_tasks` for plugins installed on one organization. Cron and interval tasks are listed
+separately. From a schedule you can **stop** it (`enabled = false`), **restart** it (enable again and
+recompute `next_run`), or **run now** (enqueue a job immediately, same idea as
+`POST /control/run`).
+
+Opening a schedule lists its **runs** (the `jobs` rows for that task): start time, end time,
+duration and state. Opening a run shows the outcome and the audit trail for `request_id =
+job-<id>` (`plugin_calls` and `data_access`). The HTTP API is under
+`/api/ui/organizations/{db}/schedules/…` and is developer-only; it always takes an explicit org
+database name so lists never mix organizations.
+
 ## Tables
 
 In every organization database (migration `018_scheduler`): `scheduled_tasks` and `jobs`. In the core

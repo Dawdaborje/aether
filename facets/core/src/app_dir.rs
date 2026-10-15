@@ -4,9 +4,13 @@
 //! <app_dir>/
 //! ├── plugins/<name>/<stamp>/     one revision: only the files that changed, and files.json
 //!                                 (older plugins: plugins/<name>/<version>/ with every file)
+//! ├── workspaces/<name>/          workspace group logos from workspace.toml
 //! ├── views/<name>/<version>/     compiled page views (JSON)
 //! ├── orgs/<organization>/        files belonging to one organization
 //! │   └── conf/                   its configuration
+//! ├── users/<user_id>/            profile avatars and other per-user files
+//! ├── logs/                       process log file when `[logging] file = true`
+//! ├── uploads/plugins/<stamp>/    plugin/workspace zips unpacked from Desk Apps
 //! └── conf/                       other per-plugin configuration
 //! ```
 //!
@@ -19,9 +23,13 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 const PLUGINS: &str = "plugins";
+const WORKSPACES: &str = "workspaces";
 const VIEWS: &str = "views";
 const CONF: &str = "conf";
 const ORGS: &str = "orgs";
+const USERS: &str = "users";
+const LOGS: &str = "logs";
+const UPLOADS: &str = "uploads";
 
 #[derive(Debug, Error)]
 pub enum AppDirError {
@@ -55,9 +63,11 @@ impl AppDir {
         for directory in [
             self.root.clone(),
             self.root.join(PLUGINS),
+            self.root.join(WORKSPACES),
             self.root.join(VIEWS),
             self.root.join(CONF),
             self.root.join(ORGS),
+            self.root.join(USERS),
         ] {
             tokio::fs::create_dir_all(&directory)
                 .await
@@ -67,6 +77,11 @@ impl AppDir {
                 })?;
         }
         Ok(())
+    }
+
+    /// `workspaces/<name>`: group logo and other workspace-level assets.
+    pub fn workspace_dir(&self, name: &str) -> Result<PathBuf, AppDirError> {
+        Ok(self.root.join(WORKSPACES).join(component(name)?))
     }
 
     /// `plugins/<name>`: every revision of one plugin lives under it.
@@ -118,8 +133,25 @@ impl AppDir {
 
     /// `orgs/<organization>/plugins/<plugin>`: the folder on disk a plugin may watch and read and
     /// write with `fs::*` in one organization. It exists only once something needs it.
-    pub fn plugin_files_dir(&self, organization: &str, plugin: &str) -> Result<PathBuf, AppDirError> {
-        Ok(self.org_dir(organization)?.join("plugins").join(component(plugin)?))
+    pub fn plugin_files_dir(
+        &self,
+        organization: &str,
+        plugin: &str,
+    ) -> Result<PathBuf, AppDirError> {
+        Ok(self
+            .org_dir(organization)?
+            .join("plugins")
+            .join(component(plugin)?))
+    }
+
+    /// `orgs/<organization>/cache/mantle`: Mantle heat and related kernel files (not plugin-writable).
+    pub fn org_mantle_dir(&self, organization: &str) -> Result<PathBuf, AppDirError> {
+        Ok(self.org_dir(organization)?.join("cache").join("mantle"))
+    }
+
+    /// `orgs/<organization>/cache/mantle/heat.json`.
+    pub fn org_mantle_heat_path(&self, organization: &str) -> Result<PathBuf, AppDirError> {
+        Ok(self.org_mantle_dir(organization)?.join("heat.json"))
     }
 
     /// Create `orgs/<organization>/` and its `conf/` folder (idempotent).
@@ -129,6 +161,62 @@ impl AppDir {
         tokio::fs::create_dir_all(&conf)
             .await
             .map_err(|source| AppDirError::Io { path: conf, source })?;
+        Ok(directory)
+    }
+
+    /// `users/<user_id>`: profile photo and other files for one account.
+    /// `user_id` is a storage-safe key (letters, digits, `_`, `-`), not a Surreal record string.
+    pub fn user_dir(&self, user_id: &str) -> Result<PathBuf, AppDirError> {
+        Ok(self.root.join(USERS).join(component(user_id)?))
+    }
+
+    /// Create `users/<user_id>/` (idempotent).
+    pub async fn ensure_user(&self, user_id: &str) -> Result<PathBuf, AppDirError> {
+        let directory = self.user_dir(user_id)?;
+        tokio::fs::create_dir_all(&directory)
+            .await
+            .map_err(|source| AppDirError::Io {
+                path: directory.clone(),
+                source,
+            })?;
+        Ok(directory)
+    }
+
+    /// `logs/`: process log files when file logging is enabled.
+    pub fn logs_dir(&self) -> PathBuf {
+        self.root.join(LOGS)
+    }
+
+    /// Create `logs/` (idempotent).
+    pub async fn ensure_logs(&self) -> Result<PathBuf, AppDirError> {
+        let directory = self.logs_dir();
+        tokio::fs::create_dir_all(&directory)
+            .await
+            .map_err(|source| AppDirError::Io {
+                path: directory.clone(),
+                source,
+            })?;
+        Ok(directory)
+    }
+
+    /// `uploads/plugins/<stamp>/`: staged plugin/workspace packages from Desk Apps.
+    pub fn plugin_upload_dir(&self, stamp: &str) -> Result<PathBuf, AppDirError> {
+        Ok(self
+            .root
+            .join(UPLOADS)
+            .join(PLUGINS)
+            .join(component(stamp)?))
+    }
+
+    /// Create `uploads/plugins/<stamp>/` (idempotent).
+    pub async fn ensure_plugin_upload(&self, stamp: &str) -> Result<PathBuf, AppDirError> {
+        let directory = self.plugin_upload_dir(stamp)?;
+        tokio::fs::create_dir_all(&directory)
+            .await
+            .map_err(|source| AppDirError::Io {
+                path: directory.clone(),
+                source,
+            })?;
         Ok(directory)
     }
 }
@@ -151,6 +239,16 @@ fn component(value: &str) -> Result<&str, AppDirError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mantle_heat_path_under_org_cache() -> Result<(), AppDirError> {
+        let app_dir = AppDir::new("/srv/aether");
+        assert_eq!(
+            app_dir.org_mantle_heat_path("acme_2")?,
+            Path::new("/srv/aether/orgs/acme_2/cache/mantle/heat.json")
+        );
+        Ok(())
+    }
 
     #[test]
     fn builds_versioned_plugin_paths() -> Result<(), AppDirError> {
@@ -180,14 +278,15 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let app_dir = AppDir::new(directory.path().join("app"));
         app_dir.ensure().await?;
-        for sub in ["plugins", "views", "conf", "orgs"] {
+        for sub in ["plugins", "workspaces", "views", "conf", "orgs", "users"] {
             assert!(app_dir.root().join(sub).is_dir());
         }
         Ok(())
     }
 
     #[tokio::test]
-    async fn organization_folders_are_created_and_validated() -> Result<(), Box<dyn std::error::Error>> {
+    async fn organization_folders_are_created_and_validated()
+    -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         let app_dir = AppDir::new(directory.path());
         let created = app_dir.ensure_org("acme_2").await?;

@@ -5,12 +5,22 @@
 	import { Empty } from '$lib/components/ui/empty';
 	import AppTile from '$lib/components/apps/AppTile.svelte';
 	import InstallAppsModal from '$lib/components/apps/InstallAppsModal.svelte';
+	import UpgradeAppsModal from '$lib/components/apps/UpgradeAppsModal.svelte';
 	import PluginDetailModal from '$lib/components/apps/PluginDetailModal.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Skeleton } from '$lib/components/ui/skeleton';
 	import { OTHER_CATEGORY, categoryLabel } from '$lib/apps/categories';
-	import { fetchCatalog, type CatalogPlugin } from '$lib/apps/catalogApi';
+	import {
+		fetchCatalog,
+		reloadCatalog,
+		uploadCatalogZip,
+		type CatalogPlugin
+	} from '$lib/apps/catalogApi';
+	import {
+		groupCatalogByName,
+		type CatalogPluginGroup
+	} from '$lib/apps/catalogGroup';
 	import { matchPlugin } from '$lib/apps/matchPlugin';
 	import { currentSystemNavParent } from '$lib/systemStore';
 	import { resolve } from '$app/paths';
@@ -24,8 +34,13 @@
 	/** Category keys currently checked. Empty = show every plugin (Odoo-style default). */
 	let selectedCategories = $state<string[]>([]);
 	let query = $state('');
-	let detail = $state<CatalogPlugin | null>(null);
+	let detailVersions = $state<CatalogPlugin[]>([]);
 	let detailOpen = $state(false);
+	let reloading = $state(false);
+	let uploading = $state(false);
+	let actionMessage = $state<string | null>(null);
+	let actionError = $state<string | null>(null);
+	let zipInput: HTMLInputElement | undefined = $state();
 
 	onMount(() => {
 		currentSystemNavParent.set('apps');
@@ -43,12 +58,69 @@
 		}
 	}
 
+	function summarizeLoad(
+		loaded: { name: string; created: boolean }[],
+		applied: { ok: boolean; plugin: string; organization: string; error: string | null }[] = []
+	): string {
+		const created = loaded.filter((row) => row.created).length;
+		const unchanged = loaded.length - created;
+		const parts: string[] = [];
+		if (created) parts.push(`${created} new revision${created === 1 ? '' : 's'}`);
+		if (unchanged) parts.push(`${unchanged} unchanged`);
+		if (parts.length === 0) return 'No packages loaded.';
+		let text = `Loaded ${loaded.length} package${loaded.length === 1 ? '' : 's'} (${parts.join(', ')}).`;
+		const moved = applied.filter((row) => row.ok).length;
+		if (moved) text += ` Upgraded ${moved} installed module${moved === 1 ? '' : 's'} in your organizations.`;
+		const failed = applied.filter((row) => !row.ok);
+		if (failed.length) {
+			text += ` Could not upgrade ${failed
+				.map((row) => `${row.plugin} in ${row.organization}: ${row.error}`)
+				.join('; ')}.`;
+		}
+		return text;
+	}
+
+	async function onReload() {
+		reloading = true;
+		actionMessage = null;
+		actionError = null;
+		try {
+			const result = await reloadCatalog();
+			actionMessage = summarizeLoad(result.loaded, result.applied);
+			await load();
+		} catch (error) {
+			actionError = error instanceof Error ? error.message : 'Could not reload the catalog';
+		} finally {
+			reloading = false;
+		}
+	}
+
+	async function onZipChosen(event: Event) {
+		const input = event.currentTarget as HTMLInputElement;
+		const file = input.files?.[0];
+		input.value = '';
+		if (!file) return;
+		uploading = true;
+		actionMessage = null;
+		actionError = null;
+		try {
+			const result = await uploadCatalogZip(file);
+			actionMessage = summarizeLoad(result.loaded, result.applied);
+			await load();
+		} catch (error) {
+			actionError = error instanceof Error ? error.message : 'Could not upload the zip';
+		} finally {
+			uploading = false;
+		}
+	}
+
 	const plugins = $derived(catalog ?? []);
+	const groups = $derived(groupCatalogByName(plugins));
 
 	const categories = $derived.by(() => {
 		const counts = new Map<string, number>();
-		for (const plugin of plugins) {
-			const key = categoryLabel(plugin.category);
+		for (const group of groups) {
+			const key = categoryLabel(group.latest.category);
 			counts.set(key, (counts.get(key) ?? 0) + 1);
 		}
 		return [...counts.entries()]
@@ -63,9 +135,9 @@
 	const visible = $derived.by(() => {
 		const chosen =
 			selectedCategories.length === 0 ? null : new Set(selectedCategories);
-		return plugins.filter((plugin) => {
-			if (chosen && !chosen.has(categoryLabel(plugin.category))) return false;
-			return matchPlugin(plugin, query);
+		return groups.filter((group) => {
+			if (chosen && !chosen.has(categoryLabel(group.latest.category))) return false;
+			return group.versions.some((plugin) => matchPlugin(plugin, query));
 		});
 	});
 
@@ -75,7 +147,11 @@
 			: [...selectedCategories, label];
 	}
 
-	function tile(plugin: CatalogPlugin): AppTileData {
+	function tile(group: CatalogPluginGroup): AppTileData {
+		const plugin = group.latest;
+		const desc = plugin.description?.trim() ?? '';
+		const versionNote =
+			group.versions.length > 1 ? `${group.versions.length} versions` : '';
 		return {
 			plugin: plugin.name,
 			category: plugin.category,
@@ -83,14 +159,20 @@
 			icon: plugin.icon,
 			logo_url: plugin.logo_url,
 			route: '',
-			description: plugin.description
+			description: desc
+				? versionNote
+					? `${desc} · ${versionNote}`
+					: desc
+				: versionNote || null
 		};
 	}
 
-	function openDetail(plugin: CatalogPlugin) {
-		detail = plugin;
+	function openDetail(group: CatalogPluginGroup) {
+		detailVersions = group.versions;
 		detailOpen = true;
 	}
+
+	let upgrading = $state(false);
 
 	function startInstall(plugin?: CatalogPlugin) {
 		installSeed = plugin ? [`${plugin.name}@${plugin.version}`] : [];
@@ -143,8 +225,38 @@
 						: `${selectedCategories.length} workspaces`}
 				</Button>
 			{/if}
+			<input
+				bind:this={zipInput}
+				type="file"
+				accept=".zip,application/zip"
+				class="sr-only"
+				onchange={onZipChosen}
+			/>
+			<Button
+				size="sm"
+				variant="outline"
+				disabled={reloading || uploading}
+				onclick={() => void onReload()}
+			>
+				{reloading ? 'Reloading…' : 'Reload from disk'}
+			</Button>
+			<Button
+				size="sm"
+				variant="outline"
+				disabled={reloading || uploading}
+				onclick={() => zipInput?.click()}
+			>
+				{uploading ? 'Uploading…' : 'Upload zip'}
+			</Button>
+			<Button size="sm" variant="outline" onclick={() => (upgrading = true)}>Upgrade modules</Button>
 			<Button size="sm" onclick={() => startInstall()}>Install into org</Button>
 		</div>
+		{#if actionMessage}
+			<p class="basis-full text-sm text-muted-foreground" role="status">{actionMessage}</p>
+		{/if}
+		{#if actionError}
+			<p class="basis-full text-sm text-destructive" role="alert">{actionError}</p>
+		{/if}
 	</header>
 
 	<div class="flex min-h-0 flex-1">
@@ -181,7 +293,7 @@
 						</label>
 						<button
 							type="button"
-							class="mr-1 shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium text-primary opacity-0 hover:bg-primary/10 group-hover:opacity-100 focus-visible:opacity-100"
+							class="mr-1 shrink-0 rounded px-1.5 py-0.5 text-xs font-medium text-primary opacity-0 hover:bg-primary/10 group-hover:opacity-100 focus-visible:opacity-100"
 							title={`Install all ${category.label} plugins`}
 							onclick={() => startInstallWorkspaces([category.label])}
 						>
@@ -219,18 +331,18 @@
 			</div>
 
 			{#if catalog === null}
-				<div class="grid grid-cols-[repeat(auto-fill,minmax(8.5rem,1fr))] gap-3">
+				<div class="grid grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] gap-4">
 					{#each Array(12) as _, i (i)}
-						<Skeleton class="h-36 w-full" />
+						<Skeleton class="h-44 w-full" />
 					{/each}
 				</div>
 			{:else if loadError}
 				<p class="text-sm text-destructive" role="alert">The catalog could not be loaded.</p>
-			{:else if plugins.length === 0}
+			{:else if groups.length === 0}
 				<Empty
 					icon={PackageOpenIcon}
 					title="No plugins loaded"
-					description="Load plugins with aether --load-plugins, then refresh this page."
+					description="Use Reload from disk (plugin_paths in aether.toml), Upload zip, or aether --load-plugins."
 				/>
 			{:else if visible.length === 0}
 				<p class="text-sm text-muted-foreground">
@@ -253,15 +365,18 @@
 				</p>
 			{:else}
 				<p class="mb-3 text-xs text-muted-foreground">
-					{visible.length} of {plugins.length} plugin{plugins.length === 1 ? '' : 's'}
+					{visible.length} of {groups.length} plugin{groups.length === 1 ? '' : 's'}
+					{#if plugins.length !== groups.length}
+						· {plugins.length} revisions
+					{/if}
 					{#if selectedCategories.length > 0 || query.trim()}
 						· filtered
 					{/if}
 				</p>
-				<ul class="grid grid-cols-[repeat(auto-fill,minmax(8.5rem,1fr))] gap-3">
-					{#each visible as plugin (`${plugin.name}@${plugin.version}`)}
+				<ul class="grid grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] gap-4">
+					{#each visible as group (group.name)}
 						<li>
-							<AppTile app={tile(plugin)} href={null} onclick={() => openDetail(plugin)} />
+							<AppTile app={tile(group)} href={null} onclick={() => openDetail(group)} />
 						</li>
 					{/each}
 				</ul>
@@ -272,9 +387,10 @@
 
 <PluginDetailModal
 	bind:open={detailOpen}
-	plugin={detail}
+	versions={detailVersions}
 	onInstall={(plugin) => startInstall(plugin)}
 />
+<UpgradeAppsModal bind:open={upgrading} />
 <InstallAppsModal
 	bind:open={installing}
 	preselected={installSeed}

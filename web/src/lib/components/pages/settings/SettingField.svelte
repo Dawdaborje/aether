@@ -110,7 +110,7 @@
 		{#if item.long_description}
 			<p class="text-xs text-muted-foreground">{item.long_description}</p>
 		{/if}
-		<p class="font-mono text-[11px] text-muted-foreground/70">{item.key}</p>
+		<p class="font-mono text-xs text-muted-foreground/70">{item.key}</p>
 	</div>
 
 	<form

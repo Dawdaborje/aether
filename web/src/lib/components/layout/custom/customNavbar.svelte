@@ -6,7 +6,15 @@
 	import { authSession } from '$lib/auth/session.svelte';
 	import { builtInNav } from '../nav';
 
-	const nav = $derived(themeStore.theme.nav ?? builtInNav(authSession.isDeveloper));
+	const nav = $derived(
+		themeStore.theme.nav ??
+			builtInNav(
+				authSession.isDeveloper,
+				authSession.canManageUsers,
+				authSession.canManageOrg,
+				authSession.isOrgDeveloper
+			)
+	);
 </script>
 
 <nav

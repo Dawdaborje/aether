@@ -1,5 +1,7 @@
 /** Where to send someone after login, or when the page they asked for does not exist. */
 
+import { themeStore } from '$lib/theme/themeStore.svelte';
+
 /** The slice of the user object that decides where they land. */
 export type LandingUser = { is_developer: boolean };
 
@@ -9,6 +11,31 @@ export type LandingUser = { is_developer: boolean };
  */
 export function landingPath(user: LandingUser | null | undefined): '/desk/organizations' | '/apps' {
 	return user?.is_developer ? '/desk/organizations' : '/apps';
+}
+
+/**
+ * The organization's home page: the theme's `home.route` when it names one, else the
+ * app launcher. `/` itself is never a home: that is the page that sends people here.
+ */
+export function homePath(): string {
+	const route = themeStore.theme.shell?.home?.route;
+	return route && route !== '/' ? route : '/apps';
+}
+
+/**
+ * Send someone to their landing area. Members go to the theme's home page, so the
+ * organization's theme is loaded first (right after login it may still be the
+ * visitor fallback).
+ */
+export async function gotoLanding(user: LandingUser | null | undefined): Promise<void> {
+	if (user?.is_developer) {
+		await goto(resolve('/desk/organizations'));
+		return;
+	}
+	if (themeStore.theme.source !== 'organization') await themeStore.loadFromApi();
+	const home = homePath();
+	if (home === '/apps') await goto(resolve('/apps'));
+	else await gotoPluginPage(home.slice(1));
 }
 
 /**

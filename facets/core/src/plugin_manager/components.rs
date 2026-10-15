@@ -16,7 +16,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use surrealdb::types::SurrealValue;
 use thiserror::Error;
@@ -47,7 +47,9 @@ pub enum ComponentError {
     #[error("{0}: <component> needs a `name` attribute")]
     MissingName(PathBuf),
 
-    #[error("{path}: invalid component name `{name}`: use lowercase letters, digits and `_`, starting with a letter")]
+    #[error(
+        "{path}: invalid component name `{name}`: use lowercase letters, digits and `_`, starting with a letter"
+    )]
     InvalidName { path: PathBuf, name: String },
 
     #[error("component `{name}` is declared by both {first} and {second}")]
@@ -82,7 +84,9 @@ pub struct ComponentDocument {
 pub fn is_component_name(value: &str) -> bool {
     let mut characters = value.chars();
     value.len() <= 32
-        && characters.next().is_some_and(|first| first.is_ascii_lowercase())
+        && characters
+            .next()
+            .is_some_and(|first| first.is_ascii_lowercase())
         && characters.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
@@ -114,7 +118,9 @@ pub fn parse_component(xml: &str, source: &Path) -> Result<ComponentDocument, Co
 
 /// Find and parse every `*.xml` under `<package_dir>/components`, rejecting
 /// duplicate names. Returns nothing when the folder does not exist.
-pub async fn discover_components(package_dir: &Path) -> Result<Vec<ComponentDocument>, ComponentError> {
+pub async fn discover_components(
+    package_dir: &Path,
+) -> Result<Vec<ComponentDocument>, ComponentError> {
     let components_dir = package_dir.join(COMPONENTS_DIR);
     let mut files = Vec::new();
     let mut pending = vec![components_dir.clone()];
@@ -133,15 +139,22 @@ pub async fn discover_components(package_dir: &Path) -> Result<Vec<ComponentDocu
                 });
             }
         };
-        while let Some(entry) = entries.next_entry().await.map_err(|source| ComponentError::Io {
-            path: directory.clone(),
-            source,
-        })? {
-            let path = entry.path();
-            let file_type = entry.file_type().await.map_err(|source| ComponentError::Io {
-                path: path.clone(),
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|source| ComponentError::Io {
+                path: directory.clone(),
                 source,
-            })?;
+            })?
+        {
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .await
+                .map_err(|source| ComponentError::Io {
+                    path: path.clone(),
+                    source,
+                })?;
             if file_type.is_symlink() {
                 return Err(ComponentError::Symlink(path));
             }
@@ -156,7 +169,10 @@ pub async fn discover_components(package_dir: &Path) -> Result<Vec<ComponentDocu
 
     let mut components: Vec<ComponentDocument> = Vec::with_capacity(files.len());
     for file in files {
-        let relative = file.strip_prefix(package_dir).unwrap_or(&file).to_path_buf();
+        let relative = file
+            .strip_prefix(package_dir)
+            .unwrap_or(&file)
+            .to_path_buf();
         let xml = tokio::fs::read_to_string(&file)
             .await
             .map_err(|source| ComponentError::Io {
@@ -453,7 +469,11 @@ fn expand_use(
     Ok(result)
 }
 
-fn fill_slots(body: &Value, default_slot: &[Value], named_slots: &BTreeMap<String, Vec<Value>>) -> Value {
+fn fill_slots(
+    body: &Value,
+    default_slot: &[Value],
+    named_slots: &BTreeMap<String, Vec<Value>>,
+) -> Value {
     match body {
         Value::Array(items) => {
             let mut out = Vec::new();
@@ -507,7 +527,12 @@ fn fill_slot_node(
 fn substitute_props(value: &Value, props: &BTreeMap<String, String>) -> Value {
     match value {
         Value::String(text) => Value::String(replace_props(text, props)),
-        Value::Array(items) => Value::Array(items.iter().map(|item| substitute_props(item, props)).collect()),
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|item| substitute_props(item, props))
+                .collect(),
+        ),
         Value::Object(object) => {
             let mut out = Map::new();
             for (key, child) in object {
@@ -521,7 +546,9 @@ fn substitute_props(value: &Value, props: &BTreeMap<String, String>) -> Value {
 
 fn is_prop_name(value: &str) -> bool {
     let mut characters = value.chars();
-    characters.next().is_some_and(|first| first.is_ascii_lowercase())
+    characters
+        .next()
+        .is_some_and(|first| first.is_ascii_lowercase())
         && characters.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
@@ -560,12 +587,17 @@ pub fn registry_from_documents(
 ) -> ComponentRegistry {
     components
         .iter()
-        .map(|component| (format!("{plugin}.{}", component.name), component.tree.clone()))
+        .map(|component| {
+            (
+                format!("{plugin}.{}", component.name),
+                component.tree.clone(),
+            )
+        })
         .collect()
 }
 
 /// One catalogued component row used to build a serve-time registry.
-#[derive(Debug, Clone, Deserialize, SurrealValue)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 pub struct CatalogComponentRow {
     pub full_name: String,
     pub component_tree: Value,
@@ -698,7 +730,9 @@ mod tests {
 
     #[test]
     fn resolves_qualified_names() -> Result<(), Box<dyn std::error::Error>> {
-        let card = component(r#"<component name="note_card"><field name="t" label="{{title}}" /></component>"#)?;
+        let card = component(
+            r#"<component name="note_card"><field name="t" label="{{title}}" /></component>"#,
+        )?;
         let page = parse_page(
             r#"<page route="/x"><use component="notes.note_card" title="Hi" /></page>"#,
             Path::new("pages/x.xml"),
@@ -793,7 +827,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn discovers_components_and_rejects_duplicates() -> Result<(), Box<dyn std::error::Error>> {
+    async fn discovers_components_and_rejects_duplicates() -> Result<(), Box<dyn std::error::Error>>
+    {
         let root = tempfile::tempdir()?;
         let package = root.path();
         tokio::fs::create_dir_all(package.join("components/cards")).await?;

@@ -138,18 +138,92 @@ struct Stored {
     secret: bool,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct WarmSetting {
+    key: String,
+    value: JsonValue,
+    source: String,
+    org: Option<String>,
+    secret: bool,
+}
+
+fn warm_org_key(org: Option<&OrgRef>) -> Option<&str> {
+    org.map(|o| o.db_name.as_str())
+}
+
+fn stored_from_warm(warm: WarmSetting) -> Stored {
+    Stored {
+        secret: warm.secret,
+        value: SettingValue {
+            key: warm.key,
+            value: warm.value,
+            source: warm.source,
+            org: warm.org,
+            secret: false,
+            has_value: false,
+        },
+    }
+}
+
+fn warm_from_stored(stored: &Stored) -> WarmSetting {
+    WarmSetting {
+        key: stored.value.key.clone(),
+        value: stored.value.value.clone(),
+        source: stored.value.source.clone(),
+        org: stored.value.org.clone(),
+        secret: stored.secret,
+    }
+}
+
+fn cache_lookup(state: &AppState, key: &str, org: Option<&OrgRef>) -> Option<Stored> {
+    let json = state
+        .cache
+        .warm_get_setting_json(warm_org_key(org), key)
+        .ok()
+        .flatten()?;
+    serde_json::from_value::<WarmSetting>(json)
+        .ok()
+        .map(stored_from_warm)
+}
+
+fn cache_store(state: &AppState, key: &str, org: Option<&OrgRef>, stored: &Stored) {
+    let warm = warm_from_stored(stored);
+    if let Ok(json) = serde_json::to_value(&warm) {
+        let _ = state
+            .cache
+            .warm_set_setting_json(warm_org_key(org), key, &json);
+    }
+}
+
+fn bust_setting_warm(state: &AppState, key: &str, org: Option<&OrgRef>) {
+    let _ = state.cache.warm_invalidate_setting(warm_org_key(org), key);
+}
+
 /// Read a setting key: the organization's own value if it has one, else the global one.
-async fn lookup(state: &AppState, key: &str, org: Option<&OrgRef>) -> Result<Option<Stored>, SettingsError> {
+async fn lookup(
+    state: &AppState,
+    key: &str,
+    org: Option<&OrgRef>,
+) -> Result<Option<Stored>, SettingsError> {
+    if let Some(hit) = cache_lookup(state, key, org) {
+        return Ok(Some(hit));
+    }
+
     let core = state.core().await?;
 
     let mut response = core
-        .query("SELECT s_key, s_value, is_secret FROM gl_settings_items WHERE s_key = $key LIMIT 1;")
+        .query(
+            "SELECT s_key, s_value, is_secret FROM gl_settings_items WHERE s_key = $key LIMIT 1;",
+        )
         .bind(("key", key.to_string()))
         .await?
         .check()?;
     let global_rows: Vec<SettingRow> = response.take(0)?;
     let global = global_rows.into_iter().next();
-    let secret = global.as_ref().and_then(|row| row.is_secret).unwrap_or(false);
+    let secret = global
+        .as_ref()
+        .and_then(|row| row.is_secret)
+        .unwrap_or(false);
 
     if let Some(org) = org {
         match state.org(&org.db_name).await {
@@ -165,7 +239,7 @@ async fn lookup(state: &AppState, key: &str, org: Option<&OrgRef>) -> Result<Opt
                     .check()?;
                 let org_rows: Vec<SettingRow> = org_response.take(0)?;
                 if let Some(row) = org_rows.into_iter().next() {
-                    return Ok(Some(Stored {
+                    let stored = Stored {
                         secret: secret || row.is_secret.unwrap_or(false),
                         value: SettingValue {
                             key: row.s_key,
@@ -175,13 +249,15 @@ async fn lookup(state: &AppState, key: &str, org: Option<&OrgRef>) -> Result<Opt
                             secret: false,
                             has_value: false,
                         },
-                    }));
+                    };
+                    cache_store(state, key, Some(org), &stored);
+                    return Ok(Some(stored));
                 }
             }
         }
     }
 
-    Ok(global.map(|row| Stored {
+    let stored = global.map(|row| Stored {
         secret,
         value: SettingValue {
             key: row.s_key,
@@ -191,7 +267,11 @@ async fn lookup(state: &AppState, key: &str, org: Option<&OrgRef>) -> Result<Opt
             secret: false,
             has_value: false,
         },
-    }))
+    });
+    if let Some(ref stored) = stored {
+        cache_store(state, key, org, stored);
+    }
+    Ok(stored)
 }
 
 fn is_blank(value: &JsonValue) -> bool {
@@ -218,6 +298,28 @@ pub async fn get_setting(
     Ok(lookup(state, key, org).await?.map(masked))
 }
 
+/// A text setting for display: the organization's value when it set a non-blank one, else the
+/// global value when non-blank, else `None`. Unlike [`get_setting`], a blank organization value
+/// means "use the global one" instead of "show nothing".
+pub async fn get_setting_text(
+    state: &AppState,
+    key: &str,
+    org: Option<&OrgRef>,
+) -> Result<Option<String>, SettingsError> {
+    let text_of = |setting: Option<SettingValue>| {
+        setting
+            .and_then(|s| s.value.as_str().map(|t| t.trim().to_string()))
+            .filter(|t| !t.is_empty())
+    };
+    if let Some(found) = text_of(get_setting(state, key, org).await?) {
+        return Ok(Some(found));
+    }
+    if org.is_some() {
+        return Ok(text_of(get_setting(state, key, None).await?));
+    }
+    Ok(None)
+}
+
 /// The value the kernel itself uses, with secrets decrypted. Only for server-side code (bridges,
 /// the scheduler): never return it from an API. A blank or missing value is `None`.
 pub async fn get_setting_plain(
@@ -225,13 +327,17 @@ pub async fn get_setting_plain(
     key: &str,
     org: Option<&OrgRef>,
 ) -> Result<Option<JsonValue>, SettingsError> {
-    let Some(stored) = lookup(state, key, org).await? else { return Ok(None) };
+    let Some(stored) = lookup(state, key, org).await? else {
+        return Ok(None);
+    };
     let value = stored.value.value;
     if is_blank(&value) {
         return Ok(None);
     }
     if stored.secret {
-        let Some(text) = value.as_str() else { return Ok(None) };
+        let Some(text) = value.as_str() else {
+            return Ok(None);
+        };
         // A value saved before the setting became secret is still plain text.
         if !SecretBox::is_encrypted(text) {
             return Ok(Some(value));
@@ -266,7 +372,10 @@ pub async fn get_setting_plain_in(
                 .bind(("key", key.to_string()))
                 .await?
                 .check()?;
-            (response.take::<Vec<SettingRow>>(0)?.into_iter().next(), false)
+            (
+                response.take::<Vec<SettingRow>>(0)?.into_iter().next(),
+                false,
+            )
         }
         Scope::Org(org) => {
             let core = state.core().await?;
@@ -275,14 +384,20 @@ pub async fn get_setting_plain_in(
                 .bind(("key", key.to_string()))
                 .await?
                 .check()?;
-            let global_secret = meta.take::<Option<Option<bool>>>(0)?.flatten().unwrap_or(false);
+            let global_secret = meta
+                .take::<Option<Option<bool>>>(0)?
+                .flatten()
+                .unwrap_or(false);
             let org_db = state.org(&org.db_name).await?;
             let mut response = org_db
                 .query("SELECT s_key, s_value, is_secret FROM settings_items WHERE s_key = $key LIMIT 1;")
                 .bind(("key", key.to_string()))
                 .await?
                 .check()?;
-            (response.take::<Vec<SettingRow>>(0)?.into_iter().next(), global_secret)
+            (
+                response.take::<Vec<SettingRow>>(0)?.into_iter().next(),
+                global_secret,
+            )
         }
     };
     let Some(row) = row else { return Ok(None) };
@@ -318,9 +433,27 @@ pub async fn list_catalog(
     org: Option<&OrgRef>,
 ) -> Result<Vec<CatalogGroup>, SettingsError> {
     let core = state.core().await?;
+    let enabled_bridges = super::bridge_settings::enabled_bridge_keys(&core).await?;
+
+    let catalog_key = crate::cache::Cache::warm_settings_catalog_key();
+    if let Some(org) = org {
+        if let Ok(Some(value)) = state.cache.kernel_org_get(&org.db_name, catalog_key)
+            && let Ok(mut catalog) = serde_json::from_slice::<Vec<CatalogGroup>>(value.as_slice())
+        {
+            super::bridge_settings::retain_enabled_bridge_settings(&mut catalog, &enabled_bridges);
+            return Ok(catalog);
+        }
+    } else if let Ok(Some(value)) = state.cache.kernel_get(catalog_key)
+        && let Ok(mut catalog) = serde_json::from_slice::<Vec<CatalogGroup>>(value.as_slice())
+    {
+        super::bridge_settings::retain_enabled_bridge_settings(&mut catalog, &enabled_bridges);
+        return Ok(catalog);
+    }
 
     let mut groups_resp = core
-        .query("SELECT id, label, color, icon, icon_type FROM gl_settings_groups ORDER BY label ASC;")
+        .query(
+            "SELECT id, label, color, icon, icon_type FROM gl_settings_groups ORDER BY label ASC;",
+        )
         .await?
         .check()?;
     let groups: Vec<GroupRow> = groups_resp.take(0)?;
@@ -347,7 +480,9 @@ pub async fn list_catalog(
         std::collections::HashMap::new();
     if let Some(org) = org
         && let Ok(org_db) = state.org(&org.db_name).await
-        && let Ok(resp) = org_db.query("SELECT s_key, s_value FROM settings_items;").await
+        && let Ok(resp) = org_db
+            .query("SELECT s_key, s_value FROM settings_items;")
+            .await
         && let Ok(mut checked) = resp.check()
         && let Ok(rows) = checked.take::<Vec<SettingRow>>(0)
     {
@@ -366,7 +501,10 @@ pub async fn list_catalog(
             .collect();
 
         let mut catalog_items = Vec::new();
-        for item in items.iter().filter(|i| item_ids.iter().any(|id| id == &i.id)) {
+        for item in items
+            .iter()
+            .filter(|i| item_ids.iter().any(|id| id == &i.id))
+        {
             let (value, source) = if let Some(v) = org_overrides.get(&item.s_key) {
                 (v.clone(), "org".to_string())
             } else {
@@ -395,6 +533,10 @@ pub async fn list_catalog(
 
         catalog_items.sort_by(|a, b| a.label.cmp(&b.label));
 
+        if catalog_items.is_empty() {
+            continue;
+        }
+
         catalog.push(CatalogGroup {
             id: format!("{:?}", group.id),
             slug: slugify(&group.label),
@@ -404,6 +546,19 @@ pub async fn list_catalog(
             icon_type: group.icon_type,
             items: catalog_items,
         });
+    }
+
+    super::bridge_settings::retain_enabled_bridge_settings(&mut catalog, &enabled_bridges);
+
+    if let Ok(bytes) = serde_json::to_vec(&catalog) {
+        let ttl = Some(std::time::Duration::from_secs(3600));
+        if let Some(org) = org {
+            let _ = state
+                .cache
+                .kernel_org_set(&org.db_name, catalog_key, bytes, ttl);
+        } else {
+            let _ = state.cache.kernel_set(catalog_key, bytes, ttl);
+        }
     }
 
     Ok(catalog)
@@ -441,13 +596,27 @@ pub async fn set_setting(
     let secret = meta.is_secret.unwrap_or(false);
 
     let stored = if secret {
-        let text = value
-            .as_str()
-            .ok_or_else(|| SettingsError::Invalid(format!("`{key}` is a secret and must be text")))?;
+        let text = value.as_str().ok_or_else(|| {
+            SettingsError::Invalid(format!("`{key}` is a secret and must be text"))
+        })?;
         if text.is_empty() {
             JsonValue::String(String::new())
         } else {
             JsonValue::String(state.secrets()?.encrypt(text))
+        }
+    } else if key == crate::member_mail::DOMAIN_KEY {
+        // Kept as the origin links will use, so what is saved is what emails contain.
+        match value.as_str().map(str::trim) {
+            None | Some("") => JsonValue::String(String::new()),
+            Some(text) => JsonValue::String(
+                crate::member_mail::origin_from_domain(text).ok_or_else(|| {
+                    SettingsError::Invalid(
+                        "Enter the domain as a host name such as app.example.com, or as an address \
+                         such as https://app.example.com."
+                            .into(),
+                    )
+                })?,
+            ),
         }
     } else {
         value
@@ -461,13 +630,16 @@ pub async fn set_setting(
                 .bind(("key", key.to_string()))
                 .await?
                 .check()?;
+            bust_setting_warm(state, key, Some(org));
             return lookup(state, key, Some(org))
                 .await?
                 .map(masked)
                 .ok_or_else(|| SettingsError::NotFound(key.into()));
         }
         let mut existing = org_db
-            .query("SELECT s_key, s_value, is_secret FROM settings_items WHERE s_key = $key LIMIT 1;")
+            .query(
+                "SELECT s_key, s_value, is_secret FROM settings_items WHERE s_key = $key LIMIT 1;",
+            )
             .bind(("key", key.to_string()))
             .await?
             .check()?;
@@ -503,6 +675,7 @@ pub async fn set_setting(
                 .check()?;
         }
 
+        bust_setting_warm(state, key, Some(org));
         return Ok(masked(Stored {
             secret,
             value: SettingValue {
@@ -527,6 +700,7 @@ pub async fn set_setting(
         return Err(SettingsError::NotFound(key.into()));
     }
 
+    bust_setting_warm(state, key, None);
     Ok(masked(Stored {
         secret,
         value: SettingValue {

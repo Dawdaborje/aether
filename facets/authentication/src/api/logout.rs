@@ -1,5 +1,5 @@
+use aether_core::session_cache::revoke_and_bust;
 use aether_core::state::AppState;
-use aether_orm::revoke_session_by_token;
 use axum::{Json, extract::State, http::StatusCode};
 use axum_extra::extract::CookieJar;
 use serde_json::{Value as JsonValue, json};
@@ -13,7 +13,7 @@ pub async fn logout(
 ) -> Result<(CookieJar, Json<JsonValue>), (StatusCode, Json<JsonValue>)> {
     if let Some(token) = read_session_token(&jar) {
         if let Ok(core) = state.core().await {
-            let _ = revoke_session_by_token(&core, &token).await;
+            let _ = revoke_and_bust(&state.cache, &core, &token).await;
         }
     }
     let secure = cookies_secure(&state);

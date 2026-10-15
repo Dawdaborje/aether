@@ -28,6 +28,15 @@ args = [
   { name = "force", type = "bool" },
   { name = "source", required = true },
 ]
+
+# Master data (like Odoo `data` / Frappe fixtures): the kernel runs these with
+# empty args after install / upgrade into an organization. Keep them idempotent.
+[[command]]
+name = "seed"
+function = "seed_currencies"
+help = "Create the currencies in common use"
+on_install = true
+on_upgrade = true
 ```
 
 A command is an ordinary plugin function, in WebAssembly or Rhai. It gets its arguments as a JSON
@@ -67,6 +76,38 @@ free-form `--json` and no `--arg`.
 
 The result is printed as JSON and the exit status is 0. If the function fails, its message goes to
 standard error and the exit status is 1, so commands work in shell scripts and cron.
+
+## Master data on install / upgrade
+
+Set `on_install = true` and/or `on_upgrade = true` on a command that takes no required
+arguments. After `--install-plugin` / Desk install (or `--upgrade-plugin`), the kernel runs
+those commands for each newly installed or upgraded plugin, in dependency order, as
+`system:install` / `system:cli:…`. Prefer idempotent seeds (create-if-missing), as in Odoo
+`data` files and Frappe fixtures. You can still run the same command by hand with
+`aether --command <plugin>.seed --org <org>`.
+
+## Demo data (Desk)
+
+Set `demo_model` to a model name so Desk → Developer tools → Demo data can offer that
+model under the plugin. Desk passes `count` (a positive integer); the plugin decides what
+to create. Do **not** combine `demo_model` with `on_install` / `on_upgrade` — demo data is
+optional and not master-data seed.
+
+```toml
+[[command]]
+name = "demo_currency"
+function = "generate_demo_currency"
+help = "Generate demo currency rows"
+demo_model = "currency"
+args = [{ name = "count", type = "int", default = 10 }]
+```
+
+```sh
+aether --command currency.demo_currency --org acme --arg count=25
+```
+
+Only models with a `demo_model` command appear in Desk. The plugin must be installed in
+the chosen organization.
 
 ## What a command can do
 

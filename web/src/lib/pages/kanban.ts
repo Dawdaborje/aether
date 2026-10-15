@@ -73,9 +73,9 @@ export function parseColors(raw: unknown): Record<string, string> {
 export function progressColorClass(token: string): string {
 	const t = token.toLowerCase();
 	if (t === 'danger' || t === 'red') return 'bg-destructive';
-	if (t === 'success' || t === 'green') return 'bg-emerald-500';
-	if (t === 'warning' || t === 'orange') return 'bg-amber-500';
-	if (t === 'info' || t === 'blue') return 'bg-sky-500';
+	if (t === 'success' || t === 'green') return 'bg-success';
+	if (t === 'warning' || t === 'orange') return 'bg-warning';
+	if (t === 'info' || t === 'blue') return 'bg-info';
 	if (t === 'primary') return 'bg-primary';
 	if (/^\d+$/.test(t)) return 'bg-muted-foreground/40';
 	return 'bg-muted-foreground/50';

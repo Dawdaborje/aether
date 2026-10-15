@@ -4,17 +4,21 @@ export type FieldType =
 	| 'text'
 	| 'integer'
 	| 'float'
+	| 'decimal'
 	| 'boolean'
 	| 'date'
 	| 'datetime'
 	| 'selection'
 	| 'many2one'
+	| 'link'
 	| 'many2many'
 	| 'badge'
 	| 'avatar'
 	| 'currency'
 	| 'binary'
 	| 'image'
+	| 'file'
+	| 'json'
 	| 'progress';
 
 export type ViewType = 'list' | 'form' | 'kanban' | 'dashboard' | 'calendar' | 'tree' | 'pivot';

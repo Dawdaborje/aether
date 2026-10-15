@@ -2,6 +2,8 @@ import { invalidateAll } from '$app/navigation';
 import { apiFetch } from '$lib/api/client';
 import { authSession } from '$lib/auth/session.svelte';
 import { themeStore } from '$lib/theme';
+import { companyStore } from '$lib/company/companyStore.svelte';
+import { clearUiPrefsCache } from '$lib/ui/prefs';
 import { getHeaderOrg, setHeaderOrg } from './selection';
 
 export interface OrgChoice {
@@ -13,6 +15,8 @@ export interface OrgChoice {
 	 * belong to; those are `false`.
 	 */
 	member: boolean;
+	/** Uploaded logo URL when present; the UI shows a default mark otherwise. */
+	logo_url?: string | null;
 }
 
 /**
@@ -113,7 +117,10 @@ class OrgStore {
 				throw new Error(body.error ?? `Could not leave the organization (${res.status})`);
 			}
 			if (this.mode === 'header') setHeaderOrg(null);
+			companyStore.reset();
+			clearUiPrefsCache();
 			await this.load();
+			await authSession.load();
 			await themeStore.loadFromApi('');
 			await invalidateAll();
 		} catch (err) {
@@ -139,9 +146,13 @@ class OrgStore {
 			}
 			// In header mode the browser names the organization on every request.
 			if (this.mode === 'header') setHeaderOrg(dbName);
+			companyStore.reset();
+			clearUiPrefsCache();
 			await this.load();
+			await authSession.load();
 			this.modalOpen = false;
 			await themeStore.loadFromApi('');
+			await companyStore.load();
 			await invalidateAll();
 		} catch (err) {
 			this.error = err instanceof Error ? err.message : 'Could not switch organization';

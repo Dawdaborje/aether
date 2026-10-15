@@ -103,7 +103,9 @@ pub fn compile_xml(xml: &str, source: &Path) -> Result<Node, XmlError> {
             parent.children.push(node);
             Ok(())
         } else if root.replace(node).is_some() {
-            Err(xml_error("the file must have exactly one root element".into()))
+            Err(xml_error(
+                "the file must have exactly one root element".into(),
+            ))
         } else {
             Ok(())
         }
@@ -137,7 +139,9 @@ pub fn compile_xml(xml: &str, source: &Path) -> Result<Node, XmlError> {
                 append(&mut stack, &mut root, node)?;
             }
             Ok(Event::Text(text)) => {
-                let text = text.decode().map_err(|error| xml_error(error.to_string()))?;
+                let text = text
+                    .decode()
+                    .map_err(|error| xml_error(error.to_string()))?;
                 if let Some(node) = stack.last_mut()
                     && !text.trim().is_empty()
                 {
@@ -147,7 +151,9 @@ pub fn compile_xml(xml: &str, source: &Path) -> Result<Node, XmlError> {
                 }
             }
             Ok(Event::CData(text)) => {
-                let text = text.decode().map_err(|error| xml_error(error.to_string()))?;
+                let text = text
+                    .decode()
+                    .map_err(|error| xml_error(error.to_string()))?;
                 if let Some(node) = stack.last_mut() {
                     node.text
                         .get_or_insert_with(String::new)

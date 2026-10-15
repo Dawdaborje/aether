@@ -55,10 +55,19 @@ fn database_failure(context: &str, error: impl std::fmt::Display) -> Response {
 /// Who is asking, from the request's identity.
 fn viewer_of(identity: &Identity) -> Viewer {
     match &identity.actor {
-        Actor::User(id) => Viewer { actor: Some(id.clone()), member: true },
-        Actor::Visitor(id) => Viewer { actor: Some(id.clone()), member: false },
+        Actor::User(id) => Viewer {
+            actor: Some(id.clone()),
+            member: true,
+        },
+        Actor::Visitor(id) => Viewer {
+            actor: Some(id.clone()),
+            member: false,
+        },
         // The kernel's own jobs never hold a stream open; treat one like a stranger if it did.
-        Actor::Anonymous | Actor::System(_) => Viewer { actor: None, member: false },
+        Actor::Anonymous | Actor::System(_) => Viewer {
+            actor: None,
+            member: false,
+        },
     }
 }
 
@@ -69,13 +78,15 @@ async fn who(
     uri: &Uri,
 ) -> Result<Identity, Response> {
     let peer_ip = peer.map(|Extension(ConnectInfo(address))| address.ip());
-    identify(state, headers, peer_ip, uri).await.map_err(|error: IdentityError| {
-        if matches!(error, IdentityError::Database(_) | IdentityError::Audit(_)) {
-            log::error!("notifications identity: {error}");
-        }
-        let (status, message) = error.http();
-        with_retry_after(failure(status, message))
-    })
+    identify(state, headers, peer_ip, uri)
+        .await
+        .map_err(|error: IdentityError| {
+            if matches!(error, IdentityError::Database(_) | IdentityError::Audit(_)) {
+                log::error!("notifications identity: {error}");
+            }
+            let (status, message) = error.http();
+            with_retry_after(failure(status, message))
+        })
 }
 
 // --- the stream ---------------------------------------------------------------------
@@ -121,7 +132,10 @@ async fn next_event(mut state: StreamState) -> Option<(Result<Event, Infallible>
         };
         match message {
             Ok(HubMessage::Notification(notification)) => {
-                let seen = state.last_sent.as_ref().is_some_and(|last| *last >= notification.id);
+                let seen = state
+                    .last_sent
+                    .as_ref()
+                    .is_some_and(|last| *last >= notification.id);
                 if seen || !notification.audience.includes(&state.viewer) {
                     continue;
                 }
@@ -171,9 +185,17 @@ async fn stream_notifications(
 
     // Slots are counted per person, or per address for a browser with no identity.
     let key = viewer.actor.clone().unwrap_or_else(|| {
-        format!("ip:{}", identity.client_ip.map_or_else(|| "unknown".to_string(), |ip| ip.to_string()))
+        format!(
+            "ip:{}",
+            identity
+                .client_ip
+                .map_or_else(|| "unknown".to_string(), |ip| ip.to_string())
+        )
     });
-    let Some(guard) = state.notifications.open_stream(&key, config.max_streams_per_actor) else {
+    let Some(guard) = state
+        .notifications
+        .open_stream(&key, config.max_streams_per_actor)
+    else {
         return failure(StatusCode::TOO_MANY_REQUESTS, "too many open event streams");
     };
 
@@ -220,11 +242,7 @@ async fn stream_notifications(
             .text("keep-alive"),
     );
     // Tell reverse proxies not to buffer the stream.
-    (
-        [("x-accel-buffering", HeaderValue::from_static("no"))],
-        sse,
-    )
-        .into_response()
+    ([("x-accel-buffering", HeaderValue::from_static("no"))], sse).into_response()
 }
 
 // --- listing and reading ------------------------------------------------------------
@@ -304,8 +322,7 @@ mod tests {
 
     use super::*;
     use crate::notifications::{
-        Audience, HubMessage, Level, NotificationHub, UiEvent,
-        hub::NotificationHub as Hub,
+        Audience, HubMessage, Level, NotificationHub, UiEvent, hub::NotificationHub as Hub,
     };
 
     fn stored(id: &str, audience: Audience) -> Notification {
@@ -323,7 +340,12 @@ mod tests {
         }
     }
 
-    fn state_for(hub: &Hub, viewer: Viewer, backlog: Vec<Notification>, lifetime: Duration) -> StreamState {
+    fn state_for(
+        hub: &Hub,
+        viewer: Viewer,
+        backlog: Vec<Notification>,
+        lifetime: Duration,
+    ) -> StreamState {
         let Some(guard) = hub.open_stream("test", 5) else {
             panic!("the test stream slot is free");
         };
@@ -339,11 +361,19 @@ mod tests {
     }
 
     fn member() -> Viewer {
-        Viewer { actor: Some("users:a".into()), member: true }
+        Viewer {
+            actor: Some("users:a".into()),
+            member: true,
+        }
     }
 
     async fn text(state: StreamState) -> Option<(String, StreamState)> {
-        next_event(state).await.map(|(event, state)| (format!("{:?}", event.unwrap_or_else(|never| match never {})), state))
+        next_event(state).await.map(|(event, state)| {
+            (
+                format!("{:?}", event.unwrap_or_else(|never| match never {})),
+                state,
+            )
+        })
     }
 
     #[tokio::test]
@@ -353,8 +383,14 @@ mod tests {
         let state = state_for(&hub, member(), missed, Duration::from_secs(60));
 
         // A live message that overlaps the backlog is dropped; a newer one is sent.
-        hub.publish("acme", HubMessage::Notification(Arc::new(stored("02", Audience::Members))));
-        hub.publish("acme", HubMessage::Notification(Arc::new(stored("03", Audience::Members))));
+        hub.publish(
+            "acme",
+            HubMessage::Notification(Arc::new(stored("02", Audience::Members))),
+        );
+        hub.publish(
+            "acme",
+            HubMessage::Notification(Arc::new(stored("03", Audience::Members))),
+        );
 
         let Some((first, state)) = text(state).await else {
             panic!("backlog item");
@@ -369,24 +405,45 @@ mod tests {
     #[tokio::test]
     async fn only_what_is_for_the_viewer_is_sent() {
         let hub = NotificationHub::default();
-        let visitor = Viewer { actor: Some("visitors:v".into()), member: false };
+        let visitor = Viewer {
+            actor: Some("visitors:v".into()),
+            member: false,
+        };
         let state = state_for(&hub, visitor, vec![], Duration::from_secs(60));
 
-        hub.publish("acme", HubMessage::Notification(Arc::new(stored("01", Audience::Members))));
         hub.publish(
             "acme",
-            HubMessage::Event(Arc::new(UiEvent { plugin: "chat".into(), event: "typing".into(), payload: json!({}) })),
+            HubMessage::Notification(Arc::new(stored("01", Audience::Members))),
         );
         hub.publish(
             "acme",
-            HubMessage::Notification(Arc::new(stored("02", Audience::Actors { actors: vec!["visitors:other".into()] }))),
+            HubMessage::Event(Arc::new(UiEvent {
+                plugin: "chat".into(),
+                event: "typing".into(),
+                payload: json!({}),
+            })),
         );
-        hub.publish("acme", HubMessage::Notification(Arc::new(stored("03", Audience::Everyone))));
+        hub.publish(
+            "acme",
+            HubMessage::Notification(Arc::new(stored(
+                "02",
+                Audience::Actors {
+                    actors: vec!["visitors:other".into()],
+                },
+            ))),
+        );
+        hub.publish(
+            "acme",
+            HubMessage::Notification(Arc::new(stored("03", Audience::Everyone))),
+        );
 
         let Some((sent, _)) = text(state).await else {
             panic!("the one for everyone");
         };
-        assert!(sent.contains("title 03"), "members-only items, events and others' items are skipped: {sent}");
+        assert!(
+            sent.contains("title 03"),
+            "members-only items, events and others' items are skipped: {sent}"
+        );
     }
 
     #[tokio::test]
@@ -395,12 +452,19 @@ mod tests {
         let state = state_for(&hub, member(), vec![], Duration::from_secs(60));
         hub.publish(
             "acme",
-            HubMessage::Event(Arc::new(UiEvent { plugin: "chat".into(), event: "typing".into(), payload: json!({"who": "ann"}) })),
+            HubMessage::Event(Arc::new(UiEvent {
+                plugin: "chat".into(),
+                event: "typing".into(),
+                payload: json!({"who": "ann"}),
+            })),
         );
         let Some((sent, _)) = text(state).await else {
             panic!("event");
         };
-        assert!(sent.contains("event: event") || sent.contains("\"event\":\"typing\""), "{sent}");
+        assert!(
+            sent.contains("event: event") || sent.contains("\"event\":\"typing\""),
+            "{sent}"
+        );
     }
 
     #[tokio::test]
@@ -408,7 +472,13 @@ mod tests {
         let hub = NotificationHub::default();
         let state = state_for(&hub, member(), vec![], Duration::from_secs(60));
         for index in 0..400 {
-            hub.publish("acme", HubMessage::Notification(Arc::new(stored(&format!("{index:04}"), Audience::Members))));
+            hub.publish(
+                "acme",
+                HubMessage::Notification(Arc::new(stored(
+                    &format!("{index:04}"),
+                    Audience::Members,
+                ))),
+            );
         }
         let Some((sent, _)) = text(state).await else {
             panic!("resync");
@@ -424,7 +494,10 @@ mod tests {
             panic!("reconnect hint");
         };
         assert!(sent.contains("reconnect"), "{sent}");
-        assert!(next_event(state).await.is_none(), "the stream ends after the hint");
+        assert!(
+            next_event(state).await.is_none(),
+            "the stream ends after the hint"
+        );
     }
 
     #[tokio::test]
@@ -434,6 +507,10 @@ mod tests {
         assert_eq!(hub.open_streams(), 1);
         hub.close_all();
         assert!(next_event(state).await.is_none());
-        assert_eq!(hub.open_streams(), 0, "the slot is released when the stream is dropped");
+        assert_eq!(
+            hub.open_streams(),
+            0,
+            "the slot is released when the stream is dropped"
+        );
     }
 }

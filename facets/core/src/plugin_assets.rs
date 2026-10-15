@@ -23,13 +23,23 @@ use surrealdb::types::SurrealValue;
 
 use crate::app_dir::AppDir;
 use crate::application::settings_api::require_session;
-use crate::plugin_manager::revisions::{self, relative_path, FileEntry, RevisionIndex};
+use crate::plugin_manager::revisions::{self, FileEntry, RevisionIndex, relative_path};
 use crate::state::AppState;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/ui/plugins/{plugin}/logo", get(serve_logo))
         .route("/api/ui/plugins/{plugin}/assets/{*path}", get(serve_asset))
+        .route(
+            "/api/ui/workspaces/{workspace}/logo",
+            get(serve_workspace_logo),
+        )
+}
+
+#[derive(Debug, Deserialize, SurrealValue)]
+struct WorkspaceLogoRow {
+    name: String,
+    logo_file: Option<String>,
 }
 
 #[derive(Debug, Deserialize, SurrealValue)]
@@ -120,14 +130,10 @@ pub fn logo_logical(
 
 /// Public URL for a plugin's logo when the revision ships one.
 pub fn logo_url(plugin: &str, files: &RevisionIndex, icon_path: Option<&str>) -> Option<String> {
-    logo_logical(&files.files, icon_path)
-        .map(|_| format!("/api/ui/plugins/{plugin}/logo"))
+    logo_logical(&files.files, icon_path).map(|_| format!("/api/ui/plugins/{plugin}/logo"))
 }
 
-async fn lookup_plugin(
-    state: &AppState,
-    plugin: &str,
-) -> Result<PluginFilesRow, Response> {
+async fn lookup_plugin(state: &AppState, plugin: &str) -> Result<PluginFilesRow, Response> {
     let core = state.core().await.map_err(|error| {
         log::error!("plugin asset: core db: {error}");
         failure(StatusCode::INTERNAL_SERVER_ERROR, "database error")
@@ -216,7 +222,8 @@ async fn serve_asset(
     let Some(logical) = safe_relative(&path) else {
         return failure(StatusCode::BAD_REQUEST, "invalid asset path");
     };
-    let logical = logical.to_string_lossy().replace('\\', "/");
+    // The route already names the folder: `/assets/brand.svg` is `assets/brand.svg`.
+    let logical = format!("assets/{}", logical.to_string_lossy().replace('\\', "/"));
     let row = match lookup_plugin(&state, &plugin).await {
         Ok(row) => row,
         Err(response) => return response,
@@ -244,4 +251,69 @@ async fn serve_logo(
         return failure(StatusCode::NOT_FOUND, "logo not found");
     };
     serve_file(&state, &row, &logical).await
+}
+
+async fn serve_workspace_logo(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxumPath(workspace): AxumPath<String>,
+) -> Response {
+    if let Err((status, body)) = require_session(&state, &headers).await {
+        return (status, body).into_response();
+    }
+    let core = match state.core().await {
+        Ok(db) => db,
+        Err(error) => {
+            log::error!("workspace logo: core db: {error}");
+            return failure(StatusCode::INTERNAL_SERVER_ERROR, "database error");
+        }
+    };
+    let mut response = match core
+        .query("SELECT name, logo_file FROM plugin_workspaces WHERE name = $name LIMIT 1;")
+        .bind(("name", workspace.clone()))
+        .await
+        .and_then(|response| response.check())
+    {
+        Ok(response) => response,
+        Err(error) => {
+            log::error!("workspace logo: lookup `{workspace}`: {error}");
+            return failure(StatusCode::INTERNAL_SERVER_ERROR, "database error");
+        }
+    };
+    let rows: Vec<WorkspaceLogoRow> = match response.take(0) {
+        Ok(rows) => rows,
+        Err(error) => {
+            log::error!("workspace logo: decode `{workspace}`: {error}");
+            return failure(StatusCode::INTERNAL_SERVER_ERROR, "database error");
+        }
+    };
+    let Some(row) = rows.into_iter().next() else {
+        return failure(StatusCode::NOT_FOUND, "workspace not found");
+    };
+    let layout = AppDir::new(&state.config.app_dir);
+    let Some(path) = crate::plugin_manager::workspaces::staged_logo_path(
+        &layout,
+        &row.name,
+        row.logo_file.as_deref(),
+    )
+    .await
+    else {
+        return failure(StatusCode::NOT_FOUND, "logo not found");
+    };
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return failure(StatusCode::NOT_FOUND, "logo not found");
+        }
+        Err(error) => {
+            log::error!("workspace logo: read {}: {error}", path.display());
+            return failure(StatusCode::INTERNAL_SERVER_ERROR, "could not read asset");
+        }
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content_type(&path))
+        .header(header::CACHE_CONTROL, "public, max-age=3600")
+        .body(Body::from(bytes))
+        .unwrap_or_else(|_| failure(StatusCode::INTERNAL_SERVER_ERROR, "response error"))
 }

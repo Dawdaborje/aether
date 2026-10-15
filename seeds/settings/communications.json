@@ -1,10 +1,10 @@
 {
   "groups": [
     {
-      "id": "comm_email",
-      "label": "Email",
+      "id": "communication",
+      "label": "Communication",
       "color": "blue",
-      "icon": "mail",
+      "icon": "messages-square",
       "icon_type": "lucide",
       "items": [
         {
@@ -13,7 +13,7 @@
           "s_key": "communications.email.provider",
           "s_value": "",
           "description": "Which bridge sends email: smtp or resend. Leave blank to turn email off.",
-          "long_description": "Plugins ask the kernel to send an email and the kernel hands it to this provider. Fill in the provider's own group (SMTP, Resend) below. An organization can pick its own provider and credentials; otherwise it uses the global ones."
+          "long_description": "Plugins ask the kernel to send an email and the kernel hands it to this provider. Fill in the provider's own fields (SMTP, Resend) below. An organization can pick its own provider and credentials; otherwise it uses the global ones."
         },
         {
           "id": "communications_email_from_address",
@@ -29,40 +29,7 @@
           "s_key": "communications.email.from_name",
           "s_value": "",
           "description": "The name shown beside the address."
-        }
-      ]
-    },
-    {
-      "id": "comm_sms",
-      "label": "SMS",
-      "color": "green",
-      "icon": "message-square",
-      "icon_type": "lucide",
-      "items": [
-        {
-          "id": "communications_sms_provider",
-          "label": "SMS provider",
-          "s_key": "communications.sms.provider",
-          "s_value": "",
-          "description": "Which bridge sends text messages: twilio, termii or africas_talking. Leave blank to turn SMS off.",
-          "long_description": "Fill in the provider's own group below. An organization can pick its own provider and credentials; otherwise it uses the global ones."
         },
-        {
-          "id": "communications_sms_sender",
-          "label": "Sender name or number",
-          "s_key": "communications.sms.sender",
-          "s_value": "",
-          "description": "Overrides the provider's own sender, when it allows one per message."
-        }
-      ]
-    },
-    {
-      "id": "bridge_smtp",
-      "label": "SMTP",
-      "color": "gray",
-      "icon": "plug",
-      "icon_type": "lucide",
-      "items": [
         {
           "id": "bridge_smtp_host",
           "label": "SMTP server",
@@ -98,16 +65,7 @@
           "s_key": "bridge.smtp.port",
           "s_value": "",
           "description": "Leave blank to use the usual port for the security setting."
-        }
-      ]
-    },
-    {
-      "id": "bridge_resend",
-      "label": "Resend",
-      "color": "gray",
-      "icon": "plug",
-      "icon_type": "lucide",
-      "items": [
+        },
         {
           "id": "bridge_resend_api_key",
           "label": "Resend API key",
@@ -115,16 +73,22 @@
           "s_value": "",
           "description": "From resend.com; stored encrypted.",
           "secret": true
-        }
-      ]
-    },
-    {
-      "id": "bridge_twilio",
-      "label": "Twilio",
-      "color": "red",
-      "icon": "plug",
-      "icon_type": "lucide",
-      "items": [
+        },
+        {
+          "id": "communications_sms_provider",
+          "label": "SMS provider",
+          "s_key": "communications.sms.provider",
+          "s_value": "",
+          "description": "Which bridge sends text messages: twilio, termii or africas_talking. Leave blank to turn SMS off.",
+          "long_description": "Fill in the provider's own fields below. An organization can pick its own provider and credentials; otherwise it uses the global ones."
+        },
+        {
+          "id": "communications_sms_sender",
+          "label": "Sender name or number",
+          "s_key": "communications.sms.sender",
+          "s_value": "",
+          "description": "Overrides the provider's own sender, when it allows one per message."
+        },
         {
           "id": "bridge_twilio_account_sid",
           "label": "Twilio account SID",
@@ -146,16 +110,7 @@
           "s_key": "bridge.twilio.from",
           "s_value": "",
           "description": "A Twilio number in international form, such as +15551234567."
-        }
-      ]
-    },
-    {
-      "id": "bridge_termii",
-      "label": "Termii",
-      "color": "orange",
-      "icon": "plug",
-      "icon_type": "lucide",
-      "items": [
+        },
         {
           "id": "bridge_termii_api_key",
           "label": "Termii API key",
@@ -184,16 +139,7 @@
           "s_key": "bridge.termii.base_url",
           "s_value": "https://api.ng.termii.com",
           "description": "Termii shows the address for your account in its dashboard."
-        }
-      ]
-    },
-    {
-      "id": "bridge_africas_talking",
-      "label": "Africa's Talking",
-      "color": "orange",
-      "icon": "plug",
-      "icon_type": "lucide",
-      "items": [
+        },
         {
           "id": "bridge_africas_talking_username",
           "label": "Africa's Talking username",

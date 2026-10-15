@@ -118,12 +118,42 @@ async fn organizations_with(state: &AppState, plugin: &str) -> Vec<String> {
     with
 }
 
+/// Show a plugin that did not load in the browsers of the organizations that use it, as a
+/// modal (the web app listens for `aether` / `dev.error`), not only in this terminal.
+async fn announce_failure(state: &AppState, plugin: &str, message: &str) {
+    let mut targets = organizations_with(state, plugin).await;
+    if targets.is_empty() {
+        targets = async {
+            let core = state.core().await?;
+            let mut response = core.query("SELECT VALUE db_name FROM organizations;").await?.check()?;
+            response.take::<Vec<String>>(0)
+        }
+        .await
+        .unwrap_or_default();
+    }
+    for org in targets {
+        state.notifications.publish(
+            &org,
+            aether_core::notifications::HubMessage::Event(std::sync::Arc::new(aether_core::notifications::UiEvent {
+                plugin: "aether".into(),
+                event: "dev.error".into(),
+                payload: serde_json::json!({
+                    "kind": "plugin_load",
+                    "plugin": plugin,
+                    "message": message,
+                }),
+            })),
+        );
+    }
+}
+
 async fn reload(state: &AppState, namespace: &str, app_dir: &Path, name: &str, dir: &Path) {
     let session = state.fresh_session();
     let loaded = match catalog::load_plugin(&session, namespace, &state.core_database, app_dir, dir).await {
         Ok(loaded) => loaded,
         Err(error) => {
             log::error!("--watch: `{name}` was not reloaded, the running version is unchanged: {error}");
+            announce_failure(state, name, &error.to_string()).await;
             return;
         }
     };
@@ -131,12 +161,16 @@ async fn reload(state: &AppState, namespace: &str, app_dir: &Path, name: &str, d
         log::debug!("--watch: `{name}` changed on disk but its content is the same");
         return;
     }
+    aether_core::plugin_manager::surface::invalidate(&state.cache, name, &loaded.version);
     let spec = PluginSpec { name: name.to_string(), version: Some(loaded.version.clone()) };
     let mut moved = Vec::new();
     for org in organizations_with(state, name).await {
         let session = state.fresh_session();
         match catalog::upgrade_plugins(&session, namespace, &state.core_database, &org, std::slice::from_ref(&spec)).await {
-            Ok(_) => moved.push(org),
+            Ok(_) => {
+                aether_core::plugin_manager::installed::invalidate(&state.cache, &org);
+                moved.push(org);
+            }
             Err(error) => log::error!("--watch: `{name}` could not be moved to {} in `{org}`: {error}", loaded.version),
         }
     }

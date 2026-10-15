@@ -21,7 +21,10 @@ impl MissingSetting {
         };
         let state = if self.empty { "is empty" } else { "is not set" };
         match self.flag {
-            Some(flag) => format!("{}: {state}. Set {place} in the config file, or pass {flag}.", self.key),
+            Some(flag) => format!(
+                "{}: {state}. Set {place} in the config file, or pass {flag}.",
+                self.key
+            ),
             None => format!("{}: {state}. Set {place} in the config file.", self.key),
         }
     }
@@ -30,8 +33,10 @@ impl MissingSetting {
 fn describe_missing(file: Option<&str>, missing: &[MissingSetting]) -> String {
     let mut message = match file {
         Some(file) => format!("missing required configuration in {file}:\n"),
-        None => "missing required configuration (no config file was found; looked for ./aether.toml):\n"
-            .to_string(),
+        None => {
+            "missing required configuration (no config file was found; looked for ./aether.toml):\n"
+                .to_string()
+        }
     };
     for setting in missing {
         message.push_str("  - ");
@@ -81,9 +86,21 @@ mod tests {
         let error = ConfigError::MissingSettings {
             file: Some("/etc/aether.toml".into()),
             missing: vec![
-                MissingSetting { key: "database.password", flag: Some("--db-password"), empty: false },
-                MissingSetting { key: "app_dir", flag: Some("--app-dir"), empty: true },
-                MissingSetting { key: "configuration.is_development_mode", flag: None, empty: false },
+                MissingSetting {
+                    key: "database.password",
+                    flag: Some("--db-password"),
+                    empty: false,
+                },
+                MissingSetting {
+                    key: "app_dir",
+                    flag: Some("--app-dir"),
+                    empty: true,
+                },
+                MissingSetting {
+                    key: "configuration.is_development_mode",
+                    flag: None,
+                    empty: false,
+                },
             ],
         };
         let text = error.to_string();
@@ -91,13 +108,21 @@ mod tests {
         assert!(text.contains("database.password: is not set. Set `password` under [database] in the config file, or pass --db-password."));
         assert!(text.contains("app_dir: is empty. Set `app_dir` at the top level in the config file, or pass --app-dir."));
         assert!(text.contains("configuration.is_development_mode: is not set. Set `is_development_mode` under [configuration] in the config file."));
-        assert!(!text.contains("--gen aether_config"), "a file exists, so do not suggest creating one");
-        assert!(text.ends_with("Set `is_development_mode` under [configuration] in the config file."));
+        assert!(
+            !text.contains("--gen aether_config"),
+            "a file exists, so do not suggest creating one"
+        );
+        assert!(
+            text.ends_with("Set `is_development_mode` under [configuration] in the config file.")
+        );
     }
 
     #[test]
     fn explains_when_there_is_no_config_file() {
-        let error = ConfigError::MissingSettings { file: None, missing: vec![] };
+        let error = ConfigError::MissingSettings {
+            file: None,
+            missing: vec![],
+        };
         let text = error.to_string();
         assert!(text.contains("no config file was found"));
         assert!(text.ends_with("--config-file <path>."));

@@ -100,6 +100,7 @@ struct ThemeCopy {
     nav: Option<Value>,
     layout_def: Option<Value>,
     error_pages_def: Option<Value>,
+    shell: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
@@ -129,20 +130,26 @@ pub async fn models_of_version(
     definitions
         .into_iter()
         .map(|definition| {
-            serde_json::from_value(definition).map_err(|error| EditError::Invalid(format!("a stored model is unreadable: {error}")))
+            serde_json::from_value(definition).map_err(|error| {
+                EditError::Invalid(format!("a stored model is unreadable: {error}"))
+            })
         })
         .collect()
 }
 
 /// Merge `changed` into the plugin's models: a model with the same id (or, for a new model,
 /// the same name) is replaced; anything else is added.
-pub fn merge_models(existing: &[ModelDef], changed: &[ModelDef]) -> Result<Vec<ModelDef>, EditError> {
+pub fn merge_models(
+    existing: &[ModelDef],
+    changed: &[ModelDef],
+) -> Result<Vec<ModelDef>, EditError> {
     let mut merged = existing.to_vec();
     for model in changed {
-        let by_id = model
-            .model_id
-            .as_ref()
-            .and_then(|id| merged.iter().position(|other| other.model_id.as_ref() == Some(id)));
+        let by_id = model.model_id.as_ref().and_then(|id| {
+            merged
+                .iter()
+                .position(|other| other.model_id.as_ref() == Some(id))
+        });
         match by_id {
             Some(index) => {
                 // A model's name is used by the plugin's code, pages and grants: not editable here.
@@ -197,7 +204,10 @@ fn content_hash(files: &BTreeMap<String, Vec<u8>>, artifact: Option<&str>) -> St
         hash.update(name.as_bytes());
         hash.update(bytes);
     }
-    hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect()
+    hash.finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// Make a new version of `plugin` whose models are `changed` merged into those of `base_version`
@@ -211,8 +221,12 @@ pub async fn publish_models(
     changed: &[ModelDef],
 ) -> Result<Published, EditError> {
     let query = match base_version {
-        Some(_) => "SELECT version, revision, artifact_path, date_created FROM plugins WHERE name = $name AND version = $version AND is_active = true;",
-        None => "SELECT version, revision, artifact_path, date_created FROM plugins WHERE name = $name AND is_active = true ORDER BY date_created DESC LIMIT 1;",
+        Some(_) => {
+            "SELECT version, revision, artifact_path, date_created FROM plugins WHERE name = $name AND version = $version AND is_active = true;"
+        }
+        None => {
+            "SELECT version, revision, artifact_path, date_created FROM plugins WHERE name = $name AND is_active = true ORDER BY date_created DESC LIMIT 1;"
+        }
     };
     let mut request = db.query(query).bind(("name", plugin.to_string()));
     if let Some(version) = base_version {
@@ -221,19 +235,30 @@ pub async fn publish_models(
     let mut response = request.await?.check()?;
     let bases: Vec<BaseVersion> = response.take(0)?;
     let base = bases.into_iter().next().ok_or_else(|| match base_version {
-        Some(version) => EditError::VersionNotFound { plugin: plugin.to_string(), version: version.to_string() },
+        Some(version) => EditError::VersionNotFound {
+            plugin: plugin.to_string(),
+            version: version.to_string(),
+        },
         None => EditError::PluginNotFound(plugin.to_string()),
     })?;
 
     // The base version's files, wherever their bytes are.
-    let folder = base.revision.clone().unwrap_or_else(|| base.version.clone());
+    let folder = base
+        .revision
+        .clone()
+        .unwrap_or_else(|| base.version.clone());
     let index = revisions::read_index(layout, plugin, &folder)
         .await?
         .ok_or_else(|| EditError::FilesMissing(plugin.to_string()))?;
     let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     for (logical, entry) in &index.files {
-        let path = layout.revision_dir(plugin, &entry.revision).map_err(revisions::RevisionError::from)?.join(logical);
-        let bytes = tokio::fs::read(&path).await.map_err(|source| EditError::Io { path, source })?;
+        let path = layout
+            .revision_dir(plugin, &entry.revision)
+            .map_err(revisions::RevisionError::from)?
+            .join(logical);
+        let bytes = tokio::fs::read(&path)
+            .await
+            .map_err(|source| EditError::Io { path, source })?;
         files.insert(logical.clone(), bytes);
     }
 
@@ -243,14 +268,25 @@ pub async fn publish_models(
     validate_all(&merged)?;
     files.retain(|logical, _| !(logical.starts_with("models/") && logical.ends_with(".json")));
     for model in &merged {
-        let mut text = serde_json::to_string_pretty(model)
-            .map_err(|error| EditError::Invalid(format!("model `{}` cannot be written: {error}", model.name)))?;
+        let mut text = serde_json::to_string_pretty(model).map_err(|error| {
+            EditError::Invalid(format!("model `{}` cannot be written: {error}", model.name))
+        })?;
         text.push('\n');
         files.insert(format!("models/{}.json", model.name), text.into_bytes());
     }
 
-    let list: Vec<(String, Vec<u8>)> = files.iter().map(|(path, bytes)| (path.clone(), bytes.clone())).collect();
-    let stored = revisions::store(layout, plugin, base_version_of(&base.version), Some((folder.as_str(), &index)), &list).await?;
+    let list: Vec<(String, Vec<u8>)> = files
+        .iter()
+        .map(|(path, bytes)| (path.clone(), bytes.clone()))
+        .collect();
+    let stored = revisions::store(
+        layout,
+        plugin,
+        base_version_of(&base.version),
+        Some((folder.as_str(), &index)),
+        &list,
+    )
+    .await?;
     let artifact_name = base
         .artifact_path
         .as_deref()
@@ -280,7 +316,7 @@ pub async fn publish_models(
             "SELECT layout, route, is_pattern, route_shape, title, model, models, is_public, component_tree, source_path \
              FROM plugin_ui_pages WHERE plugin.name = $name AND plugin.version = $version; \
              SELECT name, label, is_system, color_mode, tokens, layout, error_pages, nav, \
-                    layout_def, error_pages_def \
+                    layout_def, error_pages_def, shell \
              FROM plugin_themes WHERE plugin.name = $name AND plugin.version = $version; \
              SELECT name, full_name, component_tree, source_path \
              FROM plugin_components WHERE plugin.name = $name AND plugin.version = $version;",
@@ -311,7 +347,8 @@ pub async fn publish_models(
                 plugin: $plugin, name: $t.name, label: $t.label, is_system: $t.is_system,
                 color_mode: $t.color_mode, tokens: $t.tokens, layout: $t.layout,
                 error_pages: $t.error_pages, nav: $t.nav,
-                layout_def: $t.layout_def, error_pages_def: $t.error_pages_def
+                layout_def: $t.layout_def, error_pages_def: $t.error_pages_def,
+                shell: $t.shell
             };
         };
         FOR $m IN $models {
@@ -396,7 +433,8 @@ mod tests {
         let mut edited = note.clone();
         edited.label = Some("Note!".into());
         let task = model("task");
-        let merged = merge_models(std::slice::from_ref(&note), &[edited.clone(), task.clone()]).unwrap();
+        let merged =
+            merge_models(std::slice::from_ref(&note), &[edited.clone(), task.clone()]).unwrap();
         // Sorted by name: the edited note replaced the old one, and the task was added.
         assert_eq!(merged, vec![edited, task]);
     }
@@ -427,7 +465,11 @@ mod tests {
         }
         expected.update(b"plugin.wasm");
         expected.update(b"wasm");
-        let expected: String = expected.finalize().iter().map(|b| format!("{b:02x}")).collect();
+        let expected: String = expected
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
         assert_eq!(content_hash(&files, Some("plugin.wasm")), expected);
     }
 }

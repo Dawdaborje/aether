@@ -1,8 +1,10 @@
 <script lang="ts">
+	import { resolveField } from '$lib/dsl/resolveFieldType';
 	import { goto } from '$app/navigation';
 	import EllipsisIcon from '@lucide/svelte/icons/ellipsis';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import type { PageNode } from '$lib/dsl/types';
+	import { titlesForRows } from '$lib/records/titles';
 	import PageRenderer from './PageRenderer.svelte';
 	import * as AlertDialog from '$lib/components/ui/alert-dialog';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
@@ -22,13 +24,16 @@
 		parseColors,
 		type KanbanColumn
 	} from '$lib/pages/kanban';
+	import { getPageChrome } from '$lib/pages/pageChrome.svelte';
 	import { getPageState, interpolate, keyOf, rowsOf, text } from '$lib/pages/pageContext.svelte';
 
 	let { node }: { node: PageNode } = $props();
 
 	const page = getPageState();
+	const chrome = getPageChrome();
 
 	const source = $derived(text(node.source));
+	const modelName = $derived(text(node.model) || page?.model || null);
 	const groupBy = $derived(text(node.group_by) ?? text(node.groupBy) ?? '');
 	const openTemplate = $derived(text(node.open));
 	const moveFn = $derived(text(node.move));
@@ -37,9 +42,9 @@
 	const progressNode = $derived((node.children ?? []).find((c) => c.type === 'progressbar'));
 	const cardNode = $derived((node.children ?? []).find((c) => c.type === 'card'));
 	const actions = $derived(
-		((node.children ?? []).find((c) => c.type === 'actions' || c.type === 'menu')?.children ?? []).filter(
-			(action) => text(action.function)
-		)
+		(
+			(node.children ?? []).find((c) => c.type === 'actions' || c.type === 'menu')?.children ?? []
+		).filter((action) => text(action.function))
 	);
 	const empty = $derived((node.children ?? []).find((c) => c.type === 'empty'));
 	const legacyGroups = $derived(
@@ -78,15 +83,54 @@
 	}
 
 	$effect(() => {
+		if (!chrome) return;
+		return chrome.registerRefreshModel(modelName);
+	});
+
+	$effect(() => {
 		void page?.plugin;
 		void page?.tick;
 		void source;
 		void load();
 	});
 
+	// Linked records show by name: the card's link fields, and the field the board groups by.
+	let titles = $state<Record<string, Record<string, string>>>({});
+	const linkFields = $derived.by(() => {
+		const found = new Map<string, string>();
+		const nodes = [...cardBodyFields(cardNode), ...(cardFooter(cardNode)?.children ?? [])];
+		for (const field of nodes) {
+			const resolved = resolveField(field);
+			const name = fieldName(field);
+			if (name && resolved.fieldType === 'link' && resolved.target) found.set(name, resolved.target);
+		}
+		const groupTarget = text(node.groupByTarget);
+		if (groupBy && groupTarget && !found.has(groupBy)) found.set(groupBy, groupTarget);
+		return found;
+	});
+	$effect(() => {
+		const plugin = page?.plugin;
+		const loaded = rows;
+		if (!plugin || !loaded || loaded.length === 0 || linkFields.size === 0) return;
+		let current = true;
+		void titlesForRows(plugin, loaded, linkFields).then((found) => {
+			if (current) titles = { ...titles, ...found };
+		});
+		return () => {
+			current = false;
+		};
+	});
+	/** A link value as its title; any other value unchanged. */
+	function named(field: string, value: unknown): unknown {
+		return typeof value === 'string' ? (titles[field]?.[value] ?? value) : value;
+	}
+
 	const columns = $derived.by((): KanbanColumn[] => {
 		if (!rows || !groupBy) return [];
-		return groupRows(rows, groupBy);
+		return groupRows(rows, groupBy).map((col) => ({
+			...col,
+			label: named(groupBy, col.key) === col.key ? col.label : String(named(groupBy, col.key))
+		}));
 	});
 
 	function filteredColumnRows(col: KanbanColumn): Record<string, unknown>[] {
@@ -108,7 +152,10 @@
 	}
 
 	function fieldKind(field: PageNode): string {
-		return String(field.fieldType ?? (field.type === 'badge' || field.type === 'avatar' ? field.type : ''));
+		if (field.fieldType) return String(field.fieldType);
+		if (field.type === 'badge' || field.type === 'avatar') return String(field.type);
+		// The model says a status is one of a few options: show it as a badge.
+		return resolveField(field).fieldType === 'selection' ? 'badge' : '';
 	}
 
 	function fieldName(field: PageNode): string {
@@ -223,10 +270,6 @@
 	</div>
 {:else}
 	<div class="space-y-3">
-		{#if failure}
-			<p class="text-sm text-destructive" role="alert">{failure}</p>
-		{/if}
-
 		{#if rows === null}
 			<div class="grid gap-4 md:grid-cols-3" aria-busy="true">
 				{#each [1, 2, 3] as i (i)}
@@ -252,16 +295,14 @@
 				Kanban needs a <code class="text-xs">group_by</code> field.
 			</p>
 		{:else}
-			<div
-				class="flex gap-3 overflow-x-auto pb-2"
-				style="min-height: 16rem;"
-			>
+			<div class="flex gap-3 overflow-x-auto pb-2" style="min-height: 16rem;">
 				{#each columns as col (col.key)}
 					{@const prog = progressField
 						? columnProgress(col.rows, progressField, progressColors, sumField)
 						: null}
 					{@const shown = filteredColumnRows(col)}
 					<div
+						data-part="kanban.column"
 						class="flex w-72 shrink-0 flex-col rounded-md border border-border bg-muted/30 {dropTarget ===
 						col.key
 							? 'ring-2 ring-ring'
@@ -287,8 +328,7 @@
 												: ''}"
 											style="width: {(seg.count / prog.total) * 100}%"
 											title="{seg.key}: {seg.count}"
-											onclick={() =>
-												(progressFilter = progressFilter === seg.key ? null : seg.key)}
+											onclick={() => (progressFilter = progressFilter === seg.key ? null : seg.key)}
 										></button>
 									{/each}
 								</div>
@@ -312,7 +352,8 @@
 								<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 								<!-- svelte-ignore a11y_no_static_element_interactions -->
 								<div
-									class="group relative rounded-md border border-border bg-card p-3 shadow-sm transition-shadow hover:shadow-md {openTemplate
+									data-part="kanban.card"
+									class="group relative rounded-md border border-border bg-card p-3 transition-colors hover:border-foreground/20 {openTemplate
 										? 'cursor-pointer'
 										: ''} {draggingId === keyOf(row.id) ? 'opacity-50' : ''}"
 									role="listitem"
@@ -361,7 +402,7 @@
 											{#each body as field, fi (fieldName(field) || fi)}
 												{@const name = fieldName(field)}
 												{@const kind = fieldKind(field)}
-												{@const value = row[name]}
+												{@const value = named(name, row[name])}
 												{#if fi === 0}
 													<p class="text-sm font-medium text-foreground">
 														{formatCell(value, kind)}
@@ -370,7 +411,7 @@
 													<Badge variant="secondary">{formatCell(value, kind)}</Badge>
 												{:else if kind === 'avatar' || field.type === 'avatar'}
 													<span
-														class="inline-flex size-6 items-center justify-center rounded-full bg-muted text-[10px] font-medium text-muted-foreground"
+														class="inline-flex size-6 items-center justify-center rounded-full bg-muted text-xs font-medium text-muted-foreground"
 														title={formatCell(value, '')}
 													>
 														{initialsOf(value)}
@@ -382,7 +423,7 @@
 										</div>
 									{:else}
 										<p class="pr-6 text-sm font-medium text-foreground">
-											{formatCell(row[titleField], '')}
+											{formatCell(named(titleField, row[titleField]), '')}
 										</p>
 									{/if}
 
@@ -393,20 +434,18 @@
 											{#each footer.children ?? [] as field, fi (fieldName(field) || fi)}
 												{@const name = fieldName(field)}
 												{@const kind = fieldKind(field)}
-												{@const value = row[name]}
+												{@const value = named(name, row[name])}
 												{#if kind === 'badge' || field.type === 'badge'}
-													<Badge variant="outline" class="text-[10px]"
-														>{formatCell(value, kind)}</Badge
-													>
+													<Badge variant="outline" class="text-xs">{formatCell(value, kind)}</Badge>
 												{:else if kind === 'avatar' || field.type === 'avatar'}
 													<span
-														class="inline-flex size-6 items-center justify-center rounded-full bg-muted text-[10px] font-medium text-muted-foreground"
+														class="inline-flex size-6 items-center justify-center rounded-full bg-muted text-xs font-medium text-muted-foreground"
 														title={formatCell(value, '')}
 													>
 														{initialsOf(value)}
 													</span>
 												{:else}
-													<span class="text-[11px] text-muted-foreground"
+													<span class="text-xs text-muted-foreground"
 														>{formatCell(value, kind)}</span
 													>
 												{/if}

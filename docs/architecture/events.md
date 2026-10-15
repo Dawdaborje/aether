@@ -67,6 +67,22 @@ the consent to be told what `chat` announces.
 
 The emitting call does not wait for handlers, and a failure to queue one does not undo the emit.
 
+## Kernel `data.changed` (live UI)
+
+After a successful `db::create`, `db::update`, or `db::delete` (including writes inside
+`db::transaction` and nested child-row writes), the kernel publishes a transient SSE event:
+
+- **plugin:** `aether`
+- **event:** `data.changed`
+- **payload:** `{ "model": "<model>", "op": "create"|"update"|"delete", "id": "<record id or null>" }`
+
+This is not an `events::emit` plugin event: it does not require a capability, is not listed in
+`[[events]]`, and does not enqueue plugin listeners. Connected org members receive it on the same
+notification stream as other UI events (see [notifications](notifications.md)). Plugin pages with a
+matching `model` (on `<page>` or any registered view — list, form, kanban, calendar) call
+`PageState.refresh()` so those views reload without a full page reload. Forms skip the reload
+while the user has unsaved edits.
+
 ## No endless loops
 
 Every handler job carries `depth`: 1 for an event emitted by an ordinary request, one more for each

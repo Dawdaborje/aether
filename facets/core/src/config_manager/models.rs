@@ -1,9 +1,9 @@
 use crate::cache::CacheConfig;
+use crate::plugin_manager::models::plugin_def::PluginDefinition;
 use local_storage::LocalStorageConfig;
 use s3_storage::S3StorageConfig;
-use crate::plugin_manager::models::plugin_def::PluginDefinition;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct DatabaseConfig {
@@ -159,7 +159,10 @@ impl std::fmt::Debug for AuditConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AuditConfig")
             .field("ip", &self.ip)
-            .field("ip_hash_key", &self.ip_hash_key.as_ref().map(|_| "<redacted>"))
+            .field(
+                "ip_hash_key",
+                &self.ip_hash_key.as_ref().map(|_| "<redacted>"),
+            )
             .field("retention_days", &self.retention_days)
             .finish()
     }
@@ -180,7 +183,9 @@ impl AuditConfig {
             ));
         }
         if self.retention_days == Some(0) {
-            return Err("audit.retention_days must be at least 1 (omit it to keep rows forever)".into());
+            return Err(
+                "audit.retention_days must be at least 1 (omit it to keep rows forever)".into(),
+            );
         }
         Ok(())
     }
@@ -561,6 +566,119 @@ pub struct AetherConfig {
     pub scheduler: SchedulerConfig,
     #[serde(default)]
     pub i18n: I18nConfig,
+    /// Where process logs go (`stderr` and/or a file under `app_dir`).
+    #[serde(default)]
+    pub logging: LoggingConfig,
+}
+
+/// `[logging]` in `aether.toml`.
+///
+/// By default Aether only writes to stderr. Set `file = true` to also append to
+/// `<app_dir>/logs/aether.log` (or `dir` / `filename`). CLI `--log-file` /
+/// `--log-dir` / `--no-log-file` override this section.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct LoggingConfig {
+    /// Append logs to a file. Default `false` (stderr only).
+    #[serde(default)]
+    pub file: bool,
+    /// Directory for the log file. Relative paths are under `app_dir`. Default `logs`.
+    #[serde(default = "default_log_dir")]
+    pub dir: String,
+    /// File name inside `dir`. Default `aether.log`.
+    #[serde(default = "default_log_filename")]
+    pub filename: String,
+    /// Also write to stderr when file logging is on. Default `true`.
+    #[serde(default = "default_true")]
+    pub stdout: bool,
+}
+
+fn default_log_dir() -> String {
+    "logs".into()
+}
+
+fn default_log_filename() -> String {
+    "aether.log".into()
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            file: false,
+            dir: default_log_dir(),
+            filename: default_log_filename(),
+            stdout: true,
+        }
+    }
+}
+
+impl LoggingConfig {
+    /// Path of the log file when file logging is enabled, else `None`.
+    ///
+    /// `dir` is resolved against `app_dir` when relative. Empty `filename` falls
+    /// back to `aether.log`.
+    pub fn file_path(&self, app_dir: &Path) -> Option<PathBuf> {
+        if !self.file {
+            return None;
+        }
+        let filename = self.filename.trim();
+        let filename = if filename.is_empty() {
+            default_log_filename()
+        } else {
+            filename.to_string()
+        };
+        let dir = self.dir.trim();
+        let dir = if dir.is_empty() {
+            default_log_dir()
+        } else {
+            dir.to_string()
+        };
+        let directory = {
+            let path = PathBuf::from(&dir);
+            if path.is_absolute() {
+                path
+            } else {
+                app_dir.join(path)
+            }
+        };
+        Some(directory.join(filename))
+    }
+}
+
+#[cfg(test)]
+mod logging_tests {
+    use super::*;
+
+    #[test]
+    fn file_path_none_when_disabled() {
+        let logging = LoggingConfig::default();
+        assert!(logging.file_path(Path::new("/srv/aether")).is_none());
+    }
+
+    #[test]
+    fn file_path_under_app_dir() {
+        let logging = LoggingConfig {
+            file: true,
+            ..LoggingConfig::default()
+        };
+        assert_eq!(
+            logging.file_path(Path::new("/srv/aether")).unwrap(),
+            PathBuf::from("/srv/aether/logs/aether.log")
+        );
+    }
+
+    #[test]
+    fn file_path_absolute_dir() {
+        let logging = LoggingConfig {
+            file: true,
+            dir: "/var/log/aether".into(),
+            filename: "kernel.log".into(),
+            stdout: true,
+        };
+        assert_eq!(
+            logging.file_path(Path::new("/srv/aether")).unwrap(),
+            PathBuf::from("/var/log/aether/kernel.log")
+        );
+    }
 }
 
 /// `[i18n]` in `aether.toml`.
@@ -578,7 +696,9 @@ fn default_locale() -> String {
 
 impl Default for I18nConfig {
     fn default() -> Self {
-        Self { default_locale: default_locale() }
+        Self {
+            default_locale: default_locale(),
+        }
     }
 }
 
@@ -662,7 +782,9 @@ impl SchedulerConfig {
         if self.lease_secs < 10 {
             return Err("scheduler.lease_secs must be at least 10".into());
         }
-        self.bind.parse::<std::net::SocketAddr>().map_err(|_| "scheduler.bind must be an address such as 127.0.0.1:7895")?;
+        self.bind
+            .parse::<std::net::SocketAddr>()
+            .map_err(|_| "scheduler.bind must be an address such as 127.0.0.1:7895")?;
         Ok(())
     }
 }
@@ -693,6 +815,7 @@ impl Default for AetherConfig {
             security: SecurityConfig::default(),
             scheduler: SchedulerConfig::default(),
             i18n: I18nConfig::default(),
+            logging: LoggingConfig::default(),
         }
     }
 }
@@ -700,7 +823,11 @@ impl Default for AetherConfig {
 impl AetherConfig {
     /// Build the kernel cache from `[cache]` (defaults to in-process Moka).
     pub fn build_cache(&self) -> Result<crate::cache::Cache, crate::cache::CacheError> {
-        self.cache.clone().unwrap_or_default().build()
+        let mut config = self.cache.clone().unwrap_or_default();
+        if config.app_dir.is_none() {
+            config.app_dir = Some(self.app_dir.clone());
+        }
+        config.build()
     }
 
     pub fn display(&self) {

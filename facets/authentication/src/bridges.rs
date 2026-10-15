@@ -7,16 +7,7 @@ use authentik::AuthentikBridge;
 use keycloak::KeycloakBridge;
 use ldap::LdapBridge;
 use microsoft_extra::MicrosoftBridge;
-use serde::Deserialize;
-use surrealdb::{Surreal, engine::remote::ws::Client, types::SurrealValue};
-
-#[derive(Debug, Deserialize, SurrealValue)]
-struct ProviderRow {
-    name: String,
-    client_id: Option<String>,
-    client_secret_encrypted: Option<String>,
-    enabled: bool,
-}
+use surrealdb::{Surreal, engine::remote::ws::Client};
 
 pub fn default_registry() -> HashMap<&'static str, Arc<dyn AuthBridge>> {
     let mut map: HashMap<&'static str, Arc<dyn AuthBridge>> = HashMap::new();
@@ -30,7 +21,7 @@ pub fn default_registry() -> HashMap<&'static str, Arc<dyn AuthBridge>> {
 
 /// Prefer env-configured Google; else load client_id/secret from auth_providers.
 pub async fn resolve_bridge(
-    db: &Surreal<Client>,
+    _db: &Surreal<Client>,
     registry: &HashMap<&'static str, Arc<dyn AuthBridge>>,
     name: &str,
 ) -> Option<Arc<dyn AuthBridge>> {

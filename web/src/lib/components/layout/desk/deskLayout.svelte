@@ -1,11 +1,11 @@
 <script lang="ts">
-	import { deskNav } from '../nav';
-	import EnterpriseShell from '../shell/EnterpriseShell.svelte';
+	import { deskLayout } from '../composed/builtins';
+	import ComposedLayout from '../composed/ComposedLayout.svelte';
 
 	let { children } = $props();
 </script>
 
-<!-- The developer desk: the same shell as the default layout, with the desk's navigation. -->
-<EnterpriseShell nav={deskNav}>
+<!-- The developer desk: the default layout with the desk's navigation. -->
+<ComposedLayout def={deskLayout}>
 	{@render children()}
-</EnterpriseShell>
+</ComposedLayout>

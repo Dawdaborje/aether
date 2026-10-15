@@ -51,11 +51,22 @@ pub struct WorkerOptions {
 
 /// A name for this process in `scheduler_nodes` and in the `locked_by` of its jobs.
 pub fn new_node_id(kind: NodeKind) -> String {
-    format!("{}-{}-{}", kind.as_str(), std::process::id(), crate::access::audit::new_request_id().chars().take(8).collect::<String>())
+    format!(
+        "{}-{}-{}",
+        kind.as_str(),
+        std::process::id(),
+        crate::access::audit::new_request_id()
+            .chars()
+            .take(8)
+            .collect::<String>()
+    )
 }
 
 async fn org_names(core: &Db) -> Result<Vec<String>, surrealdb::Error> {
-    let mut response = core.query("SELECT VALUE db_name FROM organizations;").await?.check()?;
+    let mut response = core
+        .query("SELECT VALUE db_name FROM organizations;")
+        .await?
+        .check()?;
     response.take(0)
 }
 
@@ -98,7 +109,11 @@ pub async fn run(state: AppState, options: WorkerOptions, mut shutdown: watch::R
         options.node_id,
         options.concurrency,
         options.poll.as_secs(),
-        if options.queues.is_empty() { "all".to_string() } else { options.queues.join(", ") }
+        if options.queues.is_empty() {
+            "all".to_string()
+        } else {
+            options.queues.join(", ")
+        }
     );
 
     // File watches follow the scheduler: they run on the node that runs jobs, and stop when it
@@ -116,10 +131,19 @@ pub async fn run(state: AppState, options: WorkerOptions, mut shutdown: watch::R
         let mut orgs = link.take_hot();
         if sweep {
             last_sweep = Some(Instant::now());
-            if let Err(error) = nodes::announce(&core, &options.node_id, options.kind, options.address.as_deref(), &options.queues).await {
+            if let Err(error) = nodes::announce(
+                &core,
+                &options.node_id,
+                options.kind,
+                options.address.as_deref(),
+                &options.queues,
+            )
+            .await
+            {
                 log::warn!("scheduler heartbeat failed: {error}");
             }
-            let must_stand_down = options.kind == NodeKind::Embedded && nodes::standalone_alive(&core).await.unwrap_or(false);
+            let must_stand_down = options.kind == NodeKind::Embedded
+                && nodes::standalone_alive(&core).await.unwrap_or(false);
             if must_stand_down != standing_down {
                 standing_down = must_stand_down;
                 if standing_down {
@@ -154,7 +178,9 @@ pub async fn run(state: AppState, options: WorkerOptions, mut shutdown: watch::R
             }
         }
 
-        let until_sweep = options.poll.saturating_sub(last_sweep.map_or(Duration::ZERO, |at| at.elapsed()));
+        let until_sweep = options
+            .poll
+            .saturating_sub(last_sweep.map_or(Duration::ZERO, |at| at.elapsed()));
         tokio::select! {
             () = link.wait(until_sweep.max(Duration::from_millis(50))) => {}
             _ = shutdown.changed() => {}
@@ -162,22 +188,37 @@ pub async fn run(state: AppState, options: WorkerOptions, mut shutdown: watch::R
     }
 
     watches.stop_all();
-    log::info!("Scheduler {} stopping; waiting for running jobs", options.node_id);
+    log::info!(
+        "Scheduler {} stopping; waiting for running jobs",
+        options.node_id
+    );
     let drained = tokio::time::timeout(
         Duration::from_secs(DRAIN_SECS),
         semaphore.acquire_many(u32::try_from(options.concurrency).unwrap_or(u32::MAX)),
     )
     .await;
     if drained.is_err() {
-        log::warn!("Some jobs were still running after {DRAIN_SECS}s; they will be run again when their lease ends");
+        log::warn!(
+            "Some jobs were still running after {DRAIN_SECS}s; they will be run again when their lease ends"
+        );
     }
     if let Err(error) = nodes::retire(&core, &options.node_id).await {
         log::warn!("scheduler could not retire its node row: {error}");
     }
 }
 
-async fn process_org(state: &AppState, options: &WorkerOptions, semaphore: &Arc<Semaphore>, org_db: &str, sweep: bool, purge: bool) {
-    let org = OrgRef { slug: org_db.to_string(), db_name: org_db.to_string() };
+async fn process_org(
+    state: &AppState,
+    options: &WorkerOptions,
+    semaphore: &Arc<Semaphore>,
+    org_db: &str,
+    sweep: bool,
+    purge: bool,
+) {
+    let org = OrgRef {
+        slug: org_db.to_string(),
+        db_name: org_db.to_string(),
+    };
     if !bool_setting(state, &org, "scheduler.enabled", true).await {
         return;
     }
@@ -197,7 +238,11 @@ async fn process_org(state: &AppState, options: &WorkerOptions, semaphore: &Arc<
                         "{org_db}: task {}.{} {} (slot {})",
                         task.plugin,
                         task.task,
-                        if task.skipped { "skipped, too late" } else { "queued a job" },
+                        if task.skipped {
+                            "skipped, too late"
+                        } else {
+                            "queued a job"
+                        },
                         task.slot
                     );
                 }
@@ -206,12 +251,18 @@ async fn process_org(state: &AppState, options: &WorkerOptions, semaphore: &Arc<
         }
         match queue::fail_abandoned(&db).await {
             Ok(0) => {}
-            Ok(count) => log::warn!("{org_db}: {count} job(s) lost their worker and are out of attempts; marked failed"),
+            Ok(count) => log::warn!(
+                "{org_db}: {count} job(s) lost their worker and are out of attempts; marked failed"
+            ),
             Err(error) => log::warn!("{org_db}: abandoned jobs could not be checked: {error}"),
         }
         if purge {
-            let ok = number_setting(state, &org, "scheduler.job_retention_days", 7).await.max(1);
-            let bad = number_setting(state, &org, "scheduler.failed_job_retention_days", 30).await.max(1);
+            let ok = number_setting(state, &org, "scheduler.job_retention_days", 7)
+                .await
+                .max(1);
+            let bad = number_setting(state, &org, "scheduler.failed_job_retention_days", 30)
+                .await
+                .max(1);
             match queue::purge(&db, ok, bad).await {
                 Ok(0) => {}
                 Ok(count) => log::info!("{org_db}: deleted {count} old finished job(s)"),
@@ -224,7 +275,15 @@ async fn process_org(state: &AppState, options: &WorkerOptions, semaphore: &Arc<
         if free == 0 {
             break;
         }
-        let jobs = match queue::claim(&db, &options.node_id, &options.queues, i64::try_from(free).unwrap_or(i64::MAX), options.lease_secs).await {
+        let jobs = match queue::claim(
+            &db,
+            &options.node_id,
+            &options.queues,
+            i64::try_from(free).unwrap_or(i64::MAX),
+            options.lease_secs,
+        )
+        .await
+        {
             Ok(jobs) => jobs,
             Err(error) => {
                 log::warn!("{org_db}: jobs could not be claimed: {error}");
@@ -235,10 +294,18 @@ async fn process_org(state: &AppState, options: &WorkerOptions, semaphore: &Arc<
             break;
         }
         for job in jobs {
-            let Ok(permit) = semaphore.clone().acquire_owned().await else { return };
-            let (state, db, node, org_db) = (state.clone(), db.clone(), options.node_id.clone(), org_db.to_string());
+            let Ok(permit) = semaphore.clone().acquire_owned().await else {
+                return;
+            };
+            let (state, db, node, org_db) = (
+                state.clone(),
+                db.clone(),
+                options.node_id.clone(),
+                org_db.to_string(),
+            );
             // Leave a margin so the job is closed before its lease could run out.
-            let time_limit = Duration::from_secs(u64::try_from(options.lease_secs - 5).unwrap_or(5).max(5));
+            let time_limit =
+                Duration::from_secs(u64::try_from(options.lease_secs - 5).unwrap_or(5).max(5));
             tokio::spawn(async move {
                 let _permit = permit;
                 run_job(&state, &db, &node, &org_db, job, time_limit).await;
@@ -256,31 +323,56 @@ struct JobFailure {
 }
 
 async fn execute(state: &AppState, org_db: &str, job: &Job) -> Result<(), JobFailure> {
-    let payload = job.payload.clone().unwrap_or(Value::Object(serde_json::Map::new()));
+    let payload = job
+        .payload
+        .clone()
+        .unwrap_or(Value::Object(serde_json::Map::new()));
     match job.kind.as_str() {
         "plugin" => {
             let (Some(plugin), Some(function)) = (&job.plugin, &job.function) else {
-                return Err(JobFailure { message: "the job names no plugin function".into(), permanent: true });
+                return Err(JobFailure {
+                    message: "the job names no plugin function".into(),
+                    permanent: true,
+                });
             };
             let request_id = format!("job-{}", job.key);
             run_system_call(state, org_db, plugin, function, payload, &request_id)
                 .await
                 .map(|_| ())
-                .map_err(|error| JobFailure { message: format!("{plugin}.{function}: {}", error.message), permanent: error.permanent })
+                .map_err(|error| JobFailure {
+                    message: format!("{plugin}.{function}: {}", error.message),
+                    permanent: error.permanent,
+                })
         }
         "communication" => messaging::deliver(state, org_db, &payload)
             .await
-            .map_err(|error| JobFailure { message: error.message, permanent: error.permanent }),
-        other => Err(JobFailure { message: format!("unknown job kind `{other}`"), permanent: true }),
+            .map_err(|error| JobFailure {
+                message: error.message,
+                permanent: error.permanent,
+            }),
+        other => Err(JobFailure {
+            message: format!("unknown job kind `{other}`"),
+            permanent: true,
+        }),
     }
 }
 
 /// Run one claimed job and record how it went.
-pub async fn run_job(state: &AppState, db: &Db, node: &str, org_db: &str, job: Job, time_limit: Duration) {
+pub async fn run_job(
+    state: &AppState,
+    db: &Db,
+    node: &str,
+    org_db: &str,
+    job: Job,
+    time_limit: Duration,
+) {
     let started = Instant::now();
     let outcome = match tokio::time::timeout(time_limit, execute(state, org_db, &job)).await {
         Ok(result) => result,
-        Err(_) => Err(JobFailure { message: format!("it ran longer than {}s", time_limit.as_secs()), permanent: false }),
+        Err(_) => Err(JobFailure {
+            message: format!("it ran longer than {}s", time_limit.as_secs()),
+            permanent: false,
+        }),
     };
     let label = match (&job.plugin, &job.function) {
         (Some(plugin), Some(function)) => format!("{plugin}.{function}"),
@@ -288,18 +380,45 @@ pub async fn run_job(state: &AppState, db: &Db, node: &str, org_db: &str, job: J
     };
     match outcome {
         Ok(()) => match queue::complete(db, node, &job.key).await {
-            Ok(true) => log::info!("{org_db}: job {} ({label}) succeeded in {}ms (attempt {})", job.key, started.elapsed().as_millis(), job.attempts),
-            Ok(false) => log::warn!("{org_db}: job {} ({label}) finished but its lease had passed to another worker", job.key),
-            Err(error) => log::error!("{org_db}: job {} ({label}) succeeded but could not be recorded: {error}", job.key),
-        },
-        Err(failure) => match queue::fail(db, node, &job, &failure.message, failure.permanent).await {
-            Ok(None) => log::warn!("{org_db}: job {} ({label}) failed but its lease had passed to another worker: {}", job.key, failure.message),
-            Ok(Some(Outcome::Retry { in_secs })) => log::warn!(
-                "{org_db}: job {} ({label}) failed, attempt {} of {}; trying again in {in_secs}s: {}",
-                job.key, job.attempts, job.max_attempts, failure.message
+            Ok(true) => log::info!(
+                "{org_db}: job {} ({label}) succeeded in {}ms (attempt {})",
+                job.key,
+                started.elapsed().as_millis(),
+                job.attempts
             ),
-            Ok(Some(Outcome::Failed)) => log::error!("{org_db}: job {} ({label}) failed for good: {}", job.key, failure.message),
-            Err(error) => log::error!("{org_db}: job {} ({label}) failed and could not be recorded: {error}", job.key),
+            Ok(false) => log::warn!(
+                "{org_db}: job {} ({label}) finished but its lease had passed to another worker",
+                job.key
+            ),
+            Err(error) => log::error!(
+                "{org_db}: job {} ({label}) succeeded but could not be recorded: {error}",
+                job.key
+            ),
         },
+        Err(failure) => {
+            match queue::fail(db, node, &job, &failure.message, failure.permanent).await {
+                Ok(None) => log::warn!(
+                    "{org_db}: job {} ({label}) failed but its lease had passed to another worker: {}",
+                    job.key,
+                    failure.message
+                ),
+                Ok(Some(Outcome::Retry { in_secs })) => log::warn!(
+                    "{org_db}: job {} ({label}) failed, attempt {} of {}; trying again in {in_secs}s: {}",
+                    job.key,
+                    job.attempts,
+                    job.max_attempts,
+                    failure.message
+                ),
+                Ok(Some(Outcome::Failed)) => log::error!(
+                    "{org_db}: job {} ({label}) failed for good: {}",
+                    job.key,
+                    failure.message
+                ),
+                Err(error) => log::error!(
+                    "{org_db}: job {} ({label}) failed and could not be recorded: {error}",
+                    job.key
+                ),
+            }
+        }
     }
 }

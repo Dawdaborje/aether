@@ -16,7 +16,10 @@
 //! query parameters such as `code` or `token`, are shown as `<redacted>`.
 //! Request and response bodies are not logged.
 
-use std::{net::SocketAddr, time::{Duration, Instant}};
+use std::{
+    net::SocketAddr,
+    time::{Duration, Instant},
+};
 
 use axum::{
     extract::{ConnectInfo, Request, State},
@@ -93,7 +96,11 @@ fn timed_out_response() -> Response {
     (axum::http::StatusCode::GATEWAY_TIMEOUT, axum::Json(body)).into_response()
 }
 
-pub async fn log_requests(State(state): State<AppState>, mut request: Request, next: Next) -> Response {
+pub async fn log_requests(
+    State(state): State<AppState>,
+    mut request: Request,
+    next: Next,
+) -> Response {
     let started = Instant::now();
     let request_id = new_request_id();
     if let Ok(value) = HeaderValue::from_str(&request_id) {

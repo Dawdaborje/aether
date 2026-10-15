@@ -23,6 +23,8 @@ refusal is an error with a message (a script can `try`/`catch` it).
 | Command | Capability | Rhai | Status |
 |---|---|---|---|
 | `db::get`, `db::find`, `db::query` | `db::query` | `db::get`, `db::find` | done |
+| `report::query` | `report::query` | `report::query` | done: grouped report, see [Queries](../architecture/queries.md) |
+| `report::export` | `report::export` | `report::export` | done: Excel or PDF of rows the plugin already has |
 | `db::create`, `db::update`, `db::delete`, `db::increment` | `db::mutate` | same names | done |
 | `db::mutate` | `db::mutate` | use `db::create/update/delete` | done |
 | `db::transaction` | `db::transaction` (+ `db::mutate`) | `db::transaction` | done |
@@ -33,6 +35,9 @@ refusal is an error with a message (a script can `try`/`catch` it).
 | `notify::send` | `notify::send`, `notify::public` | `notify::send` | done |
 | `events::emit` | `events::emit` | `events::emit` | done |
 | `context::get` | none | `context::get` | done |
+| `org::members` | `org::members` | `org.members` | done: active login accounts in this organization (`id`, `display_name`) |
+| `org::create_member` | `org::create_member` | `org.create_member` | done: create a login with a generated password, or add an existing account, in this organization. Payload `{ email, username?, display_name? }`. Returns `{ user_id, username, created, temporary_password, email_sent }`. The plugin cannot set the password. `temporary_password` is empty when the email already had an account |
+| `org::invite` | `org::invite` | `org.invite` | done: email a link so a new person sets their own password (`auth.account_invite`, 7 days), or add an existing account. Same payload. Returns `{ status: "invited", expires_at, email_sent, url }` or `{ status: "joined", user_id, username, email_sent }`. The URL is returned once because mail may be unconfigured |
 | `fs::read`, `fs::stat` | `fs::read` | `fs::read/read_base64/stat` | done: the plugin's folder on disk, see [File watches](../architecture/watch.md) |
 | `fs::write`, `fs::rename` | `fs::write` | `fs::write/write_base64/rename` | done |
 | `fs::list` | `fs::list` | `fs::list` | done |

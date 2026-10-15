@@ -56,6 +56,22 @@ pub struct Args {
     /// Logging level (error, warn, info, debug, trace)
     pub log: String,
 
+    #[arg(long = "log-file", value_name = "PATH")]
+    /// Append logs to this file (creates parent directories). Overrides `[logging]` in the config.
+    pub log_file: Option<String>,
+
+    #[arg(long = "log-dir", value_name = "PATH")]
+    /// Directory for `aether.log` (or `[logging].filename`). Overrides `[logging].dir`.
+    pub log_dir: Option<String>,
+
+    #[arg(long = "no-log-file", action = clap::ArgAction::SetTrue)]
+    /// Do not write a log file, even when `[logging] file = true`
+    pub no_log_file: bool,
+
+    #[arg(long = "no-log-stdout", action = clap::ArgAction::SetTrue)]
+    /// When writing a log file, do not also write to stderr
+    pub no_log_stdout: bool,
+
     #[arg(long, value_name = "PATH")]
     /// Directory Aether stores plugins (WASM, manifests), compiled views and plugin configs in
     pub app_dir: Option<String>,
@@ -72,10 +88,19 @@ pub struct Args {
         short = 'i',
         long = "init",
         alias = "initialize",
-        action = clap::ArgAction::SetTrue
+        action = clap::ArgAction::SetTrue,
+        conflicts_with = "migrate"
     )]
-    /// Bootstrap the platform: apply core migrations and create the initial developer account
+    /// Bootstrap the platform: apply core migrations, seed settings, and create the initial developer account
     pub init: bool,
+
+    #[arg(
+        long = "migrate",
+        action = clap::ArgAction::SetTrue,
+        conflicts_with = "init"
+    )]
+    /// Apply pending core migrations only (no seed, no developer account)
+    pub migrate: bool,
 
     #[arg(long, action = clap::ArgAction::SetTrue)]
     /// Seed reference data into the core database
@@ -186,6 +211,15 @@ pub struct Args {
     /// List the roles of the organization `--org` and who holds them
     pub list_roles: bool,
 
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    /// Make the user named by `--username` a developer: of the organization `--org` only (they see its
+    /// schedules), or, without `--org`, an unrestricted developer of the whole system
+    pub grant_developer: bool,
+
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    /// Take developer access away from the user named by `--username`: in `--org`, or the unrestricted kind without it
+    pub revoke_developer: bool,
+
     #[arg(long)]
     pub username: Option<String>,
 
@@ -226,4 +260,12 @@ pub struct Args {
     #[arg(long, value_name = "LOGIN")]
     /// Assign an existing user by username or email to an organization (requires `--org-db-name`)
     pub assign_user: Option<String>,
+
+    #[arg(long, value_name = "LOGIN")]
+    /// Transfer organization ownership to this member (`--org` and `--username` of the current owner)
+    pub transfer_org_ownership: Option<String>,
+
+    #[arg(long, value_name = "TEXT")]
+    /// Optional note stored on an ownership transfer
+    pub transfer_note: Option<String>,
 }

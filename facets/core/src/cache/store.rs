@@ -78,4 +78,8 @@ pub trait CacheStore: Send + Sync {
     fn delete_prefix(&self, prefix: &str) -> Result<usize, CacheError>;
     fn clear(&self) -> Result<(), CacheError>;
     fn len(&self) -> usize;
+    /// Drop a gradual slice of reclaim candidates toward `target_bytes`.
+    fn maintain(&self, _target_bytes: Option<u64>) -> usize {
+        0
+    }
 }

@@ -43,7 +43,9 @@ pub enum SecretError {
     },
     #[error("the secret key is unavailable: {0}")]
     KeyUnavailable(String),
-    #[error("that value was not encrypted with this installation's secret key (was the key changed?)")]
+    #[error(
+        "that value was not encrypted with this installation's secret key (was the key changed?)"
+    )]
     CannotDecrypt,
 }
 
@@ -83,7 +85,10 @@ impl SecretBox {
             return Self::from_key_text(text);
         }
         let path = app_dir.join("conf").join("secret.key");
-        let key_file = |source| SecretError::KeyFile { path: path.clone(), source };
+        let key_file = |source| SecretError::KeyFile {
+            path: path.clone(),
+            source,
+        };
         match std::fs::read_to_string(&path) {
             Ok(text) => return Self::from_key_text(&text),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -105,7 +110,10 @@ impl SecretBox {
         match options.open(&path) {
             Ok(mut file) => {
                 file.write_all(text.as_bytes()).map_err(key_file)?;
-                log::info!("Created the secret key file {}; keep it with your backups", path.display());
+                log::info!(
+                    "Created the secret key file {}; keep it with your backups",
+                    path.display()
+                );
                 Self::from_key_text(&text)
             }
             // Another process created it first: use theirs.
@@ -132,8 +140,12 @@ impl SecretBox {
 
     /// The plaintext of a value made by [`encrypt`](Self::encrypt).
     pub fn decrypt(&self, stored: &str) -> Result<String, SecretError> {
-        let encoded = stored.strip_prefix(PREFIX).ok_or(SecretError::CannotDecrypt)?;
-        let bytes = STANDARD.decode(encoded).map_err(|_| SecretError::CannotDecrypt)?;
+        let encoded = stored
+            .strip_prefix(PREFIX)
+            .ok_or(SecretError::CannotDecrypt)?;
+        let bytes = STANDARD
+            .decode(encoded)
+            .map_err(|_| SecretError::CannotDecrypt)?;
         if bytes.len() <= NONCE_BYTES {
             return Err(SecretError::CannotDecrypt);
         }
@@ -187,7 +199,10 @@ mod tests {
 
     #[test]
     fn short_keys_are_refused() {
-        assert!(matches!(SecretBox::from_key_text("short"), Err(SecretError::KeyTooShort)));
+        assert!(matches!(
+            SecretBox::from_key_text("short"),
+            Err(SecretError::KeyTooShort)
+        ));
     }
 
     #[test]
@@ -206,7 +221,10 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            assert_eq!(std::fs::metadata(file).unwrap().permissions().mode() & 0o777, 0o600);
+            assert_eq!(
+                std::fs::metadata(file).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
         }
     }
 

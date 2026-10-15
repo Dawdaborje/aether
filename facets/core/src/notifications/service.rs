@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use surrealdb::{Surreal, engine::remote::ws::Client, types::SurrealValue};
+use surrealdb::{Surreal, engine::remote::ws::Client};
 use thiserror::Error;
 
 use super::{
@@ -39,7 +39,9 @@ pub fn validate(new: &NewNotification) -> Result<(), NotifyError> {
         && (!link.starts_with('/') || link.starts_with("//") || link.len() > MAX_LINK)
     {
         // An app path only: a notification must not send people to another site.
-        return Err(invalid("link must be an app path starting with a single `/`"));
+        return Err(invalid(
+            "link must be an app path starting with a single `/`",
+        ));
     }
     if let Some(payload) = &new.payload {
         let size = serde_json::to_vec(payload).map_or(usize::MAX, |bytes| bytes.len());
@@ -79,7 +81,10 @@ pub async fn send(
         stored.source,
         stored.audience.kind()
     );
-    hub.publish(org_database, HubMessage::Notification(Arc::new(stored.clone())));
+    hub.publish(
+        org_database,
+        HubMessage::Notification(Arc::new(stored.clone())),
+    );
     Ok(stored)
 }
 
@@ -103,19 +108,12 @@ pub fn spawn_cleanup(state: &crate::state::AppState) -> tokio::task::JoinHandle<
     })
 }
 
-#[derive(Debug, SurrealValue)]
-struct OrgName {
-    db_name: String,
-}
-
 async fn cleanup(state: &crate::state::AppState) -> Result<u64, surrealdb::Error> {
-    let core = state.core().await?;
-    let mut response = core.query("SELECT db_name FROM org_databases;").await?.check()?;
-    let organizations: Vec<OrgName> = response.take(0)?;
+    let organizations = crate::access::org_databases::list_cached(state).await?;
     let days = state.config.notifications.retention_days;
     let mut removed = 0;
-    for organization in organizations {
-        let db = state.org(&organization.db_name).await?;
+    for db_name in organizations {
+        let db = state.org(&db_name).await?;
         removed += store::purge(&db, days).await?;
     }
     Ok(removed)
@@ -153,11 +151,15 @@ mod tests {
     #[test]
     fn actors_must_be_users_or_visitors() {
         let mut bad = note();
-        bad.audience = Audience::Actors { actors: vec!["org:acme".into()] };
+        bad.audience = Audience::Actors {
+            actors: vec!["org:acme".into()],
+        };
         assert!(validate(&bad).is_err());
         bad.audience = Audience::Actors { actors: vec![] };
         assert!(validate(&bad).is_err());
-        bad.audience = Audience::Actors { actors: vec!["visitors:abc".into(), "users:def".into()] };
+        bad.audience = Audience::Actors {
+            actors: vec!["visitors:abc".into(), "users:def".into()],
+        };
         assert!(validate(&bad).is_ok());
     }
 }

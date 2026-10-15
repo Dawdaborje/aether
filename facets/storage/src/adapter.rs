@@ -47,6 +47,7 @@ impl MediaBackend for ObjectStoreBackend {
             key: key.to_string(),
             size,
             e_tag: result.e_tag,
+            last_modified: None,
         })
     }
 
@@ -70,6 +71,7 @@ impl MediaBackend for ObjectStoreBackend {
             key: key.to_string(),
             size: meta.size,
             e_tag: meta.e_tag,
+            last_modified: Some(meta.last_modified.timestamp()),
         })
     }
 
@@ -88,6 +90,7 @@ impl MediaBackend for ObjectStoreBackend {
                 key: meta.location.to_string(),
                 size: meta.size,
                 e_tag: meta.e_tag,
+                last_modified: Some(meta.last_modified.timestamp()),
             })
             .try_collect()
             .await

@@ -60,9 +60,9 @@ pub async fn oauth_start(
             )
         })?;
 
-    let redirect_uri = query.redirect_uri.unwrap_or_else(|| {
-        default_callback_uri(&headers, &provider)
-    });
+    let redirect_uri = query
+        .redirect_uri
+        .unwrap_or_else(|| default_callback_uri(&headers, &provider));
     let oauth_state = new_token();
     let jar = set_oauth_state_cookie(jar, &oauth_state, cookies_secure(&state));
 
@@ -97,10 +97,7 @@ pub async fn oauth_callback(
     let secure = cookies_secure(&state);
 
     if let Some(err) = query.error {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": err })),
-        ));
+        return Err((StatusCode::BAD_REQUEST, Json(json!({ "error": err }))));
     }
     let code = query.code.ok_or_else(|| {
         (
@@ -157,8 +154,13 @@ pub async fn oauth_callback(
             ),
         })?;
 
-    let user_id = upsert_oauth_user(&state, &identity.provider, &identity.provider_user_id, &identity)
-        .await?;
+    let user_id = upsert_oauth_user(
+        &state,
+        &identity.provider,
+        &identity.provider_user_id,
+        &identity,
+    )
+    .await?;
 
     let org_db = org.as_ref().map(|o| o.db_name.clone());
     let session = create_session(&core, user_id, &provider, org_db, 24)
@@ -170,6 +172,8 @@ pub async fn oauth_callback(
                 Json(json!({ "error": "failed to create session" })),
             )
         })?;
+    let _ = aether_core::session_cache::session_from_token(&state.cache, &core, &session.raw_token)
+        .await;
 
     let jar = clear_oauth_state_cookie(jar, secure);
     let jar = set_session_cookie(jar, &session.raw_token, secure);
@@ -335,14 +339,10 @@ async fn upsert_oauth_user(
         })?;
 
     let found: Vec<IdRow> = lookup.take(0).unwrap_or_default();
-    found
-        .into_iter()
-        .next()
-        .map(|r| r.id)
-        .ok_or_else(|| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": "failed to resolve oauth user" })),
-            )
-        })
+    found.into_iter().next().map(|r| r.id).ok_or_else(|| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "failed to resolve oauth user" })),
+        )
+    })
 }

@@ -19,6 +19,8 @@ pub struct SessionRecord {
     pub token_hash: String,
     pub provider: Option<String>,
     pub org_database_id: Option<String>,
+    /// Expiry as unix seconds, so a cached copy can be refused once it has passed.
+    pub expires_unix: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -58,7 +60,8 @@ pub async fn create_session(
                 provider = $provider,
                 org_database_id = $org_database_id,
                 expires_at = time::now() + 24h
-            RETURN AFTER;
+            RETURN id, user, token_hash, provider, org_database_id,
+                   time::unix(expires_at) AS expires_unix;
             "#,
         )
         .bind(("user", user_id))
@@ -79,6 +82,9 @@ pub struct SessionUserRow {
     pub username: Option<String>,
     pub email: Option<String>,
     pub display_name: Option<String>,
+    /// Filename under `app_dir/users/<id>/` when a profile photo is set.
+    #[serde(default)]
+    pub avatar_file: Option<String>,
     pub is_super_user: bool,
     pub is_active: bool,
 }
@@ -89,6 +95,9 @@ pub struct ValidSession {
     pub org_database_id: Option<String>,
     pub provider: Option<String>,
     pub user: SessionUserRow,
+    /// Unix seconds. A cached session past this moment is not honoured.
+    #[serde(default)]
+    pub expires_unix: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, SurrealValue)]
@@ -97,6 +106,7 @@ struct SessionLookupRow {
     user: RecordId,
     provider: Option<String>,
     org_database_id: Option<String>,
+    expires_unix: Option<i64>,
 }
 
 pub async fn find_session_by_token(
@@ -107,7 +117,7 @@ pub async fn find_session_by_token(
     let mut response = db
         .query(
             r#"
-            SELECT id, user, provider, org_database_id
+            SELECT id, user, provider, org_database_id, time::unix(expires_at) AS expires_unix
             FROM sessions
             WHERE token_hash = $token_hash
               AND revoked_at = NONE
@@ -127,7 +137,7 @@ pub async fn find_session_by_token(
     let mut user_response = db
         .query(
             r#"
-            SELECT id, username, email, display_name, is_super_user, is_active
+            SELECT id, username, email, display_name, avatar_file, is_super_user, is_active
             FROM $user_id;
             "#,
         )
@@ -144,6 +154,7 @@ pub async fn find_session_by_token(
         org_database_id: session.org_database_id,
         provider: session.provider,
         user,
+        expires_unix: session.expires_unix,
     }))
 }
 
@@ -162,6 +173,27 @@ pub async fn revoke_session_by_token(
     .await?
     .check()?;
     Ok(())
+}
+
+/// Revoke every active session for a user. Returns token hashes so Mantle can bust them.
+pub async fn revoke_sessions_for_user(
+    db: &Surreal<Client>,
+    user_id: &RecordId,
+) -> Result<Vec<String>, SessionError> {
+    let mut response = db
+        .query(
+            r#"
+            SELECT VALUE token_hash FROM sessions
+            WHERE user = $user AND revoked_at = NONE AND expires_at > time::now();
+            UPDATE sessions SET revoked_at = time::now()
+            WHERE user = $user AND revoked_at = NONE;
+            "#,
+        )
+        .bind(("user", user_id.clone()))
+        .await?
+        .check()?;
+    let hashes: Vec<String> = response.take(0)?;
+    Ok(hashes)
 }
 
 /// Remember which organization a session is working in.

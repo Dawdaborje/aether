@@ -64,7 +64,9 @@
 		return undefined;
 	});
 
-	const loading = $derived(source ? ownLoading : Boolean(dash?.loading && field && display === undefined));
+	const loading = $derived(
+		source ? ownLoading : Boolean(dash?.loading && field && display === undefined)
+	);
 	const error = $derived(ownError ?? (field && !source ? dash?.error : null) ?? null);
 
 	function format(value: unknown): string {
@@ -76,7 +78,7 @@
 	}
 </script>
 
-<Card.Root size="sm" class="h-full">
+<Card.Root size="sm" class="h-full" data-part="dashboard.stat">
 	<Card.Header class="gap-1 pb-0">
 		<Card.Description class="text-xs font-medium tracking-wide uppercase">{label}</Card.Description>
 		{#if loading}

@@ -153,7 +153,8 @@ pub async fn insert(db: &Surreal<Client>, new: &NewMessage) -> Result<Message, s
         .await?
         .check()?;
     let rows: Vec<Row> = response.take(0)?;
-    one(rows).ok_or_else(|| surrealdb::Error::internal("chatter message was not created".to_string()))
+    one(rows)
+        .ok_or_else(|| surrealdb::Error::internal("chatter message was not created".to_string()))
 }
 
 /// A record's thread, oldest first. The trash is left out unless `with_trash`; kinds a viewer
@@ -166,7 +167,11 @@ pub async fn thread(
     with_trash: bool,
     limit: u32,
 ) -> Result<Vec<Message>, surrealdb::Error> {
-    let trash = if with_trash { "" } else { " AND deleted_at = NONE AND record_deleted_at = NONE" };
+    let trash = if with_trash {
+        ""
+    } else {
+        " AND deleted_at = NONE AND record_deleted_at = NONE"
+    };
     let mut response = db
         .query(format!(
             "SELECT {COLUMNS} FROM chatter_messages \
@@ -175,7 +180,13 @@ pub async fn thread(
         ))
         .bind(("model", model_id.to_string()))
         .bind(("key", record_key.to_string()))
-        .bind(("kinds", kinds.iter().map(|k| k.as_str().to_string()).collect::<Vec<_>>()))
+        .bind((
+            "kinds",
+            kinds
+                .iter()
+                .map(|k| k.as_str().to_string())
+                .collect::<Vec<_>>(),
+        ))
         .bind(("limit", u64::from(limit)))
         .await?
         .check()?;
@@ -205,7 +216,11 @@ pub async fn get(
 }
 
 /// Replace the text of a message, keeping the earlier text in its history.
-pub async fn edit(db: &Surreal<Client>, id: &str, body: &str) -> Result<Option<Message>, surrealdb::Error> {
+pub async fn edit(
+    db: &Surreal<Client>,
+    id: &str,
+    body: &str,
+) -> Result<Option<Message>, surrealdb::Error> {
     let mut response = db
         .query(format!(
             "UPDATE chatter_messages SET \
@@ -222,7 +237,11 @@ pub async fn edit(db: &Surreal<Client>, id: &str, body: &str) -> Result<Option<M
 }
 
 /// Put a message in the trash. Nothing is removed until cleanup.
-pub async fn trash(db: &Surreal<Client>, id: &str, by: &str) -> Result<Option<Message>, surrealdb::Error> {
+pub async fn trash(
+    db: &Surreal<Client>,
+    id: &str,
+    by: &str,
+) -> Result<Option<Message>, surrealdb::Error> {
     let mut response = db
         .query(format!(
             "UPDATE chatter_messages SET deleted_at = time::now(), deleted_by = $by \

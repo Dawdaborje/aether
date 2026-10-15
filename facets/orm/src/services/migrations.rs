@@ -56,7 +56,8 @@ pub async fn migrate_org(
 pub enum SchemaStatus {
     /// No migration has ever been applied (`aether --init` has not been run).
     Uninitialized,
-    /// Some migrations shipped with this build have not been applied yet.
+    /// Some migrations shipped with this build have not been applied yet
+    /// (`aether --migrate` applies them).
     Pending(Vec<String>),
     UpToDate,
 }

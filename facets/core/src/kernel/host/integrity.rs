@@ -11,8 +11,8 @@ use super::db::{Extra, validate_ident};
 use super::error::HostError;
 use crate::data_model::ModelSchema;
 use crate::data_model::compute::Rollup;
-use crate::data_model::runtime::Derivation;
 use crate::data_model::query::compile_filter;
+use crate::data_model::runtime::Derivation;
 use crate::data_model::sequence::{SEQUENCE_TABLE, Segment, counter_key};
 
 /// Most pieces (text and number) in one series pattern once the date is filled in.
@@ -44,11 +44,23 @@ pub(super) fn create_content(
         validate_ident(&series.column)?;
         let segments = series.pattern.segments(year, month);
         if segments.len() > MAX_SEGMENTS {
-            return Err(HostError::InvalidPayload(format!("the numbering of `{}` has too many parts", series.field)));
+            return Err(HostError::InvalidPayload(format!(
+                "the numbering of `{}` has too many parts",
+                series.field
+            )));
         }
         let base = SERIES_BASE + index * SERIES_BLOCK;
         let (key_name, number) = (format!("d{base}"), format!("d{}", base + 1));
-        binds.push((key_name.clone(), JsonValue::String(counter_key(&schema.table, &series.column, series.reset, year, month))));
+        binds.push((
+            key_name.clone(),
+            JsonValue::String(counter_key(
+                &schema.table,
+                &series.column,
+                series.reset,
+                year,
+                month,
+            )),
+        ));
         extra.before.push(format!(
             "LET ${number} = (UPSERT type::record('{SEQUENCE_TABLE}', ${key_name}) \
              SET counter = (counter ?? 0) + 1 RETURN AFTER)[0].counter;"
@@ -66,7 +78,11 @@ pub(super) fn create_content(
                 )),
             }
         }
-        entries.push(format!("['{}', string::concat({})]", series.column, pieces.join(", ")));
+        entries.push(format!(
+            "['{}', string::concat({})]",
+            series.column,
+            pieces.join(", ")
+        ));
     }
     if let Some((column, value_sql)) = injected {
         validate_ident(column)?;
@@ -75,7 +91,10 @@ pub(super) fn create_content(
     Ok(if entries.is_empty() {
         "$__data".to_string()
     } else {
-        format!("object::from_entries(array::concat(object::entries($__data), [{}]))", entries.join(", "))
+        format!(
+            "object::from_entries(array::concat(object::entries($__data), [{}]))",
+            entries.join(", ")
+        )
     })
 }
 
@@ -88,14 +107,21 @@ pub(super) fn model_checks(
     extra: &mut Extra,
 ) -> Result<(), HostError> {
     for (index, check) in schema.checks.iter().enumerate() {
-        let compiled = compile_filter(&check.filter, schema, &format!("d{}", CHECK_FILTER_BASE + index * 100))
-            .map_err(|error| HostError::InvalidPayload(error.to_string()))?;
+        let compiled = compile_filter(
+            &check.filter,
+            schema,
+            &format!("d{}", CHECK_FILTER_BASE + index * 100),
+        )
+        .map_err(|error| HostError::InvalidPayload(error.to_string()))?;
         if compiled.sql.is_empty() {
             continue;
         }
         let message = format!("d{}", CHECK_MESSAGE_BASE + index);
         binds.extend(compiled.binds);
-        binds.push((message.clone(), JsonValue::String(format!("aether: {}", check.message))));
+        binds.push((
+            message.clone(),
+            JsonValue::String(format!("aether: {}", check.message)),
+        ));
         extra.after.push(format!(
             "IF array::len({rows}) > 0 AND array::len((SELECT VALUE id FROM {rows}[0].id WHERE {})) = 0 {{ THROW ${message}; }};",
             compiled.sql
@@ -107,7 +133,12 @@ pub(super) fn model_checks(
 /// Statements that fill the fields the kernel calculates for the record `target` (copies through
 /// links first, then expressions in the order they are declared). With `rebind`, each one also
 /// puts the updated records back into that variable, so what follows sees the result.
-fn derived_statements(schema: &ModelSchema, target: &str, rebind: Option<&str>, copies_too: bool) -> Result<Vec<String>, HostError> {
+fn derived_statements(
+    schema: &ModelSchema,
+    target: &str,
+    rebind: Option<&str>,
+    copies_too: bool,
+) -> Result<Vec<String>, HostError> {
     let wrap = |set: String| match rebind {
         Some(var) => format!("LET {var} = (UPDATE {target} SET {set} RETURN AFTER);"),
         None => format!("UPDATE {target} SET {set};"),
@@ -127,10 +158,19 @@ fn derived_statements(schema: &ModelSchema, target: &str, rebind: Option<&str>, 
         statements.push(wrap(copies.join(", ")));
     }
     for field in &schema.derived {
-        if let Derivation::Compute { expr, scale, operands } = &field.how {
+        if let Derivation::Compute {
+            expr,
+            scale,
+            operands,
+        } = &field.how
+        {
             let sql = expr
-                .to_sql("", *scale, &|name| operands.get(name).cloned(), &|rollup| rollup_sql(schema, rollup))
-                .map_err(|reason| HostError::InvalidPayload(format!("`{}` {reason}", field.field)))?;
+                .to_sql("", *scale, &|name| operands.get(name).cloned(), &|rollup| {
+                    rollup_sql(schema, rollup)
+                })
+                .map_err(|reason| {
+                    HostError::InvalidPayload(format!("`{}` {reason}", field.field))
+                })?;
             statements.push(wrap(format!("{} = {sql}", field.column)));
         }
     }
@@ -140,11 +180,20 @@ fn derived_statements(schema: &ModelSchema, target: &str, rebind: Option<&str>, 
 /// The total over the rows of a child field, for the record being updated.
 fn rollup_sql(schema: &ModelSchema, rollup: &Rollup) -> Option<(String, u32)> {
     let child = schema.child(&rollup.child)?;
-    let rows = format!("FROM {} WHERE {} = <string>$parent.id", child.table, child.inverse_column);
+    let rows = format!(
+        "FROM {} WHERE {} = <string>$parent.id",
+        child.table, child.inverse_column
+    );
     match &rollup.source {
         Some(source) => {
             let number = child.numbers.get(source)?;
-            Some((format!("math::sum((SELECT VALUE {col} {rows} AND {col} != NONE))", col = number.column), number.scale))
+            Some((
+                format!(
+                    "math::sum((SELECT VALUE {col} {rows} AND {col} != NONE))",
+                    col = number.column
+                ),
+                number.scale,
+            ))
         }
         None => Some((format!("array::len((SELECT VALUE id {rows}))"), 0)),
     }
@@ -169,8 +218,12 @@ pub(super) fn derived_again(schema: &ModelSchema, rows: &str) -> Result<Vec<Stri
 pub(super) fn refresh_parents(schema: &ModelSchema, extra: &mut Extra) -> Result<(), HostError> {
     for link in &schema.parents {
         validate_ident(&link.inverse_column)?;
-        let statements = derived_statements(&link.schema, "type::record($rows[0].PARENT)", None, false)?;
-        let statements: Vec<String> = statements.into_iter().map(|s| s.replace("PARENT", &link.inverse_column)).collect();
+        let statements =
+            derived_statements(&link.schema, "type::record($rows[0].PARENT)", None, false)?;
+        let statements: Vec<String> = statements
+            .into_iter()
+            .map(|s| s.replace("PARENT", &link.inverse_column))
+            .collect();
         if statements.is_empty() {
             continue;
         }

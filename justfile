@@ -8,9 +8,13 @@ default: dev-serve
 dev-serve:
     {{aether}} --serve --verbose -l debug
 
-# Bootstrap core DB: migrations + initial developer account
+# Bootstrap core DB: migrations + seeds + initial developer account
 init:
     {{aether}} --init --verbose -l info
+
+# Apply pending core migrations only
+migrate:
+    {{aether}} --migrate --verbose -l info
 
 # Run the SvelteKit web app in development mode
 dev-serve-web:

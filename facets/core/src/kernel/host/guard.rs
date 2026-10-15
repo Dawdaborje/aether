@@ -13,7 +13,7 @@ use serde_json::Value as JsonValue;
 
 use super::context::{ModelGrant, PluginHostContext};
 use super::error::HostError;
-use crate::data_model::query::{compile_filter, Compiled, Unchecked};
+use crate::data_model::query::{Compiled, Unchecked, compile_filter};
 use crate::data_model::{Decision, Operation};
 
 /// A function named `rule_var_<name>` answers the variable `$<plugin>.<name>` for the caller.
@@ -25,7 +25,15 @@ pub async fn roles(ctx: &PluginHostContext) -> Result<&Vec<String>, HostError> {
         .get_or_try_init(|| async {
             match ctx.audit.actor.id() {
                 Some(user) if ctx.audit.actor.kind() == "user" => {
-                    crate::roles::roles_of(&ctx.db, user).await.map_err(HostError::Db)
+                    if let Some(services) = ctx.services.as_ref() {
+                        crate::roles::roles_of_cached(&services.cache, &ctx.database, &ctx.db, user)
+                            .await
+                            .map_err(HostError::Db)
+                    } else {
+                        crate::roles::roles_of(&ctx.db, user)
+                            .await
+                            .map_err(HostError::Db)
+                    }
                 }
                 _ => Ok(Vec::new()),
             }
@@ -79,14 +87,21 @@ async fn exempt(ctx: &PluginHostContext) -> Result<bool, HostError> {
     if ctx.bypass_rules {
         return Ok(true);
     }
-    Ok(roles(ctx).await?.iter().any(|role| role == crate::roles::ORG_ADMIN))
+    Ok(roles(ctx)
+        .await?
+        .iter()
+        .any(|role| role == crate::roles::ORG_ADMIN))
 }
 
 /// The value of a variable for the caller: `$user` is their account; `$<plugin>.<name>` is the
 /// answer of that plugin's `rule_var_<name>` function (a bare `$<name>` asks the plugin itself).
 async fn variable(ctx: &PluginHostContext, name: &str) -> Result<JsonValue, HostError> {
     if name == "user" {
-        return Ok(ctx.audit.actor.id().map_or(JsonValue::Null, |id| JsonValue::String(id.to_string())));
+        return Ok(ctx
+            .audit
+            .actor
+            .id()
+            .map_or(JsonValue::Null, |id| JsonValue::String(id.to_string())));
     }
     let (plugin, short) = match name.split_once('.') {
         Some((plugin, short)) => (plugin.to_string(), short.to_string()),
@@ -96,7 +111,12 @@ async fn variable(ctx: &PluginHostContext, name: &str) -> Result<JsonValue, Host
     if let Some(cached) = ctx.rule_cache.get(&key) {
         return Ok(cached);
     }
-    if plugin != ctx.plugin_name && !ctx.dependencies.iter().any(|dependency| dependency == &plugin) {
+    if plugin != ctx.plugin_name
+        && !ctx
+            .dependencies
+            .iter()
+            .any(|dependency| dependency == &plugin)
+    {
         return Err(HostError::Message(format!(
             "a rule uses `${key}`, but `{plugin}` is not one of this plugin's dependencies"
         )));
@@ -104,7 +124,9 @@ async fn variable(ctx: &PluginHostContext, name: &str) -> Result<JsonValue, Host
     let function = format!("{VARIABLE_PREFIX}{short}");
     let target = format!("{plugin}.{function}");
     if ctx.call_trail.len() >= super::plugin_call::MAX_DEPTH {
-        return Err(HostError::Message("plugin calls are nested too deep to work out a rule".into()));
+        return Err(HostError::Message(
+            "plugin calls are nested too deep to work out a rule".into(),
+        ));
     }
     let caller = ctx
         .caller
@@ -112,14 +134,22 @@ async fn variable(ctx: &PluginHostContext, name: &str) -> Result<JsonValue, Host
         .ok_or_else(|| HostError::Message("this call cannot work out a rule's variable".into()))?;
     let mut trail = ctx.call_trail.clone();
     trail.push(target);
-    let value = caller.call(&plugin, &function, serde_json::json!({}), trail).await?;
+    let value = caller
+        .call(&plugin, &function, serde_json::json!({}), trail)
+        .await?;
     ctx.rule_cache.set(&key, value.clone());
     Ok(value)
 }
 
 /// What the rules allow the caller to do to `grant`'s model with `op`.
-pub async fn decide(ctx: &PluginHostContext, grant: &ModelGrant, op: Operation) -> Result<Decision, HostError> {
-    let Some(rules) = &grant.rules else { return Ok(Decision::Open) };
+pub async fn decide(
+    ctx: &PluginHostContext,
+    grant: &ModelGrant,
+    op: Operation,
+) -> Result<Decision, HostError> {
+    let Some(rules) = &grant.rules else {
+        return Ok(Decision::Open);
+    };
     if !rules.limits(op) || exempt(ctx).await? {
         return Ok(Decision::Open);
     }
@@ -141,10 +171,18 @@ pub struct Scope {
 
 /// The condition for `op` on `grant`'s model, with bind names starting with `prefix`; `None` when
 /// the rules allow the caller none of the records.
-pub async fn scope(ctx: &PluginHostContext, grant: &ModelGrant, op: Operation, prefix: &str) -> Result<Option<Scope>, HostError> {
+pub async fn scope(
+    ctx: &PluginHostContext,
+    grant: &ModelGrant,
+    op: Operation,
+    prefix: &str,
+) -> Result<Option<Scope>, HostError> {
     match decide(ctx, grant, op).await? {
         Decision::Deny => Ok(None),
-        Decision::Open => Ok(Some(Scope { sql: String::new(), binds: Vec::new() })),
+        Decision::Open => Ok(Some(Scope {
+            sql: String::new(),
+            binds: Vec::new(),
+        })),
         Decision::Only(filter) => {
             let Compiled { sql, binds } = match &grant.schema {
                 Some(schema) => compile_filter(&filter, schema.as_ref(), prefix)?,
@@ -159,9 +197,21 @@ pub async fn scope(ctx: &PluginHostContext, grant: &ModelGrant, op: Operation, p
 /// field to `to`. `None`: no transition into `to` is open to them. An empty condition: nothing
 /// limits it (no workflow, or the caller is exempt). Otherwise the condition the record must meet
 /// before the write: already in `to`, or in a state a transition they may make leaves.
-pub async fn workflow_scope(ctx: &PluginHostContext, grant: &ModelGrant, to: &str, prefix: &str) -> Result<Option<Scope>, HostError> {
-    let free = || Ok(Some(Scope { sql: String::new(), binds: Vec::new() }));
-    let Some(rules) = &grant.rules else { return free() };
+pub async fn workflow_scope(
+    ctx: &PluginHostContext,
+    grant: &ModelGrant,
+    to: &str,
+    prefix: &str,
+) -> Result<Option<Scope>, HostError> {
+    let free = || {
+        Ok(Some(Scope {
+            sql: String::new(),
+            binds: Vec::new(),
+        }))
+    };
+    let Some(rules) = &grant.rules else {
+        return free();
+    };
     if rules.workflow.is_none() || exempt(ctx).await? {
         return free();
     }
@@ -186,14 +236,26 @@ pub async fn workflow_scope(ctx: &PluginHostContext, grant: &ModelGrant, to: &st
 
 /// The workflow field of the model and the states a new record may start in, when the caller is
 /// held to the workflow. `None` when they are not.
-pub async fn workflow_initial(ctx: &PluginHostContext, grant: &ModelGrant) -> Result<Option<(String, Vec<String>)>, HostError> {
-    let Some(rules) = &grant.rules else { return Ok(None) };
-    let Some(workflow) = &rules.workflow else { return Ok(None) };
+pub async fn workflow_initial(
+    ctx: &PluginHostContext,
+    grant: &ModelGrant,
+) -> Result<Option<(String, Vec<String>)>, HostError> {
+    let Some(rules) = &grant.rules else {
+        return Ok(None);
+    };
+    let Some(workflow) = &rules.workflow else {
+        return Ok(None);
+    };
     if exempt(ctx).await? {
         return Ok(None);
     }
     let states = if workflow.initial.is_empty() {
-        grant.schema.as_ref().and_then(|schema| schema.default_text(&workflow.field)).into_iter().collect()
+        grant
+            .schema
+            .as_ref()
+            .and_then(|schema| schema.default_text(&workflow.field))
+            .into_iter()
+            .collect()
     } else {
         workflow.initial.clone()
     };
@@ -213,25 +275,48 @@ pub struct Move {
 
 /// The transitions of the model's workflow the caller may make. An exempt caller may make any
 /// from its states. Bind names start with `prefix`.
-pub async fn workflow_moves(ctx: &PluginHostContext, grant: &ModelGrant, prefix: &str) -> Result<Vec<Move>, HostError> {
-    let Some(rules) = &grant.rules else { return Ok(Vec::new()) };
-    let Some(workflow) = &rules.workflow else { return Ok(Vec::new()) };
-    let compile = |filter: &crate::data_model::Filter, prefix: &str| -> Result<Compiled, HostError> {
-        Ok(match &grant.schema {
-            Some(schema) => compile_filter(filter, schema.as_ref(), prefix)?,
-            None => compile_filter(filter, &Unchecked, prefix)?,
-        })
+pub async fn workflow_moves(
+    ctx: &PluginHostContext,
+    grant: &ModelGrant,
+    prefix: &str,
+) -> Result<Vec<Move>, HostError> {
+    let Some(rules) = &grant.rules else {
+        return Ok(Vec::new());
     };
+    let Some(workflow) = &rules.workflow else {
+        return Ok(Vec::new());
+    };
+    let compile =
+        |filter: &crate::data_model::Filter, prefix: &str| -> Result<Compiled, HostError> {
+            Ok(match &grant.schema {
+                Some(schema) => compile_filter(filter, schema.as_ref(), prefix)?,
+                None => compile_filter(filter, &Unchecked, prefix)?,
+            })
+        };
     let mut out = Vec::new();
     if exempt(ctx).await? {
         for (index, transition) in workflow.transitions.iter().enumerate() {
             let from = crate::data_model::Filter::Cmp {
                 field: workflow.field.clone(),
                 op: crate::data_model::query::Op::In,
-                value: JsonValue::Array(transition.from.iter().cloned().map(JsonValue::String).collect()),
+                value: JsonValue::Array(
+                    transition
+                        .from
+                        .iter()
+                        .cloned()
+                        .map(JsonValue::String)
+                        .collect(),
+                ),
             };
             let Compiled { sql, binds } = compile(&from, &format!("{prefix}{index}x"))?;
-            out.push(Move { name: transition.name.clone(), label: transition.label.clone(), from: transition.from.clone(), to: transition.to.clone(), sql, binds });
+            out.push(Move {
+                name: transition.name.clone(),
+                label: transition.label.clone(),
+                from: transition.from.clone(),
+                to: transition.to.clone(),
+                sql,
+                binds,
+            });
         }
         return Ok(out);
     }
@@ -241,41 +326,80 @@ pub async fn workflow_moves(ctx: &PluginHostContext, grant: &ModelGrant, prefix:
         let value = variable(ctx, &name).await?;
         values.insert(name, value);
     }
-    for (index, (transition, filter)) in rules.available_moves(&ctx.plugin_name, held, &values)?.into_iter().enumerate() {
+    for (index, (transition, filter)) in rules
+        .available_moves(&ctx.plugin_name, held, &values)?
+        .into_iter()
+        .enumerate()
+    {
         let Compiled { sql, binds } = compile(&filter, &format!("{prefix}{index}x"))?;
-        out.push(Move { name: transition.name.clone(), label: transition.label.clone(), from: transition.from.clone(), to: transition.to.clone(), sql, binds });
+        out.push(Move {
+            name: transition.name.clone(),
+            label: transition.label.clone(),
+            from: transition.from.clone(),
+            to: transition.to.clone(),
+            sql,
+            binds,
+        });
     }
     Ok(out)
 }
 
 /// The fields the caller may not read and may not set, by field name.
-pub async fn field_limits(ctx: &PluginHostContext, grant: &ModelGrant) -> Result<(HashSet<String>, HashSet<String>), HostError> {
-    let Some(rules) = &grant.rules else { return Ok(Default::default()) };
+pub async fn field_limits(
+    ctx: &PluginHostContext,
+    grant: &ModelGrant,
+) -> Result<(HashSet<String>, HashSet<String>), HostError> {
+    let Some(rules) = &grant.rules else {
+        return Ok(Default::default());
+    };
     if exempt(ctx).await? {
         return Ok(Default::default());
     }
     let held = &held_roles(ctx).await?;
     Ok((
-        rules.hidden_fields(&ctx.plugin_name, held).into_iter().map(str::to_string).collect(),
-        rules.locked_fields(&ctx.plugin_name, held).into_iter().map(str::to_string).collect(),
+        rules
+            .hidden_fields(&ctx.plugin_name, held)
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        rules
+            .locked_fields(&ctx.plugin_name, held)
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
     ))
 }
 
 /// Refuse a write that sets a field the caller's roles do not allow them to set.
-pub fn check_locked<'a>(locked: &HashSet<String>, fields: impl IntoIterator<Item = &'a String>, model: &str) -> Result<(), HostError> {
-    let mut refused: Vec<&String> = fields.into_iter().filter(|field| locked.contains(*field)).collect();
+pub fn check_locked<'a>(
+    locked: &HashSet<String>,
+    fields: impl IntoIterator<Item = &'a String>,
+    model: &str,
+) -> Result<(), HostError> {
+    let mut refused: Vec<&String> = fields
+        .into_iter()
+        .filter(|field| locked.contains(*field))
+        .collect();
     refused.sort();
     match refused.first() {
-        Some(field) => Err(HostError::Denied(format!("you cannot set `{model}.{field}`"))),
+        Some(field) => Err(HostError::Denied(format!(
+            "you cannot set `{model}.{field}`"
+        ))),
         None => Ok(()),
     }
 }
 
 /// Refuse a search or summary that looks at a field the caller may not read: it would show what
 /// the field holds even though the field itself is hidden.
-pub fn check_unreadable<'a>(hidden: &HashSet<String>, fields: impl IntoIterator<Item = &'a str>, model: &str) -> Result<(), HostError> {
+pub fn check_unreadable<'a>(
+    hidden: &HashSet<String>,
+    fields: impl IntoIterator<Item = &'a str>,
+    model: &str,
+) -> Result<(), HostError> {
     match fields.into_iter().find(|field| hidden.contains(*field)) {
-        Some(field) => Err(HostError::Denied(format!("you cannot search or summarise `{model}.{field}`"))),
+        Some(field) => Err(HostError::Denied(format!(
+            "you cannot search or summarise `{model}.{field}`"
+        ))),
         None => Ok(()),
     }
 }
@@ -310,7 +434,10 @@ mod trail_tests {
 
     #[test]
     fn the_plugins_own_function_earns_via_self_only() {
-        assert_eq!(trail_markers("gl", &trail(&["gl.post_entry"])), vec!["via:self"]);
+        assert_eq!(
+            trail_markers("gl", &trail(&["gl.post_entry"])),
+            vec!["via:self"]
+        );
     }
 
     #[test]

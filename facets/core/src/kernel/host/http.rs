@@ -76,15 +76,27 @@ struct Rules {
 }
 
 impl Rules {
-    const STRICT: Self = Self { allow_private_addresses: false, allow_plain_http: false };
+    const STRICT: Self = Self {
+        allow_private_addresses: false,
+        allow_plain_http: false,
+    };
 }
 
-pub async fn http_request(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
+pub async fn http_request(
+    ctx: &PluginHostContext,
+    payload: &JsonValue,
+) -> Result<JsonValue, HostError> {
     ctx.require_cap("http::request")?;
     let started = Instant::now();
     let answer = execute(&ctx.http_hosts, payload, Rules::STRICT).await;
-    let target = payload.get("url").and_then(JsonValue::as_str).and_then(|url| url::Url::parse(url).ok());
-    let host = target.as_ref().and_then(|url| url.host_str()).unwrap_or("?");
+    let target = payload
+        .get("url")
+        .and_then(JsonValue::as_str)
+        .and_then(|url| url::Url::parse(url).ok());
+    let host = target
+        .as_ref()
+        .and_then(|url| url.host_str())
+        .unwrap_or("?");
     match &answer {
         Ok(data) => log::info!(
             "{} http::request {host} -> {} in {}ms",
@@ -92,7 +104,10 @@ pub async fn http_request(ctx: &PluginHostContext, payload: &JsonValue) -> Resul
             data["status"],
             started.elapsed().as_millis()
         ),
-        Err(error) => log::warn!("{} http::request {host} refused or failed: {error}", ctx.plugin_name),
+        Err(error) => log::warn!(
+            "{} http::request {host} refused or failed: {error}",
+            ctx.plugin_name
+        ),
     }
     Ok(serde_json::json!({ "ok": true, "data": answer? }))
 }
@@ -150,56 +165,93 @@ fn refuse(message: impl Into<String>) -> HostError {
     HostError::Message(message.into())
 }
 
-async fn execute(allowed: &[String], payload: &JsonValue, rules: Rules) -> Result<JsonValue, HostError> {
-    let request: Request =
-        serde_json::from_value(payload.clone()).map_err(|error| HostError::InvalidPayload(error.to_string()))?;
+async fn execute(
+    allowed: &[String],
+    payload: &JsonValue,
+    rules: Rules,
+) -> Result<JsonValue, HostError> {
+    let request: Request = serde_json::from_value(payload.clone())
+        .map_err(|error| HostError::InvalidPayload(error.to_string()))?;
 
-    let method = match request.method.as_deref().unwrap_or("GET").to_ascii_uppercase().as_str() {
+    let method = match request
+        .method
+        .as_deref()
+        .unwrap_or("GET")
+        .to_ascii_uppercase()
+        .as_str()
+    {
         "GET" => reqwest::Method::GET,
         "POST" => reqwest::Method::POST,
         "PUT" => reqwest::Method::PUT,
         "PATCH" => reqwest::Method::PATCH,
         "DELETE" => reqwest::Method::DELETE,
         "HEAD" => reqwest::Method::HEAD,
-        other => return Err(HostError::InvalidPayload(format!("method `{other}` is not allowed"))),
+        other => {
+            return Err(HostError::InvalidPayload(format!(
+                "method `{other}` is not allowed"
+            )));
+        }
     };
 
-    let url = url::Url::parse(&request.url).map_err(|error| HostError::InvalidPayload(format!("url: {error}")))?;
+    let url = url::Url::parse(&request.url)
+        .map_err(|error| HostError::InvalidPayload(format!("url: {error}")))?;
     match url.scheme() {
         "https" => {}
         "http" if rules.allow_plain_http => {}
-        _ => return Err(HostError::InvalidPayload("only https:// urls are allowed".into())),
+        _ => {
+            return Err(HostError::InvalidPayload(
+                "only https:// urls are allowed".into(),
+            ));
+        }
     }
     if !url.username().is_empty() || url.password().is_some() {
-        return Err(HostError::InvalidPayload("a url must not carry a username or password".into()));
+        return Err(HostError::InvalidPayload(
+            "a url must not carry a username or password".into(),
+        ));
     }
-    let host = url.host_str().ok_or_else(|| HostError::InvalidPayload("the url has no host".into()))?.to_string();
+    let host = url
+        .host_str()
+        .ok_or_else(|| HostError::InvalidPayload("the url has no host".into()))?
+        .to_string();
     if !host_allowed(allowed, &host) {
         return Err(refuse(format!(
             "this plugin may not call `{host}`; list it under `http_hosts` in plugin.toml"
         )));
     }
-    let port = url.port_or_known_default().ok_or_else(|| HostError::InvalidPayload("the url has no port".into()))?;
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| HostError::InvalidPayload("the url has no port".into()))?;
 
     let mut headers = HeaderMap::new();
     if request.headers.len() > MAX_HEADERS {
-        return Err(HostError::InvalidPayload(format!("at most {MAX_HEADERS} headers")));
+        return Err(HostError::InvalidPayload(format!(
+            "at most {MAX_HEADERS} headers"
+        )));
     }
     for (name, value) in &request.headers {
         let lower = name.to_ascii_lowercase();
         if FORBIDDEN_HEADERS.contains(&lower.as_str()) {
-            return Err(HostError::InvalidPayload(format!("the `{name}` header is set by the kernel")));
+            return Err(HostError::InvalidPayload(format!(
+                "the `{name}` header is set by the kernel"
+            )));
         }
         let name = HeaderName::from_bytes(lower.as_bytes())
             .map_err(|_| HostError::InvalidPayload(format!("`{name}` is not a header name")))?;
-        let value = HeaderValue::from_str(value)
-            .map_err(|_| HostError::InvalidPayload(format!("the value of `{name}` is not a valid header value")))?;
+        let value = HeaderValue::from_str(value).map_err(|_| {
+            HostError::InvalidPayload(format!("the value of `{name}` is not a valid header value"))
+        })?;
         headers.insert(name, value);
     }
 
-    let body_choices = [request.body.is_some(), request.json.is_some(), request.base64.is_some()];
+    let body_choices = [
+        request.body.is_some(),
+        request.json.is_some(),
+        request.base64.is_some(),
+    ];
     if body_choices.iter().filter(|set| **set).count() > 1 {
-        return Err(HostError::InvalidPayload("give only one of `body`, `json` and `base64`".into()));
+        return Err(HostError::InvalidPayload(
+            "give only one of `body`, `json` and `base64`".into(),
+        ));
     }
     let body: Option<Vec<u8>> = if let Some(text) = request.body {
         Some(text.into_bytes())
@@ -207,7 +259,10 @@ async fn execute(allowed: &[String], payload: &JsonValue, rules: Rules) -> Resul
         headers
             .entry(reqwest::header::CONTENT_TYPE)
             .or_insert(HeaderValue::from_static("application/json"));
-        Some(serde_json::to_vec(&json).map_err(|error| HostError::InvalidPayload(error.to_string()))?)
+        Some(
+            serde_json::to_vec(&json)
+                .map_err(|error| HostError::InvalidPayload(error.to_string()))?,
+        )
     } else if let Some(encoded) = request.base64 {
         Some(
             STANDARD
@@ -217,24 +272,43 @@ async fn execute(allowed: &[String], payload: &JsonValue, rules: Rules) -> Resul
     } else {
         None
     };
-    if body.as_ref().is_some_and(|bytes| bytes.len() > MAX_BODY_BYTES) {
-        return Err(HostError::InvalidPayload(format!("a request body is at most {MAX_BODY_BYTES} bytes")));
+    if body
+        .as_ref()
+        .is_some_and(|bytes| bytes.len() > MAX_BODY_BYTES)
+    {
+        return Err(HostError::InvalidPayload(format!(
+            "a request body is at most {MAX_BODY_BYTES} bytes"
+        )));
     }
 
     // Resolve here, check every address, and connect to one of those, not to the name.
-    let addresses: Vec<SocketAddr> = tokio::time::timeout(Duration::from_secs(5), tokio::net::lookup_host((host.as_str(), port)))
-        .await
-        .map_err(|_| refuse(format!("`{host}` did not resolve in time")))?
-        .map_err(|_| refuse(format!("`{host}` could not be resolved")))?
-        .collect();
+    let addresses: Vec<SocketAddr> = tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio::net::lookup_host((host.as_str(), port)),
+    )
+    .await
+    .map_err(|_| refuse(format!("`{host}` did not resolve in time")))?
+    .map_err(|_| refuse(format!("`{host}` could not be resolved")))?
+    .collect();
     if addresses.is_empty() {
         return Err(refuse(format!("`{host}` has no address")));
     }
-    if !rules.allow_private_addresses && addresses.iter().any(|address| !is_public_address(address.ip())) {
-        return Err(refuse(format!("`{host}` points at a private or reserved address")));
+    if !rules.allow_private_addresses
+        && addresses
+            .iter()
+            .any(|address| !is_public_address(address.ip()))
+    {
+        return Err(refuse(format!(
+            "`{host}` points at a private or reserved address"
+        )));
     }
 
-    let timeout = Duration::from_secs(request.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS).clamp(1, MAX_TIMEOUT_SECS));
+    let timeout = Duration::from_secs(
+        request
+            .timeout_secs
+            .unwrap_or(DEFAULT_TIMEOUT_SECS)
+            .clamp(1, MAX_TIMEOUT_SECS),
+    );
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .no_proxy()
@@ -250,9 +324,15 @@ async fn execute(allowed: &[String], payload: &JsonValue, rules: Rules) -> Resul
     }
     let mut response = builder.send().await.map_err(|error| {
         if error.is_timeout() {
-            refuse(format!("`{host}` did not answer within {}s", timeout.as_secs()))
+            refuse(format!(
+                "`{host}` did not answer within {}s",
+                timeout.as_secs()
+            ))
         } else {
-            refuse(format!("the request to `{host}` failed ({})", describe(&error)))
+            refuse(format!(
+                "the request to `{host}` failed ({})",
+                describe(&error)
+            ))
         }
     })?;
 
@@ -261,17 +341,23 @@ async fn execute(allowed: &[String], payload: &JsonValue, rules: Rules) -> Resul
     for (name, value) in response.headers() {
         if let Ok(value) = value.to_str() {
             // A repeated header keeps its last value; plugins rarely need more.
-            response_headers.insert(name.as_str().to_string(), JsonValue::String(value.to_string()));
+            response_headers.insert(
+                name.as_str().to_string(),
+                JsonValue::String(value.to_string()),
+            );
         }
     }
     let mut bytes: Vec<u8> = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|error| refuse(format!("the answer from `{host}` was cut off ({})", describe(&error))))?
-    {
+    while let Some(chunk) = response.chunk().await.map_err(|error| {
+        refuse(format!(
+            "the answer from `{host}` was cut off ({})",
+            describe(&error)
+        ))
+    })? {
         if bytes.len() + chunk.len() > MAX_BODY_BYTES {
-            return Err(refuse(format!("the answer from `{host}` is larger than {MAX_BODY_BYTES} bytes")));
+            return Err(refuse(format!(
+                "the answer from `{host}` is larger than {MAX_BODY_BYTES} bytes"
+            )));
         }
         bytes.extend_from_slice(&chunk);
     }
@@ -306,7 +392,10 @@ mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    const LOCAL: Rules = Rules { allow_private_addresses: true, allow_plain_http: true };
+    const LOCAL: Rules = Rules {
+        allow_private_addresses: true,
+        allow_plain_http: true,
+    };
 
     fn hosts(list: &[&str]) -> Vec<String> {
         list.iter().map(|host| (*host).to_string()).collect()
@@ -319,7 +408,10 @@ mod tests {
         assert!(host_allowed(&list, "API.Example.COM."));
         assert!(host_allowed(&list, "a.cdn.example.org"));
         assert!(host_allowed(&list, "a.b.cdn.example.org"));
-        assert!(!host_allowed(&list, "cdn.example.org"), "a wildcard does not cover the apex");
+        assert!(
+            !host_allowed(&list, "cdn.example.org"),
+            "a wildcard does not cover the apex"
+        );
         assert!(!host_allowed(&list, "evilcdn.example.org"));
         assert!(!host_allowed(&list, "api.example.com.evil.net"));
         assert!(!host_allowed(&list, "example.com"));
@@ -330,14 +422,40 @@ mod tests {
     #[test]
     fn only_public_addresses_pass() {
         for blocked in [
-            "127.0.0.1", "10.1.2.3", "172.16.0.1", "172.31.255.255", "192.168.1.1", "169.254.169.254", "0.0.0.0",
-            "100.64.0.1", "224.0.0.1", "255.255.255.255", "192.0.2.1", "198.18.0.1", "240.0.0.1", "::1", "::",
-            "fe80::1", "fc00::1", "fd12:3456::1", "ff02::1", "::ffff:127.0.0.1", "::ffff:10.0.0.1", "2001:db8::1",
+            "127.0.0.1",
+            "10.1.2.3",
+            "172.16.0.1",
+            "172.31.255.255",
+            "192.168.1.1",
+            "169.254.169.254",
+            "0.0.0.0",
+            "100.64.0.1",
+            "224.0.0.1",
+            "255.255.255.255",
+            "192.0.2.1",
+            "198.18.0.1",
+            "240.0.0.1",
+            "::1",
+            "::",
+            "fe80::1",
+            "fc00::1",
+            "fd12:3456::1",
+            "ff02::1",
+            "::ffff:127.0.0.1",
+            "::ffff:10.0.0.1",
+            "2001:db8::1",
         ] {
             let address: IpAddr = blocked.parse().unwrap();
             assert!(!is_public_address(address), "{blocked} must be refused");
         }
-        for open in ["8.8.8.8", "1.1.1.1", "93.184.216.34", "2606:4700:4700::1111", "172.32.0.1", "::ffff:8.8.8.8"] {
+        for open in [
+            "8.8.8.8",
+            "1.1.1.1",
+            "93.184.216.34",
+            "2606:4700:4700::1111",
+            "172.32.0.1",
+            "::ffff:8.8.8.8",
+        ] {
             let address: IpAddr = open.parse().unwrap();
             assert!(is_public_address(address), "{open} must pass");
         }
@@ -353,7 +471,10 @@ mod tests {
         };
 
         let not_listed = call(serde_json::json!({ "url": "https://evil.example.net/" })).await;
-        assert!(matches!(&not_listed, Err(HostError::Message(m)) if m.contains("http_hosts")), "{not_listed:?}");
+        assert!(
+            matches!(&not_listed, Err(HostError::Message(m)) if m.contains("http_hosts")),
+            "{not_listed:?}"
+        );
         for bad in [
             serde_json::json!({ "url": "http://api.example.com/" }),
             serde_json::json!({ "url": "ftp://api.example.com/" }),
@@ -365,12 +486,18 @@ mod tests {
             serde_json::json!({ "url": "https://api.example.com/", "body": "x".repeat(MAX_BODY_BYTES + 1) }),
         ] {
             let result = call(bad.clone()).await;
-            assert!(matches!(result, Err(HostError::InvalidPayload(_))), "{bad}: {result:?}");
+            assert!(
+                matches!(result, Err(HostError::InvalidPayload(_))),
+                "{bad}: {result:?}"
+            );
         }
         // Allowed by name but pointing at this machine.
         for target in ["https://localhost/", "https://127.0.0.1/"] {
             let result = call(serde_json::json!({ "url": target })).await;
-            assert!(matches!(&result, Err(HostError::Message(m)) if m.contains("private")), "{target}: {result:?}");
+            assert!(
+                matches!(&result, Err(HostError::Message(m)) if m.contains("private")),
+                "{target}: {result:?}"
+            );
         }
     }
 
@@ -390,7 +517,11 @@ mod tests {
                 if let Some(head_end) = text.find("\r\n\r\n") {
                     let length = text
                         .lines()
-                        .find_map(|line| line.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0)))
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                        })
                         .unwrap_or(0);
                     if seen.len() >= head_end + 4 + length {
                         break;
@@ -409,8 +540,12 @@ mod tests {
 
     #[tokio::test]
     async fn sends_the_request_and_returns_status_headers_and_body() {
-        let reply = b"HTTP/1.1 201 Created\r\nx-thing: yes\r\ncontent-length: 5\r\n\r\nhello".to_vec();
-        let reply = String::from_utf8(reply).unwrap().replace("\\\\r\\\\n", "\r\n").into_bytes();
+        let reply =
+            b"HTTP/1.1 201 Created\r\nx-thing: yes\r\ncontent-length: 5\r\n\r\nhello".to_vec();
+        let reply = String::from_utf8(reply)
+            .unwrap()
+            .replace("\\\\r\\\\n", "\r\n")
+            .into_bytes();
         let (port, seen) = serve_once(reply).await;
         let list = hosts(&["localhost"]);
         let answer = execute(
@@ -439,21 +574,39 @@ mod tests {
 
     #[tokio::test]
     async fn redirects_are_not_followed() {
-        let reply = "HTTP/1.1 302 Found\r\nlocation: http://169.254.169.254/\r\ncontent-length: 0\r\n\r\n".replace("\\\\r\\\\n", "\r\n");
+        let reply =
+            "HTTP/1.1 302 Found\r\nlocation: http://169.254.169.254/\r\ncontent-length: 0\r\n\r\n"
+                .replace("\\\\r\\\\n", "\r\n");
         let (port, _seen) = serve_once(reply.into_bytes()).await;
-        let answer = execute(&hosts(&["localhost"]), &serde_json::json!({ "url": format!("http://localhost:{port}/") }), LOCAL)
-            .await
-            .unwrap();
+        let answer = execute(
+            &hosts(&["localhost"]),
+            &serde_json::json!({ "url": format!("http://localhost:{port}/") }),
+            LOCAL,
+        )
+        .await
+        .unwrap();
         assert_eq!(answer["status"], 302);
         assert_eq!(answer["headers"]["location"], "http://169.254.169.254/");
     }
 
     #[tokio::test]
     async fn an_oversized_answer_is_refused() {
-        let mut reply = format!("HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n", MAX_BODY_BYTES + 10).into_bytes();
+        let mut reply = format!(
+            "HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n",
+            MAX_BODY_BYTES + 10
+        )
+        .into_bytes();
         reply.extend(std::iter::repeat_n(b'a', MAX_BODY_BYTES + 10));
         let (port, _seen) = serve_once(reply).await;
-        let result = execute(&hosts(&["localhost"]), &serde_json::json!({ "url": format!("http://localhost:{port}/") }), LOCAL).await;
-        assert!(matches!(&result, Err(HostError::Message(m)) if m.contains("larger")), "{result:?}");
+        let result = execute(
+            &hosts(&["localhost"]),
+            &serde_json::json!({ "url": format!("http://localhost:{port}/") }),
+            LOCAL,
+        )
+        .await;
+        assert!(
+            matches!(&result, Err(HostError::Message(m)) if m.contains("larger")),
+            "{result:?}"
+        );
     }
 }

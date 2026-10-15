@@ -53,7 +53,10 @@ use super::query::{Filter, Op, QueryError};
 pub const RULE_DIR: &str = "rules";
 
 /// Read and check a plugin's rule files against its models. Every problem found is reported.
-pub fn parse_all(files: &[(String, String)], models: &[ModelDef]) -> Result<Vec<RuleSet>, Vec<String>> {
+pub fn parse_all(
+    files: &[(String, String)],
+    models: &[ModelDef],
+) -> Result<Vec<RuleSet>, Vec<String>> {
     let mut problems = Vec::new();
     let mut sets = Vec::new();
     for (name, text) in files {
@@ -61,8 +64,15 @@ pub fn parse_all(files: &[(String, String)], models: &[ModelDef]) -> Result<Vec<
             Err(error) => problems.push(format!("{name}: {error}")),
             Ok(set) => {
                 match models.iter().find(|model| model.name == set.model) {
-                    None => problems.push(format!("{name}: there is no model `{}` in this plugin", set.model)),
-                    Some(model) => problems.extend(set.problems(model).into_iter().map(|p| format!("{name}: {p}"))),
+                    None => problems.push(format!(
+                        "{name}: there is no model `{}` in this plugin",
+                        set.model
+                    )),
+                    Some(model) => problems.extend(
+                        set.problems(model)
+                            .into_iter()
+                            .map(|p| format!("{name}: {p}")),
+                    ),
                 }
                 if sets.iter().any(|other: &RuleSet| other.model == set.model) {
                     problems.push(format!("{name}: `{}` already has a rule file", set.model));
@@ -71,7 +81,11 @@ pub fn parse_all(files: &[(String, String)], models: &[ModelDef]) -> Result<Vec<
             }
         }
     }
-    if problems.is_empty() { Ok(sets) } else { Err(problems) }
+    if problems.is_empty() {
+        Ok(sets)
+    } else {
+        Err(problems)
+    }
 }
 
 /// What can be done to a record.
@@ -85,7 +99,12 @@ pub enum Operation {
 }
 
 impl Operation {
-    pub const ALL: [Operation; 4] = [Operation::Read, Operation::Create, Operation::Write, Operation::Delete];
+    pub const ALL: [Operation; 4] = [
+        Operation::Read,
+        Operation::Create,
+        Operation::Write,
+        Operation::Delete,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -195,11 +214,17 @@ pub enum Decision {
 
 /// A role name made absolute: `approver` in plugin `hr_leave` is `hr_leave.approver`.
 pub fn qualify(plugin: &str, role: &str) -> String {
-    if role.contains('.') || role == "org_admin" || role.starts_with("via:") { role.to_string() } else { format!("{plugin}.{role}") }
+    if role.contains('.') || role == "org_admin" || role.starts_with("via:") {
+        role.to_string()
+    } else {
+        format!("{plugin}.{role}")
+    }
 }
 
 fn holds(plugin: &str, held: &[String], wanted: &[String]) -> bool {
-    wanted.iter().any(|role| held.iter().any(|h| *h == qualify(plugin, role)))
+    wanted
+        .iter()
+        .any(|role| held.iter().any(|h| *h == qualify(plugin, role)))
 }
 
 impl RuleSet {
@@ -216,22 +241,35 @@ impl RuleSet {
             .collect()
     }
 
-    fn restrictions_for(&self, plugin: &str, op: Operation, roles: &[String]) -> Vec<&RestrictRule> {
+    fn restrictions_for(
+        &self,
+        plugin: &str,
+        op: Operation,
+        roles: &[String],
+    ) -> Vec<&RestrictRule> {
         self.restrict
             .iter()
             .filter(|rule| rule.operations.contains(&op))
-            .filter(|rule| rule.exempt_roles.is_empty() || !holds(plugin, roles, &rule.exempt_roles))
+            .filter(|rule| {
+                rule.exempt_roles.is_empty() || !holds(plugin, roles, &rule.exempt_roles)
+            })
             .collect()
     }
 
     /// The variables the rules that apply to this person and operation need answered first.
-    pub fn variables_needed(&self, plugin: &str, op: Operation, roles: &[String]) -> BTreeSet<String> {
+    pub fn variables_needed(
+        &self,
+        plugin: &str,
+        op: Operation,
+        roles: &[String],
+    ) -> BTreeSet<String> {
         let mut found = BTreeSet::new();
         let grants = self.grants_for(plugin, op, roles);
-        let whens = grants
-            .iter()
-            .filter_map(|rule| rule.when.as_ref())
-            .chain(self.restrictions_for(plugin, op, roles).into_iter().map(|rule| &rule.when));
+        let whens = grants.iter().filter_map(|rule| rule.when.as_ref()).chain(
+            self.restrictions_for(plugin, op, roles)
+                .into_iter()
+                .map(|rule| &rule.when),
+        );
         for when in whens {
             collect_variables(&Value::Object(when.clone()), &mut found);
         }
@@ -241,7 +279,10 @@ impl RuleSet {
     /// Whether anything limits this operation at all (a model with no rules for it is open).
     pub fn limits(&self, op: Operation) -> bool {
         self.access.iter().any(|rule| rule.operations.contains(&op))
-            || self.restrict.iter().any(|rule| rule.operations.contains(&op))
+            || self
+                .restrict
+                .iter()
+                .any(|rule| rule.operations.contains(&op))
     }
 
     /// What the rules allow `roles` to do with `op`. `variables` has the answer for every name
@@ -277,7 +318,11 @@ impl RuleSet {
         if allowed == Filter::Never {
             return Ok(Decision::Deny);
         }
-        Ok(if allowed.is_empty() { Decision::Open } else { Decision::Only(allowed) })
+        Ok(if allowed.is_empty() {
+            Decision::Open
+        } else {
+            Decision::Only(allowed)
+        })
     }
 
     /// The transitions `roles` may make, whatever the record looks like.
@@ -312,13 +357,21 @@ impl RuleSet {
         roles: &[String],
         variables: &HashMap<String, Value>,
     ) -> Result<Vec<(&Transition, Filter)>, QueryError> {
-        let Some(workflow) = &self.workflow else { return Ok(Vec::new()) };
+        let Some(workflow) = &self.workflow else {
+            return Ok(Vec::new());
+        };
         let mut out = Vec::new();
         for transition in self.transitions_for(plugin, roles) {
             let from = Filter::Cmp {
                 field: workflow.field.clone(),
                 op: Op::In,
-                value: Value::Array(transition.from.iter().map(|s| Value::String(s.clone())).collect()),
+                value: Value::Array(
+                    transition
+                        .from
+                        .iter()
+                        .map(|s| Value::String(s.clone()))
+                        .collect(),
+                ),
             };
             let when = match &transition.when {
                 Some(when) => bind(Filter::parse(when)?, variables),
@@ -341,7 +394,9 @@ impl RuleSet {
         roles: &[String],
         variables: &HashMap<String, Value>,
     ) -> Result<Decision, QueryError> {
-        let Some(workflow) = &self.workflow else { return Ok(Decision::Open) };
+        let Some(workflow) = &self.workflow else {
+            return Ok(Decision::Open);
+        };
         let mut allowed = Filter::Never;
         for (transition, condition) in self.available_moves(plugin, roles, variables)? {
             if transition.to == to {
@@ -351,7 +406,11 @@ impl RuleSet {
         if allowed == Filter::Never {
             return Ok(Decision::Deny);
         }
-        let unchanged = Filter::Cmp { field: workflow.field.clone(), op: Op::Eq, value: Value::String(to.to_string()) };
+        let unchanged = Filter::Cmp {
+            field: workflow.field.clone(),
+            op: Op::Eq,
+            value: Value::String(to.to_string()),
+        };
         Ok(Decision::Only(unchanged.or(allowed)))
     }
 
@@ -359,7 +418,11 @@ impl RuleSet {
     pub fn hidden_fields(&self, plugin: &str, roles: &[String]) -> HashSet<&str> {
         self.fields
             .iter()
-            .filter(|rule| rule.read_roles.as_ref().is_some_and(|wanted| !holds(plugin, roles, wanted)))
+            .filter(|rule| {
+                rule.read_roles
+                    .as_ref()
+                    .is_some_and(|wanted| !holds(plugin, roles, wanted))
+            })
             .flat_map(|rule| rule.fields.iter().map(String::as_str))
             .collect()
     }
@@ -368,7 +431,11 @@ impl RuleSet {
     pub fn locked_fields(&self, plugin: &str, roles: &[String]) -> HashSet<&str> {
         self.fields
             .iter()
-            .filter(|rule| rule.write_roles.as_ref().is_some_and(|wanted| !holds(plugin, roles, wanted)))
+            .filter(|rule| {
+                rule.write_roles
+                    .as_ref()
+                    .is_some_and(|wanted| !holds(plugin, roles, wanted))
+            })
             .flat_map(|rule| rule.fields.iter().map(String::as_str))
             .collect()
     }
@@ -376,14 +443,21 @@ impl RuleSet {
     /// What is wrong with the rules, given the model they are for. Empty when they are fine.
     pub fn problems(&self, model: &ModelDef) -> Vec<String> {
         let mut problems = Vec::new();
-        let known = |name: &str| name == "id" || model.live_fields().any(|field| field.name == name);
+        let known =
+            |name: &str| name == "id" || model.live_fields().any(|field| field.name == name);
         let mut names = HashSet::new();
         for rule in &self.access {
             if !names.insert(rule.name.as_str()) {
-                problems.push(format!("{}: two rules are named `{}`", self.model, rule.name));
+                problems.push(format!(
+                    "{}: two rules are named `{}`",
+                    self.model, rule.name
+                ));
             }
             if rule.operations.is_empty() {
-                problems.push(format!("{}: rule `{}` names no operations", self.model, rule.name));
+                problems.push(format!(
+                    "{}: rule `{}` names no operations",
+                    self.model, rule.name
+                ));
             }
             if let Some(when) = &rule.when {
                 self.check_when(&rule.name, when, &known, &mut problems);
@@ -391,10 +465,16 @@ impl RuleSet {
         }
         for rule in &self.restrict {
             if !names.insert(rule.name.as_str()) {
-                problems.push(format!("{}: two rules are named `{}`", self.model, rule.name));
+                problems.push(format!(
+                    "{}: two rules are named `{}`",
+                    self.model, rule.name
+                ));
             }
             if rule.operations.is_empty() {
-                problems.push(format!("{}: rule `{}` names no operations", self.model, rule.name));
+                problems.push(format!(
+                    "{}: rule `{}` names no operations",
+                    self.model, rule.name
+                ));
             }
             self.check_when(&rule.name, &rule.when, &known, &mut problems);
         }
@@ -406,40 +486,68 @@ impl RuleSet {
                 problems.push(format!("{}: a field rule names no fields", self.model));
             }
             if rule.read_roles.is_none() && rule.write_roles.is_none() {
-                problems.push(format!("{}: a field rule limits neither reading nor writing", self.model));
+                problems.push(format!(
+                    "{}: a field rule limits neither reading nor writing",
+                    self.model
+                ));
             }
             for field in &rule.fields {
                 if !known(field) || field == "id" {
-                    problems.push(format!("{}: field rule names `{field}`, which is not a field", self.model));
+                    problems.push(format!(
+                        "{}: field rule names `{field}`, which is not a field",
+                        self.model
+                    ));
                 }
             }
         }
         problems
     }
 
-    fn workflow_problems(&self, workflow: &Workflow, model: &ModelDef, known: &dyn Fn(&str) -> bool, problems: &mut Vec<String>) {
+    fn workflow_problems(
+        &self,
+        workflow: &Workflow,
+        model: &ModelDef,
+        known: &dyn Fn(&str) -> bool,
+        problems: &mut Vec<String>,
+    ) {
         let name = &self.model;
         let Some(field) = model.live_fields().find(|f| f.name == workflow.field) else {
-            problems.push(format!("{name}: the workflow's field `{}` is not a field", workflow.field));
+            problems.push(format!(
+                "{name}: the workflow's field `{}` is not a field",
+                workflow.field
+            ));
             return;
         };
         if field.kind != super::definition::FieldType::Select {
-            problems.push(format!("{name}: the workflow's field `{}` must be a select field", workflow.field));
+            problems.push(format!(
+                "{name}: the workflow's field `{}` must be a select field",
+                workflow.field
+            ));
             return;
         }
         let states: HashSet<&str> = field.options.iter().map(|o| o.value.as_str()).collect();
         let state = |text: &str, what: &str, problems: &mut Vec<String>| {
             if !states.contains(text) {
-                problems.push(format!("{name}: the workflow {what} `{text}`, which is not an option of `{}`", workflow.field));
+                problems.push(format!(
+                    "{name}: the workflow {what} `{text}`, which is not an option of `{}`",
+                    workflow.field
+                ));
             }
         };
         let initial: Vec<String> = if workflow.initial.is_empty() {
-            field.default.as_ref().and_then(Value::as_str).map(|d| vec![d.to_string()]).unwrap_or_default()
+            field
+                .default
+                .as_ref()
+                .and_then(Value::as_str)
+                .map(|d| vec![d.to_string()])
+                .unwrap_or_default()
         } else {
             workflow.initial.clone()
         };
         if initial.is_empty() {
-            problems.push(format!("{name}: the workflow needs `initial` states (or the field a `default`)"));
+            problems.push(format!(
+                "{name}: the workflow needs `initial` states (or the field a `default`)"
+            ));
         }
         for text in &initial {
             state(text, "starts in", problems);
@@ -450,28 +558,52 @@ impl RuleSet {
         let mut names = HashSet::new();
         for transition in &workflow.transitions {
             if !names.insert(transition.name.as_str()) {
-                problems.push(format!("{name}: two transitions are named `{}`", transition.name));
+                problems.push(format!(
+                    "{name}: two transitions are named `{}`",
+                    transition.name
+                ));
             }
             if transition.from.is_empty() {
-                problems.push(format!("{name}: transition `{}` has no `from` states", transition.name));
+                problems.push(format!(
+                    "{name}: transition `{}` has no `from` states",
+                    transition.name
+                ));
             }
             for text in &transition.from {
                 state(text, &format!("moves `{}` from", transition.name), problems);
             }
-            state(&transition.to, &format!("moves `{}` to", transition.name), problems);
+            state(
+                &transition.to,
+                &format!("moves `{}` to", transition.name),
+                problems,
+            );
             if let Some(when) = &transition.when {
-                self.check_when(&format!("transition {}", transition.name), when, known, problems);
+                self.check_when(
+                    &format!("transition {}", transition.name),
+                    when,
+                    known,
+                    problems,
+                );
             }
         }
     }
 
-    fn check_when(&self, rule: &str, when: &Map<String, Value>, known: &dyn Fn(&str) -> bool, problems: &mut Vec<String>) {
+    fn check_when(
+        &self,
+        rule: &str,
+        when: &Map<String, Value>,
+        known: &dyn Fn(&str) -> bool,
+        problems: &mut Vec<String>,
+    ) {
         match Filter::parse(when) {
             Err(error) => problems.push(format!("{}: rule `{rule}`: {error}", self.model)),
             Ok(filter) => {
                 for field in filter.fields() {
                     if !known(field) {
-                        problems.push(format!("{}: rule `{rule}` compares `{field}`, which is not a field", self.model));
+                        problems.push(format!(
+                            "{}: rule `{rule}` compares `{field}`, which is not a field",
+                            self.model
+                        ));
                     }
                 }
             }
@@ -494,7 +626,8 @@ fn collect_variables(value: &Value, found: &mut BTreeSet<String>) {
 
 /// `$name` is a variable; `$$name` is the text `$name`.
 fn variable_name(text: &str) -> Option<&str> {
-    text.strip_prefix('$').filter(|rest| !rest.is_empty() && !rest.starts_with('$'))
+    text.strip_prefix('$')
+        .filter(|rest| !rest.is_empty() && !rest.starts_with('$'))
 }
 
 /// A filter with its variables replaced by their values and the obvious simplified away: an `and`
@@ -546,8 +679,18 @@ fn simplify(filter: Filter) -> Filter {
 
 fn bind_variables(filter: Filter, variables: &HashMap<String, Value>) -> Filter {
     match filter {
-        Filter::And(parts) => Filter::And(parts.into_iter().map(|p| bind_variables(p, variables)).collect()),
-        Filter::Or(parts) => Filter::Or(parts.into_iter().map(|p| bind_variables(p, variables)).collect()),
+        Filter::And(parts) => Filter::And(
+            parts
+                .into_iter()
+                .map(|p| bind_variables(p, variables))
+                .collect(),
+        ),
+        Filter::Or(parts) => Filter::Or(
+            parts
+                .into_iter()
+                .map(|p| bind_variables(p, variables))
+                .collect(),
+        ),
         Filter::Not(inner) => Filter::Not(Box::new(bind_variables(*inner, variables))),
         Filter::Never => Filter::Never,
         Filter::Cmp { field, op, value } => {
@@ -558,7 +701,9 @@ fn bind_variables(filter: Filter, variables: &HashMap<String, Value>) -> Filter 
             let Some(name) = name else {
                 // `$$x` is a literal `$x`.
                 let value = match value {
-                    Value::String(text) if text.starts_with("$$") => Value::String(text[1..].to_string()),
+                    Value::String(text) if text.starts_with("$$") => {
+                        Value::String(text[1..].to_string())
+                    }
                     other => other,
                 };
                 return Filter::Cmp { field, op, value };
@@ -597,7 +742,10 @@ mod tests {
     }
 
     fn vars(pairs: &[(&str, Value)]) -> HashMap<String, Value> {
-        pairs.iter().map(|(k, v)| ((*k).to_string(), v.clone())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), v.clone()))
+            .collect()
     }
 
     fn leave() -> RuleSet {
@@ -623,22 +771,44 @@ mod tests {
     #[test]
     fn a_member_sees_only_their_own_records() -> Result<(), QueryError> {
         let set = leave();
-        let me = vars(&[("hr.employee", json!("e:1")), ("hr.subordinates", json!(["e:2", "e:3"]))]);
+        let me = vars(&[
+            ("hr.employee", json!("e:1")),
+            ("hr.subordinates", json!(["e:2", "e:3"])),
+        ]);
         let decision = set.decide("hr_leave", Operation::Read, &[], &me)?;
-        assert_eq!(decision, Decision::Only(Filter::Cmp { field: "employee".into(), op: Op::Eq, value: json!("e:1") }));
+        assert_eq!(
+            decision,
+            Decision::Only(Filter::Cmp {
+                field: "employee".into(),
+                op: Op::Eq,
+                value: json!("e:1")
+            })
+        );
         Ok(())
     }
 
     #[test]
     fn roles_widen_what_is_visible() -> Result<(), QueryError> {
         let set = leave();
-        let me = vars(&[("hr.employee", json!("e:1")), ("hr.subordinates", json!(["e:2", "e:3"]))]);
-        let Decision::Only(Filter::Or(parts)) = set.decide("hr_leave", Operation::Read, &roles(&["hr_leave.approver"]), &me)? else {
+        let me = vars(&[
+            ("hr.employee", json!("e:1")),
+            ("hr.subordinates", json!(["e:2", "e:3"])),
+        ]);
+        let Decision::Only(Filter::Or(parts)) = set.decide(
+            "hr_leave",
+            Operation::Read,
+            &roles(&["hr_leave.approver"]),
+            &me,
+        )?
+        else {
             return Err(QueryError::Invalid("expected an or of grants".into()));
         };
         assert_eq!(parts.len(), 2, "own, plus their team");
         // The HR manager's grant has no `when`: everything.
-        assert_eq!(set.decide("hr_leave", Operation::Read, &roles(&["hr.hr_manager"]), &me)?, Decision::Open);
+        assert_eq!(
+            set.decide("hr_leave", Operation::Read, &roles(&["hr.hr_manager"]), &me)?,
+            Decision::Open
+        );
         Ok(())
     }
 
@@ -653,7 +823,15 @@ mod tests {
         assert!(filter.fields().contains(&"state"));
         assert!(filter.fields().contains(&"employee"));
         // The HR manager is exempt from the restriction and has an unconditional grant.
-        assert_eq!(set.decide("hr_leave", Operation::Write, &roles(&["hr.hr_manager"]), &me)?, Decision::Open);
+        assert_eq!(
+            set.decide(
+                "hr_leave",
+                Operation::Write,
+                &roles(&["hr.hr_manager"]),
+                &me
+            )?,
+            Decision::Open
+        );
         Ok(())
     }
 
@@ -661,24 +839,53 @@ mod tests {
     fn a_variable_without_a_value_matches_nothing() -> Result<(), QueryError> {
         let set = leave();
         // Not an employee: no `hr.employee`, and nothing else grants.
-        assert_eq!(set.decide("hr_leave", Operation::Read, &[], &HashMap::new())?, Decision::Deny);
         assert_eq!(
-            set.decide("hr_leave", Operation::Read, &[], &vars(&[("hr.employee", Value::Null)]))?,
+            set.decide("hr_leave", Operation::Read, &[], &HashMap::new())?,
+            Decision::Deny
+        );
+        assert_eq!(
+            set.decide(
+                "hr_leave",
+                Operation::Read,
+                &[],
+                &vars(&[("hr.employee", Value::Null)])
+            )?,
             Decision::Deny
         );
         // An empty team grants nothing from that row, but own still does.
-        let me = vars(&[("hr.employee", json!("e:1")), ("hr.subordinates", json!([]))]);
-        let decision = set.decide("hr_leave", Operation::Read, &roles(&["hr_leave.approver"]), &me)?;
+        let me = vars(&[
+            ("hr.employee", json!("e:1")),
+            ("hr.subordinates", json!([])),
+        ]);
+        let decision = set.decide(
+            "hr_leave",
+            Operation::Read,
+            &roles(&["hr_leave.approver"]),
+            &me,
+        )?;
         assert!(matches!(decision, Decision::Only(_)));
         Ok(())
     }
 
     #[test]
-    fn an_operation_no_grant_names_is_open_and_one_a_grant_names_is_closed_to_others() -> Result<(), QueryError> {
-        let set = rules(json!({ "model": "m", "access": [ { "name": "a", "roles": ["boss"], "operations": ["delete"] } ] }));
-        assert_eq!(set.decide("p", Operation::Read, &[], &HashMap::new())?, Decision::Open, "nothing governs reading");
-        assert_eq!(set.decide("p", Operation::Delete, &[], &HashMap::new())?, Decision::Deny);
-        assert_eq!(set.decide("p", Operation::Delete, &roles(&["p.boss"]), &HashMap::new())?, Decision::Open);
+    fn an_operation_no_grant_names_is_open_and_one_a_grant_names_is_closed_to_others()
+    -> Result<(), QueryError> {
+        let set = rules(
+            json!({ "model": "m", "access": [ { "name": "a", "roles": ["boss"], "operations": ["delete"] } ] }),
+        );
+        assert_eq!(
+            set.decide("p", Operation::Read, &[], &HashMap::new())?,
+            Decision::Open,
+            "nothing governs reading"
+        );
+        assert_eq!(
+            set.decide("p", Operation::Delete, &[], &HashMap::new())?,
+            Decision::Deny
+        );
+        assert_eq!(
+            set.decide("p", Operation::Delete, &roles(&["p.boss"]), &HashMap::new())?,
+            Decision::Open
+        );
         assert!(set.limits(Operation::Delete) && !set.limits(Operation::Read));
         Ok(())
     }
@@ -688,25 +895,46 @@ mod tests {
         let set = leave();
         let plain = set.variables_needed("hr_leave", Operation::Read, &[]);
         assert_eq!(plain.into_iter().collect::<Vec<_>>(), ["hr.employee"]);
-        let approver = set.variables_needed("hr_leave", Operation::Read, &roles(&["hr_leave.approver"]));
-        assert_eq!(approver.into_iter().collect::<Vec<_>>(), ["hr.employee", "hr.subordinates"]);
-        assert!(set.variables_needed("hr_leave", Operation::Read, &roles(&["hr.hr_manager"])).len() == 1);
+        let approver =
+            set.variables_needed("hr_leave", Operation::Read, &roles(&["hr_leave.approver"]));
+        assert_eq!(
+            approver.into_iter().collect::<Vec<_>>(),
+            ["hr.employee", "hr.subordinates"]
+        );
+        assert!(
+            set.variables_needed("hr_leave", Operation::Read, &roles(&["hr.hr_manager"]))
+                .len()
+                == 1
+        );
     }
 
     #[test]
     fn field_rules_hide_and_lock_for_those_without_the_role() {
         let set = leave();
         assert!(set.hidden_fields("hr_leave", &[]).contains("notes"));
-        assert!(set.hidden_fields("hr_leave", &roles(&["hr.hr_manager"])).is_empty());
+        assert!(
+            set.hidden_fields("hr_leave", &roles(&["hr.hr_manager"]))
+                .is_empty()
+        );
         assert!(set.locked_fields("hr_leave", &[]).contains("state"));
-        assert!(set.locked_fields("hr_leave", &roles(&["hr_leave.approver"])).is_empty());
-        assert!(!set.hidden_fields("hr_leave", &[]).contains("state"), "only reading is limited for notes");
+        assert!(
+            set.locked_fields("hr_leave", &roles(&["hr_leave.approver"]))
+                .is_empty()
+        );
+        assert!(
+            !set.hidden_fields("hr_leave", &[]).contains("state"),
+            "only reading is limited for notes"
+        );
     }
 
     #[test]
     fn literal_dollar_text_is_kept() -> Result<(), QueryError> {
-        let set = rules(json!({ "model": "m", "restrict": [ { "name": "r", "when": { "tag": "$$cash" } } ] }));
-        let Decision::Only(Filter::Cmp { value, .. }) = set.decide("p", Operation::Read, &[], &HashMap::new())? else {
+        let set = rules(
+            json!({ "model": "m", "restrict": [ { "name": "r", "when": { "tag": "$$cash" } } ] }),
+        );
+        let Decision::Only(Filter::Cmp { value, .. }) =
+            set.decide("p", Operation::Read, &[], &HashMap::new())?
+        else {
             return Err(QueryError::Invalid("expected a filter".into()));
         };
         assert_eq!(value, json!("$cash"));
@@ -719,9 +947,15 @@ mod tests {
             "name": "m", "fields": [ { "name": "owner", "type": "string" }, { "name": "state", "type": "string" } ]
         }))?;
         super::super::definition::sync_ids(&mut model);
-        let good = rules(json!({ "model": "m", "access": [ { "name": "own", "operations": ["read"], "when": { "owner": "$user" } } ],
-                                  "fields": [ { "fields": ["state"], "write_roles": ["boss"] } ] }));
-        assert!(good.problems(&model).is_empty(), "{:?}", good.problems(&model));
+        let good = rules(
+            json!({ "model": "m", "access": [ { "name": "own", "operations": ["read"], "when": { "owner": "$user" } } ],
+                                  "fields": [ { "fields": ["state"], "write_roles": ["boss"] } ] }),
+        );
+        assert!(
+            good.problems(&model).is_empty(),
+            "{:?}",
+            good.problems(&model)
+        );
         let bad = rules(json!({ "model": "m", "access": [
                 { "name": "x", "operations": [], "when": { "nope": 1 } },
                 { "name": "x", "operations": ["read"], "when": { "owner": { "bogus": 1 } } } ],
@@ -730,7 +964,11 @@ mod tests {
         assert!(problems.iter().any(|p| p.contains("two rules")));
         assert!(problems.iter().any(|p| p.contains("no operations")));
         assert!(problems.iter().any(|p| p.contains("`nope`")));
-        assert!(problems.iter().any(|p| p.contains("unknown operator") || p.contains("invalid filter")));
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("unknown operator") || p.contains("invalid filter"))
+        );
         assert!(problems.iter().any(|p| p.contains("ghost")));
         assert!(problems.iter().any(|p| p.contains("limits neither")));
         Ok(())
@@ -739,7 +977,12 @@ mod tests {
     #[test]
     fn an_unknown_key_in_a_rule_file_is_an_error() {
         assert!(RuleSet::parse(r#"{ "model": "m", "acess": [] }"#).is_err());
-        assert!(RuleSet::parse(r#"{ "model": "m", "access": [ { "name": "a", "operations": ["peek"] } ] }"#).is_err());
+        assert!(
+            RuleSet::parse(
+                r#"{ "model": "m", "access": [ { "name": "a", "operations": ["peek"] } ] }"#
+            )
+            .is_err()
+        );
     }
 
     #[test]

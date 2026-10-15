@@ -14,6 +14,10 @@ pub struct CheckPluginsReport {
 
 /// Register each plugin package in the core catalog, stopping at the first failure.
 ///
+/// Prefer [`aether_core::plugin_manager::load::load_into_catalog`] when entries may be
+/// workspaces (it resolves and registers them). This helper loads already-resolved
+/// package directories only.
+///
 /// Foreign links may resolve against other packages in `plugin_paths` (their on-disk
 /// `model_id`s), the same as `--dry-run`, so a dependency that is loaded later in the
 /// same run still satisfies links. Same-package links resolve against the package itself.

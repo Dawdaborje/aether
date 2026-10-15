@@ -23,6 +23,10 @@ pub struct PluginWorkspaceDefinition {
     pub authors: Vec<PluginAuthor>,
     pub group_label: Option<String>,
     pub group_icon: Option<String>,
+    /// How the Apps home screen shows this workspace: `folder` (default) or `flat`
+    /// (each member app is its own tile — used for Base).
+    #[serde(default)]
+    pub launcher: Option<String>,
     /// Workspace-level soft deps on other workspaces (e.g. erp → crm).
     #[serde(default)]
     pub dependencies: Vec<String>,

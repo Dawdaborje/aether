@@ -1,116 +1,115 @@
 <script lang="ts">
-	import ChevronLeftIcon from '@lucide/svelte/icons/chevron-left';
 	import PackageOpenIcon from '@lucide/svelte/icons/package-open';
 	import SearchXIcon from '@lucide/svelte/icons/search-x';
 	import SearchIcon from '@lucide/svelte/icons/search';
 	import { Empty } from '$lib/components/ui/empty';
 	import AppTile from '$lib/components/apps/AppTile.svelte';
+	import CategoryAppsModal from '$lib/components/apps/CategoryAppsModal.svelte';
 	import CategoryFolderTile from '$lib/components/apps/CategoryFolderTile.svelte';
-	import type { AppTileData } from '$lib/components/apps/types';
+	import type { AppCategory, AppTileData } from '$lib/components/apps/types';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Skeleton } from '$lib/components/ui/skeleton';
 	import { appsStore } from '$lib/apps/appsStore.svelte';
+	import { buildHomeEntries } from '$lib/apps/homeEntries';
 	import { authSession } from '$lib/auth/session.svelte';
 	import { categoryLabel } from '$lib/apps/categories';
 	import { orgStore } from '$lib/org/orgStore.svelte';
 	import { resolve } from '$app/paths';
 
 	let query = $state('');
-	let openCategory = $state<string | null>(null);
+	let openFolderId = $state<string | null>(null);
+	let modalOpen = $state(false);
 
-	type Entry = AppTileData & { group: string };
+	const apps = $derived(appsStore.apps ?? []);
 
-	const entries = $derived<Entry[]>(
-		(appsStore.apps ?? []).map((app) => ({ ...app, group: categoryLabel(app.category) }))
-	);
-
-	const categories = $derived.by(() => {
-		const counts = new Map<string, number>();
-		for (const entry of entries) counts.set(entry.group, (counts.get(entry.group) ?? 0) + 1);
-		return [...counts]
-			.sort(([a], [b]) => a.localeCompare(b))
-			.map(([label, count]) => ({ label, count }));
-	});
-
-	// A category that no longer exists (an organization switch) falls back to folders.
-	const folder = $derived(
-		categories.some((category) => category.label === openCategory) ? openCategory : null
-	);
+	const homeEntries = $derived(buildHomeEntries(apps, appsStore.categories));
 
 	const searching = $derived(query.trim().length > 0);
 
-	const shown = $derived(
-		entries.filter((entry) => {
-			if (folder && entry.group !== folder) return false;
-			if (!searching) return Boolean(folder);
-			return `${entry.label} ${entry.description ?? ''} ${entry.group}`
+	const searchHits = $derived(
+		apps.filter((app) => {
+			const group = categoryLabel(app.category);
+			const folder = app.folder?.trim() ?? '';
+			return `${app.label} ${app.description ?? ''} ${group} ${folder}`
 				.toLowerCase()
 				.includes(query.trim().toLowerCase());
 		})
 	);
 
-	const showFolders = $derived(!folder && !searching && categories.length > 0);
+	const openFolder = $derived.by(() => {
+		if (!openFolderId) return null;
+		const entry = homeEntries.find((e) => e.kind === 'folder' && e.id === openFolderId);
+		if (!entry || entry.kind !== 'folder') return null;
+		const category: AppCategory = {
+			id: entry.id,
+			label: entry.label,
+			icon: entry.icon,
+			logo_url: entry.logo_url
+		};
+		return { category, apps: entry.apps as AppTileData[] };
+	});
 
 	// Reload whenever the organization changes.
 	$effect(() => {
 		void orgStore.current;
 		void appsStore.load();
-		openCategory = null;
+		openFolderId = null;
+		modalOpen = false;
 		query = '';
 	});
 
-	function openFolder(label: string) {
-		openCategory = label;
-		query = '';
-	}
+	$effect(() => {
+		if (!modalOpen) openFolderId = null;
+	});
 
-	function closeFolder() {
-		openCategory = null;
+	function openFolderModal(id: string) {
+		openFolderId = id;
+		modalOpen = true;
+		query = '';
 	}
 </script>
 
-<div class="flex w-full flex-1 flex-col gap-4 px-4 py-4 md:px-8">
-	<header class="flex flex-wrap items-center gap-3">
-		{#if folder}
-			<div class="flex min-w-0 items-center gap-1">
-				<Button type="button" size="sm" variant="ghost" class="-ml-2 gap-1" onclick={closeFolder}>
-					<ChevronLeftIcon class="size-4" />
-					Apps
-				</Button>
-				<span class="text-muted-foreground" aria-hidden="true">/</span>
-				<h1 class="truncate text-lg font-semibold tracking-tight">{folder}</h1>
-			</div>
-		{:else if searching}
-			<h1 class="text-lg font-semibold tracking-tight">Search</h1>
-		{/if}
-		<div class="relative ml-auto w-full max-w-xs">
-			<SearchIcon
-				class="pointer-events-none absolute top-1/2 left-3 z-10 size-4 -translate-y-1/2 text-muted-foreground"
-			/>
-			<Input
-				bind:value={query}
-				type="search"
-				placeholder="Search apps…"
-				aria-label="Search apps"
-				class="pl-9"
-			/>
+<div class="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-6 px-4 py-6 md:px-8">
+	<header class="flex flex-wrap items-center justify-center gap-3 sm:justify-between">
+		<div class="min-w-0 text-center sm:text-left">
+			<h1 class="text-xl font-semibold tracking-tight">Apps</h1>
+			<p class="text-sm text-muted-foreground">
+				Open an app. Related modules share a folder; small modules join the host sidebar. Plugins
+				outside a workspace stay standalone.
+			</p>
 		</div>
-		{#if authSession.isDeveloper}
-			<Button size="sm" variant="outline" href={resolve('/desk/apps')}>Manage apps</Button>
-		{/if}
+		<div class="flex w-full flex-wrap items-center justify-center gap-2 sm:w-auto sm:justify-end">
+			<div class="relative w-full max-w-xs">
+				<SearchIcon
+					class="pointer-events-none absolute top-1/2 left-3 z-10 size-4 -translate-y-1/2 text-muted-foreground"
+				/>
+				<Input
+					bind:value={query}
+					type="search"
+					placeholder="Search apps…"
+					aria-label="Search apps"
+					class="pl-9"
+				/>
+			</div>
+			{#if authSession.isDeveloper}
+				<Button size="sm" variant="outline" href={resolve('/desk/apps')}>Manage apps</Button>
+			{/if}
+		</div>
 	</header>
 
-	<main class="min-w-0 flex-1">
+	<main class="flex min-w-0 flex-1 flex-col items-center">
 		{#if appsStore.apps === null}
-			<div class="grid grid-cols-[repeat(auto-fill,minmax(8.5rem,1fr))] gap-2">
+			<ul
+				class="grid w-full grid-cols-[repeat(auto-fill,minmax(9rem,1fr))] gap-2 sm:grid-cols-[repeat(auto-fill,minmax(10rem,1fr))]"
+			>
 				{#each Array(8) as _, i (i)}
-					<Skeleton class="h-36 w-full" />
+					<li><Skeleton class="h-36 w-full rounded-xl" /></li>
 				{/each}
-			</div>
+			</ul>
 		{:else if appsStore.problem === 'failed'}
 			<p class="text-sm text-destructive" role="alert">The apps could not be loaded.</p>
-		{:else if entries.length === 0}
+		{:else if apps.length === 0}
 			<Empty
 				icon={PackageOpenIcon}
 				title="No apps yet"
@@ -122,32 +121,48 @@
 					<Button size="sm" href={resolve('/desk/apps')}>Manage apps</Button>
 				{/if}
 			</Empty>
-		{:else if showFolders}
-			<ul class="grid grid-cols-[repeat(auto-fill,minmax(8.5rem,1fr))] gap-2">
-				{#each categories as category (category.label)}
-					<li>
-						<CategoryFolderTile
-							label={category.label}
-							count={category.count}
-							onclick={() => openFolder(category.label)}
-						/>
-					</li>
-				{/each}
-			</ul>
-		{:else if shown.length === 0}
-			<Empty
-				icon={SearchXIcon}
-				title="No matching apps"
-				description={searching
-					? 'Try a different search.'
-					: 'This category has no apps.'}
-			/>
+		{:else if searching}
+			{#if searchHits.length === 0}
+				<Empty icon={SearchXIcon} title="No matching apps" description="Try a different search." />
+			{:else}
+				<ul
+					class="grid w-full grid-cols-[repeat(auto-fill,minmax(9rem,1fr))] gap-2 sm:grid-cols-[repeat(auto-fill,minmax(10rem,1fr))]"
+				>
+					{#each searchHits as app (app.plugin)}
+						<li><AppTile {app} /></li>
+					{/each}
+				</ul>
+			{/if}
 		{:else}
-			<ul class="grid grid-cols-[repeat(auto-fill,minmax(8.5rem,1fr))] gap-2">
-				{#each shown as app (app.plugin)}
-					<li><AppTile {app} /></li>
+			<ul
+				class="grid w-full grid-cols-[repeat(auto-fill,minmax(9rem,1fr))] gap-2 sm:grid-cols-[repeat(auto-fill,minmax(10rem,1fr))]"
+			>
+				{#each homeEntries as entry (entry.kind === 'app' ? entry.app.plugin : entry.id)}
+					<li>
+						{#if entry.kind === 'app'}
+							<AppTile app={entry.app} />
+						{:else}
+							<CategoryFolderTile
+								category={{
+									id: entry.id,
+									label: entry.label,
+									icon: entry.icon,
+									logo_url: entry.logo_url
+								}}
+								count={entry.apps.length}
+								apps={entry.apps}
+								onclick={() => openFolderModal(entry.id)}
+							/>
+						{/if}
+					</li>
 				{/each}
 			</ul>
 		{/if}
 	</main>
 </div>
+
+<CategoryAppsModal
+	bind:open={modalOpen}
+	category={openFolder?.category ?? null}
+	apps={openFolder?.apps ?? []}
+/>

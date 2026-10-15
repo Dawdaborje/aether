@@ -85,14 +85,21 @@ fn default_attempts() -> i64 {
 impl TaskDef {
     /// The task's recurrence, checking `cron`, `every` and `timezone`.
     pub fn recurrence(&self) -> Result<Recurrence, ScheduleError> {
-        Recurrence::parse(self.cron.as_deref(), self.every.as_deref(), self.timezone.as_deref())
+        Recurrence::parse(
+            self.cron.as_deref(),
+            self.every.as_deref(),
+            self.timezone.as_deref(),
+        )
     }
 
     /// Check everything a manifest can get wrong, so a plugin is refused at load time.
     pub fn validate(&self) -> Result<(), TaskError> {
         let name_ok = !self.name.is_empty()
             && self.name.len() <= 64
-            && self.name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.');
+            && self
+                .name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.');
         if !name_ok {
             return Err(TaskError::Refused(format!(
                 "task name `{}`: use 1 to 64 letters, digits, `_`, `-` or `.`",
@@ -100,14 +107,27 @@ impl TaskDef {
             )));
         }
         if self.function.is_empty() {
-            return Err(TaskError::Refused(format!("task `{}` names no function", self.name)));
+            return Err(TaskError::Refused(format!(
+                "task `{}` names no function",
+                self.name
+            )));
         }
         self.recurrence()?;
         if !(1..=20).contains(&self.max_attempts) {
-            return Err(TaskError::Refused(format!("task `{}`: max_attempts is 1 to 20", self.name)));
+            return Err(TaskError::Refused(format!(
+                "task `{}`: max_attempts is 1 to 20",
+                self.name
+            )));
         }
-        if self.payload.as_ref().is_some_and(|payload| !payload.is_object()) {
-            return Err(TaskError::Refused(format!("task `{}`: payload must be a table/object", self.name)));
+        if self
+            .payload
+            .as_ref()
+            .is_some_and(|payload| !payload.is_object())
+        {
+            return Err(TaskError::Refused(format!(
+                "task `{}`: payload must be a table/object",
+                self.name
+            )));
         }
         Ok(())
     }
@@ -122,9 +142,10 @@ struct ExistingRow {
 
 fn same_recurrence(row: &ExistingRow, recurrence: &Recurrence) -> bool {
     match recurrence {
-        Recurrence::Cron { expression, timezone } => {
-            row.cron.as_deref() == Some(expression.as_str()) && row.timezone == *timezone
-        }
+        Recurrence::Cron {
+            expression,
+            timezone,
+        } => row.cron.as_deref() == Some(expression.as_str()) && row.timezone == *timezone,
         Recurrence::Every { seconds } => row.every_secs == Some(*seconds),
     }
 }
@@ -132,7 +153,12 @@ fn same_recurrence(row: &ExistingRow, recurrence: &Recurrence) -> bool {
 /// Create or update one task. `source` is `"manifest"` or `"runtime"`. The next run is only
 /// recalculated when the schedule itself changed, so re-installing a plugin does not skip or
 /// repeat a slot.
-pub async fn upsert(db: &Surreal<Client>, plugin: &str, source: &str, def: &TaskDef) -> Result<(), TaskError> {
+pub async fn upsert(
+    db: &Surreal<Client>,
+    plugin: &str,
+    source: &str,
+    def: &TaskDef,
+) -> Result<(), TaskError> {
     def.validate()?;
     let recurrence = def.recurrence()?;
     let mut response = db
@@ -143,13 +169,18 @@ pub async fn upsert(db: &Surreal<Client>, plugin: &str, source: &str, def: &Task
         .check()?;
     let existing: Option<ExistingRow> = response.take(0)?;
     let (cron, every_secs, timezone) = match &recurrence {
-        Recurrence::Cron { expression, timezone } => (Some(expression.clone()), None, timezone.clone()),
+        Recurrence::Cron {
+            expression,
+            timezone,
+        } => (Some(expression.clone()), None, timezone.clone()),
         Recurrence::Every { seconds } => (None, Some(*seconds), None),
     };
     let first_run = recurrence
         .next_after(Utc::now())
         .ok_or_else(|| TaskError::Refused(format!("task `{}` never runs", def.name)))?;
-    let reschedule = existing.as_ref().is_none_or(|row| !same_recurrence(row, &recurrence));
+    let reschedule = existing
+        .as_ref()
+        .is_none_or(|row| !same_recurrence(row, &recurrence));
     let surql = if existing.is_some() {
         "UPDATE scheduled_tasks SET function_name = $function, cron = $cron, every_secs = $every_secs, timezone = $timezone, \
          payload = $payload, queue = $queue, max_attempts = $max_attempts, catch_up = $catch_up, source = $source, enabled = true, \
@@ -181,7 +212,11 @@ pub async fn upsert(db: &Surreal<Client>, plugin: &str, source: &str, def: &Task
 
 /// Make the plugin's manifest tasks in this organization exactly `defs`: add, update and remove.
 /// Tasks the plugin registered while running are left alone.
-pub async fn sync_manifest(db: &Surreal<Client>, plugin: &str, defs: &[TaskDef]) -> Result<(), TaskError> {
+pub async fn sync_manifest(
+    db: &Surreal<Client>,
+    plugin: &str,
+    defs: &[TaskDef],
+) -> Result<(), TaskError> {
     for def in defs {
         upsert(db, plugin, "manifest", def).await?;
     }
@@ -195,14 +230,20 @@ pub async fn sync_manifest(db: &Surreal<Client>, plugin: &str, defs: &[TaskDef])
 }
 
 /// Register a task from running plugin code, within the per-plugin limit.
-pub async fn register_runtime(db: &Surreal<Client>, plugin: &str, def: &TaskDef) -> Result<(), TaskError> {
+pub async fn register_runtime(
+    db: &Surreal<Client>,
+    plugin: &str,
+    def: &TaskDef,
+) -> Result<(), TaskError> {
     let mut response = db
         .query("SELECT count() AS n FROM scheduled_tasks WHERE plugin = $plugin AND source = 'runtime' GROUP ALL;")
         .bind(("plugin", plugin.to_string()))
         .await?
         .check()?;
     let counted: Option<Value> = response.take(0)?;
-    let count = counted.and_then(|row| row.get("n").and_then(Value::as_i64)).unwrap_or(0);
+    let count = counted
+        .and_then(|row| row.get("n").and_then(Value::as_i64))
+        .unwrap_or(0);
     let mut response = db
         .query("SELECT VALUE source FROM ONLY scheduled_tasks WHERE plugin = $plugin AND name = $name LIMIT 1;")
         .bind(("plugin", plugin.to_string()))
@@ -226,7 +267,11 @@ pub async fn register_runtime(db: &Surreal<Client>, plugin: &str, def: &TaskDef)
 
 /// Remove a task registered while running. Tasks declared in `plugin.toml` are not removable
 /// this way. Returns whether a task was removed.
-pub async fn cancel_runtime(db: &Surreal<Client>, plugin: &str, name: &str) -> Result<bool, TaskError> {
+pub async fn cancel_runtime(
+    db: &Surreal<Client>,
+    plugin: &str,
+    name: &str,
+) -> Result<bool, TaskError> {
     let mut response = db
         .query("DELETE scheduled_tasks WHERE plugin = $plugin AND name = $name AND source = 'runtime' RETURN BEFORE;")
         .bind(("plugin", plugin.to_string()))
@@ -235,6 +280,109 @@ pub async fn cancel_runtime(db: &Surreal<Client>, plugin: &str, name: &str) -> R
         .check()?;
     let removed: Vec<Value> = response.take(0)?;
     Ok(!removed.is_empty())
+}
+
+#[derive(Debug, Deserialize, SurrealValue)]
+struct TaskRow {
+    plugin: String,
+    name: String,
+    function: String,
+    cron: Option<String>,
+    every_secs: Option<i64>,
+    timezone: Option<String>,
+    payload: Option<Value>,
+    queue: String,
+    max_attempts: i64,
+    enabled: bool,
+}
+
+/// Stop a task (`enabled = false`) or restart it (`enabled = true` and a fresh `next_run`).
+/// Returns whether a matching task existed.
+pub async fn set_enabled(
+    db: &Surreal<Client>,
+    plugin: &str,
+    name: &str,
+    enabled: bool,
+) -> Result<bool, TaskError> {
+    if !enabled {
+        let mut response = db
+            .query(
+                "UPDATE scheduled_tasks SET enabled = false WHERE plugin = $plugin AND name = $name RETURN VALUE 1;",
+            )
+            .bind(("plugin", plugin.to_string()))
+            .bind(("name", name.to_string()))
+            .await?
+            .check()?;
+        let updated: Vec<Value> = response.take(0)?;
+        return Ok(!updated.is_empty());
+    }
+    let mut response = db
+        .query(
+            "SELECT plugin, name, function_name AS function, cron, every_secs, timezone, payload, queue, max_attempts, enabled \
+             FROM ONLY scheduled_tasks WHERE plugin = $plugin AND name = $name LIMIT 1;",
+        )
+        .bind(("plugin", plugin.to_string()))
+        .bind(("name", name.to_string()))
+        .await?
+        .check()?;
+    let row: Option<TaskRow> = response.take(0)?;
+    let Some(row) = row else {
+        return Ok(false);
+    };
+    let recurrence = match &row.cron {
+        Some(expression) => Recurrence::Cron {
+            expression: expression.clone(),
+            timezone: row.timezone.clone(),
+        },
+        None => Recurrence::Every {
+            seconds: row.every_secs.unwrap_or(3600),
+        },
+    };
+    let next = recurrence
+        .next_after(Utc::now())
+        .ok_or_else(|| TaskError::Refused(format!("task `{name}` never runs")))?;
+    db.query(
+        "UPDATE scheduled_tasks SET enabled = true, next_run = <datetime> $next \
+         WHERE plugin = $plugin AND name = $name;",
+    )
+    .bind(("plugin", plugin.to_string()))
+    .bind(("name", name.to_string()))
+    .bind(("next", next.to_rfc3339()))
+    .await?
+    .check()?;
+    Ok(true)
+}
+
+/// Queue a job for a scheduled task immediately (in addition to its normal schedule).
+pub async fn enqueue_now(
+    db: &Surreal<Client>,
+    plugin: &str,
+    name: &str,
+    enqueued_by: &str,
+    default_backoff_secs: i64,
+) -> Result<queue::Enqueued, TaskError> {
+    let mut response = db
+        .query(
+            "SELECT plugin, name, function_name AS function, cron, every_secs, timezone, payload, queue, max_attempts, enabled \
+             FROM ONLY scheduled_tasks WHERE plugin = $plugin AND name = $name LIMIT 1;",
+        )
+        .bind(("plugin", plugin.to_string()))
+        .bind(("name", name.to_string()))
+        .await?
+        .check()?;
+    let row: Option<TaskRow> = response.take(0)?;
+    let Some(row) = row else {
+        return Err(TaskError::Refused("no such task".into()));
+    };
+    let mut job = NewJob::new("plugin", row.queue);
+    job.plugin = Some(row.plugin);
+    job.function = Some(row.function);
+    job.payload = row.payload;
+    job.max_attempts = row.max_attempts;
+    job.backoff_secs = default_backoff_secs;
+    job.task = Some(row.name);
+    job.enqueued_by = Some(enqueued_by.into());
+    Ok(queue::enqueue(db, job).await?)
 }
 
 #[derive(Debug, Deserialize, SurrealValue)]
@@ -264,7 +412,11 @@ pub struct Fired {
 /// Turn every due task into a job and move it to its next slot. Safe to run on several
 /// schedulers at once: the job key is the same for the same slot, and a task only advances if it
 /// is still at the slot that was fired.
-pub async fn run_due(db: &Surreal<Client>, now: DateTime<Utc>, default_backoff_secs: i64) -> Result<Vec<Fired>, TaskError> {
+pub async fn run_due(
+    db: &Surreal<Client>,
+    now: DateTime<Utc>,
+    default_backoff_secs: i64,
+) -> Result<Vec<Fired>, TaskError> {
     let mut response = db
         .query(
             "SELECT plugin, name, function_name AS function, cron, every_secs, timezone, payload, queue, max_attempts, catch_up, \
@@ -277,16 +429,29 @@ pub async fn run_due(db: &Surreal<Client>, now: DateTime<Utc>, default_backoff_s
     let due: Vec<DueRow> = response.take(0)?;
     let mut fired = Vec::new();
     for row in due {
-        let Ok(slot) = DateTime::parse_from_rfc3339(&row.next_run).map(|time| time.with_timezone(&Utc)) else {
-            log::error!("scheduled task {}.{} has an unreadable next_run `{}`", row.plugin, row.name, row.next_run);
+        let Ok(slot) =
+            DateTime::parse_from_rfc3339(&row.next_run).map(|time| time.with_timezone(&Utc))
+        else {
+            log::error!(
+                "scheduled task {}.{} has an unreadable next_run `{}`",
+                row.plugin,
+                row.name,
+                row.next_run
+            );
             continue;
         };
         let recurrence = match &row.cron {
-            Some(expression) => Recurrence::Cron { expression: expression.clone(), timezone: row.timezone.clone() },
-            None => Recurrence::Every { seconds: row.every_secs.unwrap_or(3600) },
+            Some(expression) => Recurrence::Cron {
+                expression: expression.clone(),
+                timezone: row.timezone.clone(),
+            },
+            None => Recurrence::Every {
+                seconds: row.every_secs.unwrap_or(3600),
+            },
         };
         let late = (now - slot).num_seconds();
-        let skipped = row.catch_up == "skip" && late > (recurrence.period_hint_secs(slot) / 2).max(SKIP_GRACE_SECS);
+        let skipped = row.catch_up == "skip"
+            && late > (recurrence.period_hint_secs(slot) / 2).max(SKIP_GRACE_SECS);
         if !skipped {
             let mut job = NewJob::new("plugin", row.queue.clone());
             job.plugin = Some(row.plugin.clone());
@@ -298,7 +463,11 @@ pub async fn run_due(db: &Surreal<Client>, now: DateTime<Utc>, default_backoff_s
             job.unique_key = Some(format!("task:{}:{}", row.name, slot.to_rfc3339()));
             job.enqueued_by = Some("system:scheduler".into());
             if let Err(error) = queue::enqueue(db, job).await {
-                log::error!("scheduled task {}.{} could not be queued: {error}", row.plugin, row.name);
+                log::error!(
+                    "scheduled task {}.{} could not be queued: {error}",
+                    row.plugin,
+                    row.name
+                );
                 continue;
             }
         }
@@ -326,9 +495,18 @@ pub async fn run_due(db: &Surreal<Client>, now: DateTime<Utc>, default_backoff_s
             }
         };
         if let Err(error) = advance.and_then(|response| response.check()) {
-            log::error!("scheduled task {}.{} could not be advanced: {error}", row.plugin, row.name);
+            log::error!(
+                "scheduled task {}.{} could not be advanced: {error}",
+                row.plugin,
+                row.name
+            );
         }
-        fired.push(Fired { plugin: row.plugin, task: row.name, slot, skipped });
+        fired.push(Fired {
+            plugin: row.plugin,
+            task: row.name,
+            slot,
+            skipped,
+        });
     }
     Ok(fired)
 }
@@ -355,13 +533,20 @@ mod tests {
     fn a_good_task_validates_and_bad_ones_say_why() {
         assert!(def().validate().is_ok());
         for (label, change) in [
-            ("bad name", Box::new(|d: &mut TaskDef| d.name = "has space".into()) as Box<dyn Fn(&mut TaskDef)>),
+            (
+                "bad name",
+                Box::new(|d: &mut TaskDef| d.name = "has space".into())
+                    as Box<dyn Fn(&mut TaskDef)>,
+            ),
             ("no function", Box::new(|d| d.function.clear())),
             ("both", Box::new(|d| d.every = Some("5m".into()))),
             ("neither", Box::new(|d| d.cron = None)),
             ("bad cron", Box::new(|d| d.cron = Some("every day".into()))),
             ("attempts", Box::new(|d| d.max_attempts = 0)),
-            ("payload", Box::new(|d| d.payload = Some(serde_json::json!([1])))),
+            (
+                "payload",
+                Box::new(|d| d.payload = Some(serde_json::json!([1]))),
+            ),
         ] {
             let mut task = def();
             change(&mut task);
@@ -371,7 +556,10 @@ mod tests {
 
     #[test]
     fn a_manifest_entry_reads_with_defaults() {
-        let task: TaskDef = serde_json::from_value(serde_json::json!({ "name": "t", "function": "f", "every": "15m" })).unwrap();
+        let task: TaskDef = serde_json::from_value(
+            serde_json::json!({ "name": "t", "function": "f", "every": "15m" }),
+        )
+        .unwrap();
         assert_eq!(task.queue, "default");
         assert_eq!(task.max_attempts, 3);
         assert_eq!(task.catch_up, CatchUp::Once);

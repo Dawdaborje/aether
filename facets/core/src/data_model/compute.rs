@@ -30,7 +30,10 @@ enum Token {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
     /// A literal: whole units and the digits after the point it was written with.
-    Number { units: i64, scale: u32 },
+    Number {
+        units: i64,
+        scale: u32,
+    },
     Field(String),
     Neg(Box<Expr>),
     Add(Box<Expr>, Box<Expr>),
@@ -91,7 +94,11 @@ fn tokens(text: &str) -> Result<Vec<Token>, String> {
                 out.push(Token::Close);
                 i += 1;
             }
-            '/' | '%' => return Err("has no division: it cannot be exact, so round it in the plugin".into()),
+            '/' | '%' => {
+                return Err(
+                    "has no division: it cannot be exact, so round it in the plugin".into(),
+                );
+            }
             c if c.is_ascii_digit() => {
                 let start = i;
                 while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
@@ -101,7 +108,11 @@ fn tokens(text: &str) -> Result<Vec<Token>, String> {
             }
             c if c.is_ascii_lowercase() => {
                 let start = i;
-                while i < chars.len() && (chars[i].is_ascii_lowercase() || chars[i].is_ascii_digit() || chars[i] == '_') {
+                while i < chars.len()
+                    && (chars[i].is_ascii_lowercase()
+                        || chars[i].is_ascii_digit()
+                        || chars[i] == '_')
+                {
                     i += 1;
                 }
                 out.push(Token::Name(chars[start..i].iter().collect()));
@@ -132,7 +143,11 @@ impl Parser {
             };
             self.at += 1;
             let right = self.product(depth)?;
-            left = if add { Expr::Add(Box::new(left), Box::new(right)) } else { Expr::Sub(Box::new(left), Box::new(right)) };
+            left = if add {
+                Expr::Add(Box::new(left), Box::new(right))
+            } else {
+                Expr::Sub(Box::new(left), Box::new(right))
+            };
         }
         Ok(left)
     }
@@ -162,12 +177,16 @@ impl Parser {
             Token::Number(text) => {
                 let value = super::decimal::to_scaled(&serde_json::Value::String(text.clone()), 9)
                     .map_err(|_| format!("has a bad number `{text}`"))?;
-                let scale = text.split_once('.').map_or(0, |(_, fraction)| fraction.len() as u32);
+                let scale = text
+                    .split_once('.')
+                    .map_or(0, |(_, fraction)| fraction.len() as u32);
                 // `to_scaled` used scale 9; drop the padding zeros so the literal keeps its own scale.
                 let units = value / 10_i64.pow(9 - scale.min(9));
                 Ok(Expr::Number { units, scale })
             }
-            Token::Name(name) if (name == "sum" || name == "count") && self.peek() == Some(&Token::Open) => {
+            Token::Name(name)
+                if (name == "sum" || name == "count") && self.peek() == Some(&Token::Open) =>
+            {
                 self.at += 1;
                 let Some(Token::Name(child)) = self.peek().cloned() else {
                     return Err(format!("`{name}(` needs the child field's name"));
@@ -175,7 +194,9 @@ impl Parser {
                 self.at += 1;
                 let source = if name == "sum" {
                     if self.peek() != Some(&Token::Dot) {
-                        return Err("`sum(` needs `child.field`, such as `sum(lines.amount)`".into());
+                        return Err(
+                            "`sum(` needs `child.field`, such as `sum(lines.amount)`".into()
+                        );
                     }
                     self.at += 1;
                     let Some(Token::Name(source)) = self.peek().cloned() else {
@@ -211,7 +232,10 @@ impl Parser {
 
 impl Expr {
     pub fn parse(text: &str) -> Result<Self, String> {
-        let mut parser = Parser { tokens: tokens(text)?, at: 0 };
+        let mut parser = Parser {
+            tokens: tokens(text)?,
+            at: 0,
+        };
         let expr = parser.sum(0)?;
         if parser.at != parser.tokens.len() {
             return Err("has something left over after the end".into());
@@ -275,7 +299,10 @@ impl Expr {
             std::cmp::Ordering::Less => format!("({sql} * {})", 10_i64.pow(target - scale)),
             // Round half away from zero. A whole unit divided by a power of ten is exact in a
             // float for the sizes money and quantities have, including a tie such as 12.5.
-            std::cmp::Ordering::Greater => format!("<int>math::round(<float>{sql} / {})", 10_i64.pow(scale - target)),
+            std::cmp::Ordering::Greater => format!(
+                "<int>math::round(<float>{sql} / {})",
+                10_i64.pow(scale - target)
+            ),
         })
     }
 
@@ -286,11 +313,19 @@ impl Expr {
         rollup: &dyn Fn(&Rollup) -> Option<(String, u32)>,
     ) -> Result<(String, u32), String> {
         Ok(match self {
-            Self::Rollup(total) => rollup(total).ok_or_else(|| format!("rolls up `{}`, which is not available here", total.child))?,
+            Self::Rollup(total) => rollup(total).ok_or_else(|| {
+                format!("rolls up `{}`, which is not available here", total.child)
+            })?,
             Self::Number { units, scale } => (format!("{units}"), *scale),
             Self::Field(name) => {
-                let operand = operand(name).ok_or_else(|| format!("uses `{name}`, which is not a whole-number or decimal field"))?;
-                let column = if row.is_empty() { operand.column } else { format!("{row}.{}", operand.column) };
+                let operand = operand(name).ok_or_else(|| {
+                    format!("uses `{name}`, which is not a whole-number or decimal field")
+                })?;
+                let column = if row.is_empty() {
+                    operand.column
+                } else {
+                    format!("{row}.{}", operand.column)
+                };
                 (format!("({column} ?? 0)"), operand.scale)
             }
             Self::Neg(inner) => {
@@ -298,18 +333,36 @@ impl Expr {
                 (format!("(-{sql})"), scale)
             }
             Self::Mul(a, b) => {
-                let ((a, sa), (b, sb)) = (a.units(row, operand, rollup)?, b.units(row, operand, rollup)?);
+                let ((a, sa), (b, sb)) = (
+                    a.units(row, operand, rollup)?,
+                    b.units(row, operand, rollup)?,
+                );
                 if sa + sb > 18 {
                     return Err("multiplies numbers with too many digits after the point".into());
                 }
                 (format!("({a} * {b})"), sa + sb)
             }
             Self::Add(a, b) | Self::Sub(a, b) => {
-                let ((a, sa), (b, sb)) = (a.units(row, operand, rollup)?, b.units(row, operand, rollup)?);
+                let ((a, sa), (b, sb)) = (
+                    a.units(row, operand, rollup)?,
+                    b.units(row, operand, rollup)?,
+                );
                 let scale = sa.max(sb);
-                let a = if sa < scale { format!("({a} * {})", 10_i64.pow(scale - sa)) } else { a };
-                let b = if sb < scale { format!("({b} * {})", 10_i64.pow(scale - sb)) } else { b };
-                let symbol = if matches!(self, Self::Add(..)) { "+" } else { "-" };
+                let a = if sa < scale {
+                    format!("({a} * {})", 10_i64.pow(scale - sa))
+                } else {
+                    a
+                };
+                let b = if sb < scale {
+                    format!("({b} * {})", 10_i64.pow(scale - sb))
+                } else {
+                    b
+                };
+                let symbol = if matches!(self, Self::Add(..)) {
+                    "+"
+                } else {
+                    "-"
+                };
                 (format!("({a} {symbol} {b})"), scale)
             }
         })
@@ -322,8 +375,14 @@ mod tests {
 
     fn operand(name: &str) -> Option<Operand> {
         match name {
-            "qty" => Some(Operand { column: "fld_qty".into(), scale: 0 }),
-            "price" => Some(Operand { column: "fld_price".into(), scale: 2 }),
+            "qty" => Some(Operand {
+                column: "fld_qty".into(),
+                scale: 0,
+            }),
+            "price" => Some(Operand {
+                column: "fld_price".into(),
+                scale: 2,
+            }),
             _ => None,
         }
     }
@@ -331,10 +390,16 @@ mod tests {
     #[test]
     fn precedence_and_fields() -> Result<(), String> {
         let expr = Expr::parse("qty * price + 1.5 - -2")?;
-        assert_eq!(expr.fields().into_iter().collect::<Vec<_>>(), vec!["price", "qty"]);
+        assert_eq!(
+            expr.fields().into_iter().collect::<Vec<_>>(),
+            vec!["price", "qty"]
+        );
         let sql = expr.to_sql("$rows[0]", 2, &operand, &|_| None)?;
         // qty (scale 0) * price (scale 2) is scale 2; 1.5 is scaled up to 150; 2 to 200.
-        assert!(sql.contains("($rows[0].fld_qty ?? 0) * ($rows[0].fld_price ?? 0)"), "{sql}");
+        assert!(
+            sql.contains("($rows[0].fld_qty ?? 0) * ($rows[0].fld_price ?? 0)"),
+            "{sql}"
+        );
         assert!(sql.contains("(15 * 10)"), "{sql}");
         Ok(())
     }
@@ -349,10 +414,28 @@ mod tests {
 
     #[test]
     fn nonsense_is_refused() {
-        for bad in ["sum(lines)", "sum(lines.)", "count(lines.x)", "sum lines.x", "", "qty /", "qty / 2", "qty *", "(qty", "qty qty", "qty $ 1", "1..2", "((((((((((qty))))))))))"] {
+        for bad in [
+            "sum(lines)",
+            "sum(lines.)",
+            "count(lines.x)",
+            "sum lines.x",
+            "",
+            "qty /",
+            "qty / 2",
+            "qty *",
+            "(qty",
+            "qty qty",
+            "qty $ 1",
+            "1..2",
+            "((((((((((qty))))))))))",
+        ] {
             assert!(Expr::parse(bad).is_err(), "{bad}");
         }
-        assert!(Expr::parse("nope + 1").and_then(|e| e.to_sql("$r", 0, &operand, &|_| None)).is_err());
+        assert!(
+            Expr::parse("nope + 1")
+                .and_then(|e| e.to_sql("$r", 0, &operand, &|_| None))
+                .is_err()
+        );
     }
 }
 
@@ -365,9 +448,24 @@ mod rollup_tests {
         let expr = Expr::parse("sum(lines.amount) - discount + count(lines)")?;
         let rollups = expr.rollups();
         assert_eq!(rollups.len(), 2);
-        assert_eq!(rollups[0], Rollup { child: "lines".into(), source: Some("amount".into()) });
-        assert_eq!(rollups[1], Rollup { child: "lines".into(), source: None });
-        assert_eq!(expr.fields().into_iter().collect::<Vec<_>>(), vec!["discount"]);
+        assert_eq!(
+            rollups[0],
+            Rollup {
+                child: "lines".into(),
+                source: Some("amount".into())
+            }
+        );
+        assert_eq!(
+            rollups[1],
+            Rollup {
+                child: "lines".into(),
+                source: None
+            }
+        );
+        assert_eq!(
+            expr.fields().into_iter().collect::<Vec<_>>(),
+            vec!["discount"]
+        );
         Ok(())
     }
 }

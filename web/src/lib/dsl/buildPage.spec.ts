@@ -44,3 +44,35 @@ describe('buildPage kanban templates', () => {
 		expect(actions?.children?.[0]?.function).toBe('archive_ticket');
 	});
 });
+
+describe('buildPage form bar', () => {
+	it('moves a sibling buttonbox and statusbar into the form view', () => {
+		const { page } = buildPage({
+			type: 'page',
+			title: 'Deal',
+			children: [
+				{ type: 'buttonbox', children: [{ type: 'button', label: 'Win' }] },
+				{ type: 'statusbar', field: 'stage' },
+				{ type: 'view', viewType: 'form', children: [{ type: 'field', name: 'title' }] }
+			]
+		});
+		expect(page.children?.map((child) => child.type)).toEqual(['view']);
+		expect(page.children?.[0]?.children?.map((child) => child.type)).toEqual([
+			'buttonbox',
+			'statusbar',
+			'field'
+		]);
+	});
+
+	it('leaves a page alone when it has no form or several', () => {
+		const { page } = buildPage({
+			type: 'page',
+			title: 'List',
+			children: [
+				{ type: 'buttonbox', children: [] },
+				{ type: 'view', viewType: 'list', children: [] }
+			]
+		});
+		expect(page.children?.map((child) => child.type)).toEqual(['buttonbox', 'view']);
+	});
+});

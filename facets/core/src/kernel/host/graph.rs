@@ -19,11 +19,14 @@ use serde::Deserialize;
 use serde_json::{Map, Value as JsonValue};
 
 use super::context::{ModelGrant, PluginHostContext};
-use super::guard;
-use crate::data_model::Operation;
-use super::db::{Access, Extra, RECORD_ID, decode, parse_req, record_binds, require_model, run_audited, strip_table_prefix, validate_ident};
+use super::db::{
+    Access, Extra, RECORD_ID, decode, parse_req, record_binds, require_model, run_audited,
+    strip_table_prefix, validate_ident,
+};
 use super::error::HostError;
+use super::guard;
 use crate::data_model::ModelSchema;
+use crate::data_model::Operation;
 
 /// The deepest tree walk, whatever the plugin asks for.
 pub const MAX_DEPTH: u32 = 64;
@@ -52,10 +55,15 @@ pub(super) fn link_checks(
     extra: &mut Extra,
 ) {
     for (index, link) in schema.links.iter().enumerate() {
-        let Some(target) = values.get(&link.column).and_then(JsonValue::as_str) else { continue };
+        let Some(target) = values.get(&link.column).and_then(JsonValue::as_str) else {
+            continue;
+        };
         let (table_bind, key_bind) = (link_bind(index, 0), link_bind(index, 1));
         binds.push((table_bind.clone(), JsonValue::String(link.table.clone())));
-        binds.push((key_bind.clone(), JsonValue::String(strip_table_prefix(target, &link.table).to_string())));
+        binds.push((
+            key_bind.clone(),
+            JsonValue::String(strip_table_prefix(target, &link.table).to_string()),
+        ));
         extra.before.push(format!(
             "IF !record::exists(type::record(${table_bind}, ${key_bind})) {{ THROW 'aether: the record `{}` points to does not exist'; }};",
             link.field
@@ -64,11 +72,21 @@ pub(super) fn link_checks(
 }
 
 /// What a create must also do for its hierarchy links: check the parent exists and add the edge.
-pub(super) fn create_extra(schema: &ModelSchema, data: &Map<String, JsonValue>, binds: &mut Vec<(String, JsonValue)>, extra: &mut Extra) {
+pub(super) fn create_extra(
+    schema: &ModelSchema,
+    data: &Map<String, JsonValue>,
+    binds: &mut Vec<(String, JsonValue)>,
+    extra: &mut Extra,
+) {
     for (index, hierarchy) in schema.hierarchies.iter().enumerate() {
-        let Some(parent) = data.get(&hierarchy.column).and_then(JsonValue::as_str) else { continue };
+        let Some(parent) = data.get(&hierarchy.column).and_then(JsonValue::as_str) else {
+            continue;
+        };
         let bind = parent_bind(index);
-        binds.push((bind.clone(), JsonValue::String(strip_table_prefix(parent, &schema.table).to_string())));
+        binds.push((
+            bind.clone(),
+            JsonValue::String(strip_table_prefix(parent, &schema.table).to_string()),
+        ));
         extra.after.push(format!(
             "IF !record::exists(type::record($__table, ${bind})) {{ THROW 'aether: the parent of `{}` does not exist'; }};",
             hierarchy.field
@@ -97,7 +115,10 @@ pub(super) fn update_extra(
         }
         if let Some(parent) = parent {
             let bind = parent_bind(index);
-            binds.push((bind.clone(), JsonValue::String(strip_table_prefix(parent, &schema.table).to_string())));
+            binds.push((
+                bind.clone(),
+                JsonValue::String(strip_table_prefix(parent, &schema.table).to_string()),
+            ));
             let new_parent = format!("type::record($__table, ${bind})");
             let me = "type::record($__table, $__key)";
             extra.before.push(format!(
@@ -110,7 +131,10 @@ pub(super) fn update_extra(
                 hierarchy.edge, schema.table, hierarchy.field
             ));
         }
-        extra.after.push(format!("DELETE {} WHERE out = type::record($__table, $__key);", hierarchy.edge));
+        extra.after.push(format!(
+            "DELETE {} WHERE out = type::record($__table, $__key);",
+            hierarchy.edge
+        ));
         if parent.is_some() {
             let bind = parent_bind(index);
             extra.after.push(format!(
@@ -144,36 +168,53 @@ pub struct RelateRequest {
 /// Which records the edges are between: the target record's table must be the field's target.
 fn target_keys(table: &str, ids: &[String]) -> Result<Vec<String>, HostError> {
     if ids.is_empty() || ids.len() > MAX_RELATED_PER_CALL {
-        return Err(HostError::InvalidPayload(format!("`to` holds 1 to {MAX_RELATED_PER_CALL} record ids")));
+        return Err(HostError::InvalidPayload(format!(
+            "`to` holds 1 to {MAX_RELATED_PER_CALL} record ids"
+        )));
     }
     ids.iter()
         .map(|id| {
             let key = id
                 .strip_prefix(&format!("{table}:"))
                 .filter(|key| !key.is_empty())
-                .ok_or_else(|| HostError::InvalidPayload(format!("`{id}` is not a record of the field's target model")))?;
+                .ok_or_else(|| {
+                    HostError::InvalidPayload(format!(
+                        "`{id}` is not a record of the field's target model"
+                    ))
+                })?;
             Ok(key.to_string())
         })
         .collect()
 }
 
-async fn change_edges(ctx: &PluginHostContext, payload: &JsonValue, add: bool) -> Result<JsonValue, HostError> {
+async fn change_edges(
+    ctx: &PluginHostContext,
+    payload: &JsonValue,
+    add: bool,
+) -> Result<JsonValue, HostError> {
     ctx.require_cap("db::mutate")?;
     let req: RelateRequest = parse_req(payload)?;
     let grant = require_model(ctx, &req.model, true)?;
-    let schema = grant
-        .schema
-        .as_ref()
-        .ok_or_else(|| HostError::InvalidPayload(format!("model `{}` has no definition, so it has no relations", req.model)))?;
+    let schema = grant.schema.as_ref().ok_or_else(|| {
+        HostError::InvalidPayload(format!(
+            "model `{}` has no definition, so it has no relations",
+            req.model
+        ))
+    })?;
     let relation = schema.relation(&req.field)?;
     validate_ident(&relation.edge)?;
     validate_ident(&relation.target_table)?;
     let keys = target_keys(&relation.target_table, &req.to)?;
-    let scope = guard::scope(ctx, grant, Operation::Write, "r").await?.ok_or_else(|| guard::denied(&req.model, "change"))?;
+    let scope = guard::scope(ctx, grant, Operation::Write, "r")
+        .await?
+        .ok_or_else(|| guard::denied(&req.model, "change"))?;
 
     let mut binds = record_binds(grant, &req.id);
     binds.extend(scope.binds);
-    binds.push(("__target".to_string(), JsonValue::String(relation.target_table.clone())));
+    binds.push((
+        "__target".to_string(),
+        JsonValue::String(relation.target_table.clone()),
+    ));
     binds.push(("__to".to_string(), JsonValue::from(keys)));
     let mut extra = Extra::default();
     extra.before.push(
@@ -202,24 +243,36 @@ async fn change_edges(ctx: &PluginHostContext, payload: &JsonValue, add: bool) -
     });
     let rows = run_audited(
         ctx,
-        Access { operation: "update", model: req.model.clone(), table: &grant.table },
+        Access {
+            operation: "update",
+            model: req.model.clone(),
+            table: &grant.table,
+        },
         "LET $rows = (SELECT * FROM type::record($__table, $__key));",
         RECORD_ID,
         binds,
         extra,
     )
     .await?;
-    Ok(serde_json::json!({ "ok": true, "data": rows.into_iter().next().map(|row| decode(grant, row)) }))
+    Ok(
+        serde_json::json!({ "ok": true, "data": rows.into_iter().next().map(|row| decode(grant, row)) }),
+    )
 }
 
 /// Link the record `id` of `model` to each of `to` through the many2many field `field`. Linking
 /// twice is harmless. Needs write access to `model`.
-pub async fn db_relate(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
+pub async fn db_relate(
+    ctx: &PluginHostContext,
+    payload: &JsonValue,
+) -> Result<JsonValue, HostError> {
     change_edges(ctx, payload, true).await
 }
 
 /// Remove those links (links that do not exist are ignored).
-pub async fn db_unrelate(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
+pub async fn db_unrelate(
+    ctx: &PluginHostContext,
+    payload: &JsonValue,
+) -> Result<JsonValue, HostError> {
     change_edges(ctx, payload, false).await
 }
 
@@ -238,14 +291,19 @@ pub struct RelatedRequest {
 
 /// The records linked to `id` through a many2many field. Forwards, they are records of the
 /// field's target model, which the plugin must be able to read; in reverse, records of `model`.
-pub async fn db_related(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
+pub async fn db_related(
+    ctx: &PluginHostContext,
+    payload: &JsonValue,
+) -> Result<JsonValue, HostError> {
     ctx.require_cap("db::query")?;
     let req: RelatedRequest = parse_req(payload)?;
     let owner = require_model(ctx, &req.model, false)?;
-    let schema = owner
-        .schema
-        .as_ref()
-        .ok_or_else(|| HostError::InvalidPayload(format!("model `{}` has no definition, so it has no relations", req.model)))?;
+    let schema = owner.schema.as_ref().ok_or_else(|| {
+        HostError::InvalidPayload(format!(
+            "model `{}` has no definition, so it has no relations",
+            req.model
+        ))
+    })?;
     let relation = schema.relation(&req.field)?;
     validate_ident(&relation.edge)?;
 
@@ -255,7 +313,11 @@ pub async fn db_related(ctx: &PluginHostContext, payload: &JsonValue) -> Result<
     } else {
         // A plugin cannot always read the other side (a model of another plugin), but the links are
         // its own: it gets the ids, which is what it needs to ask that plugin about them.
-        let Some(target) = ctx.models.values().find(|grant| grant.table == relation.target_table) else {
+        let Some(target) = ctx
+            .models
+            .values()
+            .find(|grant| grant.table == relation.target_table)
+        else {
             return linked_ids(ctx, owner, &relation.edge, &req).await;
         };
         let target = require_model(ctx, &target.name, false)?;
@@ -265,58 +327,138 @@ pub async fn db_related(ctx: &PluginHostContext, payload: &JsonValue) -> Result<
         .id
         .strip_prefix(&format!("{given_table}:"))
         .filter(|key| !key.is_empty())
-        .ok_or_else(|| HostError::InvalidPayload(format!("`{}` is not a record of `{given_table}`", req.id)))?;
-    let traversal = if req.reverse { format!("<-{}<-?", relation.edge) } else { format!("->{}->?", relation.edge) };
+        .ok_or_else(|| {
+            HostError::InvalidPayload(format!("`{}` is not a record of `{given_table}`", req.id))
+        })?;
+    let traversal = if req.reverse {
+        format!("<-{}<-?", relation.edge)
+    } else {
+        format!("->{}->?", relation.edge)
+    };
     let limit = req.limit.map_or(MAX_ROWS, |limit| limit.min(MAX_ROWS));
     // The records that come back are the result model's, so its rules say which may be seen.
     let Some(scope) = guard::scope(ctx, result, Operation::Read, "r").await? else {
         return Ok(serde_json::json!({ "ok": true, "data": [] }));
     };
     let (hidden, _) = guard::field_limits(ctx, result).await?;
-    let filter = if scope.sql.is_empty() { String::new() } else { format!(" WHERE {}", scope.sql) };
+    let filter = if scope.sql.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", scope.sql)
+    };
     let body = format!(
         "LET $rows = (SELECT * FROM (type::record($__given, $__key){traversal}){filter} LIMIT {limit});"
     );
     let mut binds = scope.binds;
     binds.extend(vec![
-        ("__given".to_string(), JsonValue::String(given_table.to_string())),
+        (
+            "__given".to_string(),
+            JsonValue::String(given_table.to_string()),
+        ),
         ("__key".to_string(), JsonValue::String(key.to_string())),
     ]);
-    binds.push(("__table".to_string(), JsonValue::String(result.table.clone())));
-    let rows = run_audited(
+    binds.push((
+        "__table".to_string(),
+        JsonValue::String(result.table.clone()),
+    ));
+    let hash = super::db::query_hash(&result.table, &body, &binds, &hidden);
+    let data = super::db::cached_read(
         ctx,
-        Access { operation: "read", model: result.name.clone(), table: &result.table },
-        &body,
-        "$rows.id",
-        binds,
-        Extra::default(),
+        &result.name,
+        &result.table,
+        &[owner.table.as_str(), result.table.as_str()],
+        "related",
+        &hash,
+        || async {
+            let rows = run_audited(
+                ctx,
+                Access {
+                    operation: "read",
+                    model: result.name.clone(),
+                    table: &result.table,
+                },
+                &body,
+                "$rows.id",
+                binds,
+                Extra::default(),
+            )
+            .await?;
+            let n = rows.len();
+            let rows: Vec<JsonValue> = rows
+                .into_iter()
+                .map(|row| guard::strip(&hidden, decode(result, row)))
+                .collect();
+            let ids = super::db::record_ids_of(&rows);
+            Ok((JsonValue::Array(rows), ids, n))
+        },
     )
     .await?;
-    let rows: Vec<JsonValue> = rows.into_iter().map(|row| guard::strip(&hidden, decode(result, row))).collect();
-    Ok(serde_json::json!({ "ok": true, "data": rows }))
+    Ok(serde_json::json!({ "ok": true, "data": data }))
 }
 
 /// The ids a record is linked to, as `{ "id": "table:key" }` rows.
-async fn linked_ids(ctx: &PluginHostContext, owner: &ModelGrant, edge: &str, req: &RelatedRequest) -> Result<JsonValue, HostError> {
+async fn linked_ids(
+    ctx: &PluginHostContext,
+    owner: &ModelGrant,
+    edge: &str,
+    req: &RelatedRequest,
+) -> Result<JsonValue, HostError> {
     let key = req
         .id
         .strip_prefix(&format!("{}:", owner.table))
         .filter(|key| !key.is_empty())
-        .ok_or_else(|| HostError::InvalidPayload(format!("`{}` is not a record of `{}`", req.id, owner.table)))?;
+        .ok_or_else(|| {
+            HostError::InvalidPayload(format!("`{}` is not a record of `{}`", req.id, owner.table))
+        })?;
     let limit = req.limit.map_or(MAX_ROWS, |limit| limit.min(MAX_ROWS));
-    let body = format!("LET $rows = (SELECT id FROM (type::record($__given, $__key)->{edge}->?) LIMIT {limit});");
+    let body = format!(
+        "LET $rows = (SELECT id FROM (type::record($__given, $__key)->{edge}->?) LIMIT {limit});"
+    );
     let binds = vec![
-        ("__given".to_string(), JsonValue::String(owner.table.clone())),
+        (
+            "__given".to_string(),
+            JsonValue::String(owner.table.clone()),
+        ),
         ("__key".to_string(), JsonValue::String(key.to_string())),
-        ("__table".to_string(), JsonValue::String(owner.table.clone())),
+        (
+            "__table".to_string(),
+            JsonValue::String(owner.table.clone()),
+        ),
     ];
-    let rows = run_audited(ctx, Access { operation: "read", model: owner.name.clone(), table: &owner.table }, &body, "$rows.id", binds, Extra::default()).await?;
-    let ids: Vec<JsonValue> = rows
-        .into_iter()
-        .filter_map(|row| row.get("id").cloned())
-        .map(|id| serde_json::json!({ "id": id }))
-        .collect();
-    Ok(serde_json::json!({ "ok": true, "data": ids }))
+    let hash = super::db::query_hash(&owner.table, &body, &binds, &Default::default());
+    let data = super::db::cached_read(
+        ctx,
+        &owner.name,
+        &owner.table,
+        &[owner.table.as_str()],
+        "linked_ids",
+        &hash,
+        || async {
+            let rows = run_audited(
+                ctx,
+                Access {
+                    operation: "read",
+                    model: owner.name.clone(),
+                    table: &owner.table,
+                },
+                &body,
+                "$rows.id",
+                binds,
+                Extra::default(),
+            )
+            .await?;
+            let n = rows.len();
+            let read_ids = super::db::record_ids_of(&rows);
+            let ids: Vec<JsonValue> = rows
+                .into_iter()
+                .filter_map(|row| row.get("id").cloned())
+                .map(|id| serde_json::json!({ "id": id }))
+                .collect();
+            Ok((JsonValue::Array(ids), read_ids, n))
+        },
+    )
+    .await?;
+    Ok(serde_json::json!({ "ok": true, "data": data }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -341,10 +483,12 @@ pub async fn db_tree(ctx: &PluginHostContext, payload: &JsonValue) -> Result<Jso
     ctx.require_cap("db::query")?;
     let req: TreeRequest = parse_req(payload)?;
     let grant = require_model(ctx, &req.model, false)?;
-    let schema = grant
-        .schema
-        .as_ref()
-        .ok_or_else(|| HostError::InvalidPayload(format!("model `{}` has no definition, so it has no hierarchy", req.model)))?;
+    let schema = grant.schema.as_ref().ok_or_else(|| {
+        HostError::InvalidPayload(format!(
+            "model `{}` has no definition, so it has no hierarchy",
+            req.model
+        ))
+    })?;
     let hierarchy = schema.hierarchy(&req.field)?;
     validate_ident(&hierarchy.edge)?;
     validate_ident(&grant.table)?;
@@ -352,28 +496,62 @@ pub async fn db_tree(ctx: &PluginHostContext, payload: &JsonValue) -> Result<Jso
     let arrow = match req.direction.as_deref() {
         None | Some("down") => format!("->{}->{}", hierarchy.edge, grant.table),
         Some("up") => format!("<-{}<-{}", hierarchy.edge, grant.table),
-        Some(other) => return Err(HostError::InvalidPayload(format!("`direction` is `down` or `up`, not `{other}`"))),
+        Some(other) => {
+            return Err(HostError::InvalidPayload(format!(
+                "`direction` is `down` or `up`, not `{other}`"
+            )));
+        }
     };
     let me = "type::record($__table, $__key)";
     let found = format!("{me}.{{..{depth}+collect}}{arrow}");
-    let ids = if req.include_self { format!("array::prepend({found}, {me})") } else { found };
+    let ids = if req.include_self {
+        format!("array::prepend({found}, {me})")
+    } else {
+        found
+    };
     let Some(scope) = guard::scope(ctx, grant, Operation::Read, "r").await? else {
         return Ok(serde_json::json!({ "ok": true, "data": [] }));
     };
     let (hidden, _) = guard::field_limits(ctx, grant).await?;
-    let filter = if scope.sql.is_empty() { String::new() } else { format!(" WHERE {}", scope.sql) };
+    let filter = if scope.sql.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", scope.sql)
+    };
     let body = format!("LET $rows = (SELECT * FROM {ids}{filter} LIMIT {MAX_ROWS});");
     let mut binds = record_binds(grant, &req.id);
     binds.extend(scope.binds);
-    let rows = run_audited(
+    let hash = super::db::query_hash(&grant.table, &body, &binds, &hidden);
+    let data = super::db::cached_read(
         ctx,
-        Access { operation: "read", model: req.model.clone(), table: &grant.table },
-        &body,
-        "$rows.id",
-        binds,
-        Extra::default(),
+        &req.model,
+        &grant.table,
+        &[grant.table.as_str()],
+        "tree",
+        &hash,
+        || async {
+            let rows = run_audited(
+                ctx,
+                Access {
+                    operation: "read",
+                    model: req.model.clone(),
+                    table: &grant.table,
+                },
+                &body,
+                "$rows.id",
+                binds,
+                Extra::default(),
+            )
+            .await?;
+            let n = rows.len();
+            let rows: Vec<JsonValue> = rows
+                .into_iter()
+                .map(|row| guard::strip(&hidden, decode(grant, row)))
+                .collect();
+            let ids = super::db::record_ids_of(&rows);
+            Ok((JsonValue::Array(rows), ids, n))
+        },
     )
     .await?;
-    let rows: Vec<JsonValue> = rows.into_iter().map(|row| guard::strip(&hidden, decode(grant, row))).collect();
-    Ok(serde_json::json!({ "ok": true, "data": rows }))
+    Ok(serde_json::json!({ "ok": true, "data": data }))
 }

@@ -38,8 +38,9 @@ pub async fn seed_system(
     db.use_db(database).await?;
     ensure_seed_tracking_table(db).await?;
 
-    let mut newly_applied = seed_global_settings(db).await?;
-    newly_applied.extend(seed_bridges(db, namespace, database).await?);
+    // Bridges first: settings seeding skips `bridge.<name>.*` until that bridge is enabled.
+    let mut newly_applied = seed_bridges(db, namespace, database).await?;
+    newly_applied.extend(seed_global_settings(db).await?);
 
     Ok(newly_applied)
 }
@@ -126,7 +127,27 @@ async fn seed_settings_file(db: &Surreal<Client>, filename: &str) -> Result<Vec<
     let seed: GlobalSettingsSeed = serde_json::from_str(contents)
         .map_err(|err| SeedError::InvalidBridge(filename.to_string(), err.to_string()))?;
 
+    let enabled_bridges = aether_core::application::bridge_settings::enabled_bridge_keys(db)
+        .await
+        .map_err(|err| SeedError::ApplyFailed {
+            version: version.to_string(),
+            message: err.to_string(),
+        })?;
+
     for group in &seed.groups {
+        let items: Vec<&SettingsItemSeed> = group
+            .items
+            .iter()
+            .filter(|item| match aether_core::messaging::bridge_name_from_setting_key(&item.s_key)
+            {
+                Some(name) => enabled_bridges.contains(name),
+                None => true,
+            })
+            .collect();
+        if items.is_empty() {
+            continue;
+        }
+
         db.query(
             r#"
 UPSERT type::record("gl_settings_groups", $id) CONTENT {
@@ -151,7 +172,7 @@ UPSERT type::record("gl_settings_groups", $id) CONTENT {
             message: err.to_string(),
         })?;
 
-        for item in &group.items {
+        for item in items {
             db.query(
                 r#"
 UPSERT type::record("gl_settings_items", $id) CONTENT {

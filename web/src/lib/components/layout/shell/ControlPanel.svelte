@@ -20,11 +20,11 @@
 </script>
 
 <!-- Odoo's control panel: breadcrumbs, the page's main actions, and its search and view controls. -->
-<div class="border-b border-border bg-card/80 backdrop-blur">
+<div class="border-b border-border bg-canvas" data-part="page.control-panel">
 	<div class="flex w-full flex-wrap items-center gap-x-6 gap-y-1 px-4 py-2 md:px-6">
 		<div class="min-w-0 space-y-1.5">
 			<Breadcrumb.Root>
-				<Breadcrumb.List class="text-[15px] font-semibold normal-case tracking-tight">
+				<Breadcrumb.List class="text-base font-semibold tracking-tight normal-case">
 					{#each crumbs as crumb, i (crumb.label)}
 						<Breadcrumb.Item>
 							{#if i < crumbs.length - 1 && crumb.href}

@@ -70,6 +70,14 @@ backend = "local"
 # [media.local]
 # base_path = "media"
 
+# Process logs (stderr by default). With file = true, also append to
+# <app_dir>/logs/aether.log. CLI: --log-file, --log-dir, --no-log-file, --no-log-stdout.
+# [logging]
+# file = true
+# dir = "logs"                 # relative paths are under app_dir
+# filename = "aether.log"
+# stdout = true                # also write to stderr when file is on
+
 # [media.s3]
 # bucket = "aether-media"
 # region = "us-east-1"

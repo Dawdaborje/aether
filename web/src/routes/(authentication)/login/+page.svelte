@@ -1,9 +1,7 @@
 <script lang="ts">
-	import { goto } from '$app/navigation';
-	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { onMount } from 'svelte';
-	import { gotoPluginPage, landingPath, nextSlug } from '$lib/auth/landing';
+	import { gotoLanding, gotoPluginPage, nextSlug } from '$lib/auth/landing';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import {
@@ -11,8 +9,11 @@
 		fetchMe,
 		loginLocal,
 		oauthStartUrl,
+		ServerUnavailableError,
 		type AuthMethods
 	} from '$lib/auth/api';
+	import { announceSessionChanged } from '$lib/auth/session.svelte';
+	import { brandingStore } from '$lib/branding/brandingStore.svelte';
 
 	let methods = $state<AuthMethods | null>(null);
 	let username = $state('');
@@ -27,15 +28,19 @@
 			await gotoPluginPage(slug);
 			return;
 		}
-		await goto(resolve(landingPath(user)));
+		await gotoLanding(user);
 	}
 
 	onMount(async () => {
-		// An outage is not a login state: show the form, sign-in reports its own error.
-		const me = await fetchMe().catch(() => null);
-		if (me) {
-			await afterLogin(me.user);
-			return;
+		// An outage is not "logged out": keep the form so sign-in can report its own error.
+		try {
+			const me = await fetchMe();
+			if (me) {
+				await afterLogin(me.user);
+				return;
+			}
+		} catch (err) {
+			if (!(err instanceof ServerUnavailableError)) throw err;
 		}
 		methods = await fetchAuthMethods();
 	});
@@ -46,6 +51,8 @@
 		loading = true;
 		try {
 			const user = await loginLocal(username, password);
+			// Other tabs share this cookie; make them drop stale in-memory identity.
+			announceSessionChanged();
 			await afterLogin(user);
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Login failed';
@@ -61,7 +68,9 @@
 <div class="flex min-h-screen w-full items-center justify-center bg-background px-6">
 	<div class="w-full max-w-md space-y-8">
 		<div class="space-y-2">
-			<p class="text-xs font-semibold tracking-[0.2em] text-muted-foreground uppercase">Aether</p>
+			<p class="text-xs font-semibold tracking-[0.2em] text-muted-foreground uppercase">
+				{brandingStore.appName}
+			</p>
 			<h1 class="text-3xl font-semibold tracking-tight">Sign in</h1>
 			<p class="text-sm text-muted-foreground">
 				Use your account credentials to access the desk.

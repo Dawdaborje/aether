@@ -8,9 +8,15 @@ There are 2 ways to create a plugin:
 
 # Workspace
 
-A workspace is a of grouping a bunch of related plugins.
+A workspace packages related plugins for load/install. On the Apps launcher it is
+normally a **folder** (Frappe desktop `parent_icon`): each member that declares
+`[app]` keeps its own icon inside that folder. Set `launcher = "flat"` (Base) to
+list each member as its own home-grid tile instead. Plugins may also set
+`[app] folder = "Time"` to create or join a named folder within the same
+workspace category. Modules with only one sidebar menu fold into the host app
+unless `[app] standalone = true`.
 
-it is always been checked with the `workspace.toml` file
+Checked via `workspace.toml`:
 
 ```toml
 [workspace]
@@ -21,6 +27,12 @@ description = "This is a description of an example"
 long_description = """
 This is the long description of an example
 """
+# Folder on the Apps launcher. `group_icon` may be a Lucide id
+# (`building-2`) or a path under the workspace (`./assets/example.svg`).
+group_label = "Example"
+group_icon = "./assets/example.svg"
+# folder (default) | flat — flat lists each member on Apps home
+# launcher = "folder"
 
 [workspace.plugins]
 company = { path = "./company" }
@@ -70,6 +82,8 @@ it may listen to) and `bridges` (integrations it may call with `bridge::call`, s
 
 A plugin becomes a tile on the Apps launcher by declaring `[app]`; see
 [Organizations, switching, and the Apps launcher](../architecture/organizations.md).
+Optional `[app] roles = ["hr_user"]` (and page `roles="…"`) hide the tile and
+menus from members who do not hold one of those roles.
 A page can name shell chrome with `layout="bare"` and a content wrapper with
 `wrap="component_name"` on `<page>` (see [Pages](pages.md) and [Components](components.md)).
 A plugin can also be a theme that decides the app's colours, layout and navigation; see
@@ -90,6 +104,8 @@ keeps everything a plugin needs on disk:
 <app_dir>/
 ├── plugins/<name>/<stamp>/     one revision: only the files that changed, and files.json
 ├── views/<name>/<version>/     compiled page views (JSON)
+├── logs/                       process log when `[logging] file = true` (see [logging.md](../architecture/logging.md))
+├── uploads/plugins/<stamp>/    plugin/workspace zips uploaded from Desk Apps
 └── conf/                       other per-plugin configuration
 ```
 
@@ -104,6 +120,12 @@ config file (paths relative to that file; workspace names work the same way).
 error, without writing to the catalog or `app_dir`. Foreign links may resolve against other
 packages in the same run (their on-disk model ids), so a dependency does not need to be
 catalogued already for the check to pass.
+
+While the server is running, Desk Apps (`/desk/apps`) can do the same catalog load without
+the CLI: **Reload from disk** re-reads `plugin_paths` from `aether.toml`, and **Upload zip**
+stages a package or workspace archive under `uploads/plugins/` then loads it. Neither
+upgrades organizations; use **Install into org** (or `--install-plugin` / `--upgrade-plugin`)
+for that.
 
 Files are stored as **revisions**. Each file is compared by SHA-256 with the plugin's latest
 revision; only the files that differ are written, into a new folder named after the date and

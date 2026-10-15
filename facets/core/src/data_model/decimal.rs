@@ -48,7 +48,9 @@ fn parse(text: &str, scale: u32) -> Result<i64, String> {
     {
         return Err(bad());
     }
-    let kept = fraction.get(..(scale as usize).min(fraction.len())).unwrap_or("");
+    let kept = fraction
+        .get(..(scale as usize).min(fraction.len()))
+        .unwrap_or("");
     let extra = fraction.get(kept.len()..).unwrap_or("");
     if extra.bytes().any(|b| b != b'0') {
         return Err(format!("has more than {scale} digit(s) after the point"));
@@ -59,7 +61,11 @@ fn parse(text: &str, scale: u32) -> Result<i64, String> {
     if digits.len() > MAX_DIGITS {
         return Err("is too large".into());
     }
-    let magnitude: i64 = if digits.is_empty() { 0 } else { digits.parse().map_err(|_| bad())? };
+    let magnitude: i64 = if digits.is_empty() {
+        0
+    } else {
+        digits.parse().map_err(|_| bad())?
+    };
     Ok(if negative { -magnitude } else { magnitude })
 }
 
@@ -82,7 +88,9 @@ pub fn present(stored: &Value, scale: u32) -> Value {
         return Value::String(from_scaled(whole, scale));
     }
     match stored.as_f64() {
-        Some(number) if number.is_finite() => Value::String(from_scaled(number.round() as i64, scale)),
+        Some(number) if number.is_finite() => {
+            Value::String(from_scaled(number.round() as i64, scale))
+        }
         _ => stored.clone(),
     }
 }

@@ -41,6 +41,9 @@ pub struct AuthUser {
     pub username: Option<String>,
     pub email: Option<String>,
     pub display_name: Option<String>,
+    /// Filename under `app_dir/users/<id>/` when a profile photo is set.
+    #[serde(default)]
+    pub avatar_file: Option<String>,
     pub hashed_password: Option<String>,
     pub is_super_user: bool,
     pub is_active: bool,
@@ -132,7 +135,7 @@ pub async fn find_user_by_login(
     let mut response = db
         .query(
             r#"
-            SELECT id, username, email, display_name, hashed_password, is_super_user, is_active
+            SELECT id, username, email, display_name, avatar_file, hashed_password, is_super_user, is_active
             FROM users
             WHERE username = $login OR email = $login
             LIMIT 1;

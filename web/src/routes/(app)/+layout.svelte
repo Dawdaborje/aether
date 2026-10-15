@@ -2,10 +2,13 @@
 	import { navigating, page } from '$app/state';
 	import AppShell from '$lib/components/layout/AppShell.svelte';
 	import OrgSwitcherModal from '$lib/components/layout/OrgSwitcherModal.svelte';
+	import BootstrapLoading from '$lib/components/errors/BootstrapLoading.svelte';
+	import ServerUnavailable from '$lib/components/errors/ServerUnavailable.svelte';
 	import { authSession } from '$lib/auth/session.svelte';
 	import { gotoLogin } from '$lib/auth/landing';
 	import { ServerUnavailableError } from '$lib/auth/api';
 	import { appsStore } from '$lib/apps/appsStore.svelte';
+	import { companyStore } from '$lib/company/companyStore.svelte';
 	import { orgStore } from '$lib/org/orgStore.svelte';
 	import { themeStore } from '$lib/theme';
 	import { onDestroy, onMount } from 'svelte';
@@ -20,14 +23,18 @@
 	const isPluginPage = $derived(page.route.id === '/(app)/(org)/[...slug]');
 
 	let ready = $state(false);
-	/** The server is up but cannot answer (usually its database is down); we keep retrying. */
+	/** Bootstrap: fetch to the API failed (process down, proxy refused, DB outage). */
 	let unavailable = $state(false);
+	let attempt = $state(0);
 	const RETRY_MS = 3000;
 	/** Avoid a flash on instant navigations; page loads often take seconds. */
 	const NAV_BANNER_DELAY_MS = 120;
+	/** Brief stream blips should not flash a banner; sustained outage should. */
+	const OUTAGE_BANNER_DELAY_MS = 1500;
 	// `$app/state`'s `navigating` is always an object; idle is `to === null`.
 	const isNavigating = $derived(navigating.to !== null);
 	let showNavBanner = $state(false);
+	let showOutageBanner = $state(false);
 
 	$effect(() => {
 		if (!isNavigating) {
@@ -37,6 +44,17 @@
 		const timer = setTimeout(() => {
 			showNavBanner = true;
 		}, NAV_BANNER_DELAY_MS);
+		return () => clearTimeout(timer);
+	});
+
+	$effect(() => {
+		if (!ready || !notificationsStore.unreachable) {
+			showOutageBanner = false;
+			return;
+		}
+		const timer = setTimeout(() => {
+			showOutageBanner = true;
+		}, OUTAGE_BANNER_DELAY_MS);
 		return () => clearTimeout(timer);
 	});
 
@@ -65,11 +83,13 @@
 					themeStore.loadFromApi('')
 				]);
 				unavailable = false;
+				attempt = 0;
 				break;
 			} catch (err) {
 				// Only an outage is retried; anything else is a real bug.
 				if (!(err instanceof ServerUnavailableError)) throw err;
 				unavailable = true;
+				attempt += 1;
 				await new Promise((resolve) => setTimeout(resolve, RETRY_MS));
 			}
 		}
@@ -79,7 +99,10 @@
 			if (authSession.isUser && !hadOrganization && orgStore.current) {
 				await themeStore.loadFromApi('');
 			}
-			if (authSession.isUser) void appsStore.load();
+			if (authSession.isUser) {
+				void appsStore.load();
+				if (orgStore.current) void companyStore.load();
+			}
 			notificationsStore.start();
 			ready = true;
 			return;
@@ -91,19 +114,19 @@
 <div class="flex w-full flex-col">
 	<NotificationToasts />
 	{#if !ready}
-		<!-- Chrome first, content when it is known: never a blank screen. -->
-		<div class="flex min-h-screen flex-col bg-canvas" aria-busy="true">
-			<div class="h-12 border-b border-black/30 bg-sidebar"></div>
-			<div class="h-1 w-full overflow-hidden bg-primary/10">
-				<div class="h-full w-1/3 animate-[loading_1.1s_ease-in-out_infinite] rounded-full bg-primary/60"></div>
-			</div>
-			{#if unavailable}
-				<p class="p-6 text-center text-sm text-muted-foreground" role="status">
-					The server can't reach its database right now. Retrying…
-				</p>
-			{/if}
-		</div>
+		{#if unavailable}
+			<ServerUnavailable retrying {attempt} />
+		{:else}
+			<BootstrapLoading />
+		{/if}
 	{:else}
+		{#if showOutageBanner}
+			<ServerUnavailable
+				variant="banner"
+				retrying
+				onRetry={() => notificationsStore.restart()}
+			/>
+		{/if}
 		{#if showNavBanner}
 			<div
 				class="pointer-events-none fixed inset-x-0 top-0 z-50 h-1 w-full overflow-hidden bg-primary/10"

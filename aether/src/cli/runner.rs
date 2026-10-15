@@ -1,11 +1,11 @@
-use std::{env, path::Path, str::FromStr};
+use std::{env, path::Path};
 
 use aether_core::application::services::change_user_password;
 use aether_core::org_admin::create_user;
 use aether_core::roles;
-use aether_orm::{SchemaStatus, core_schema_status};
+use aether_orm::{SchemaStatus, core_schema_status, find_user_by_login};
 use clap::Parser;
-use log::LevelFilter;
+use surrealdb::types::ToSql;
 
 use crate::server::serve::run_server;
 
@@ -13,15 +13,18 @@ use super::{
     args::Args,
     db::{get_prerequisites, load_search_roots},
     generation::{generate_default_config_template, generate_plugin_workspace},
-    initialization::{initialize_system, print_bootstrap_summary},
+    initialization::{
+        initialize_system, migrate_system, print_bootstrap_summary, print_migrate_summary,
+    },
+    logging::init_logger,
     organization::{
         FirstMember, OrganizationRequest, StorageTarget, assign_user, create_organization,
+        transfer_ownership,
         provision_existing_organization,
     },
     plugin_manager::{
-        activate_theme, check_plugins, install_plugins, load_plugins, print_check_summary,
-        print_install_summary, print_load_summary,
-        print_upgrade_summary, upgrade_plugins,
+        activate_theme, check_plugins, install_plugins, print_check_summary,
+        print_install_summary, print_load_summary, print_upgrade_summary, upgrade_plugins,
     },
     scaffold::{self, Language, create_plugin},
     seed::seed_system,
@@ -35,30 +38,6 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     log::warn!("Starting in '{}' environment", args.environment);
 
     dispatch(args).await
-}
-
-fn init_logger(args: &Args) {
-    let level = match LevelFilter::from_str(&args.log) {
-        Ok(l) => l,
-        Err(_) => {
-            eprintln!("Invalid log level '{}', defaulting to 'debug'", args.log);
-            LevelFilter::Debug
-        }
-    };
-
-    let mut builder = env_logger::Builder::new();
-    builder.filter_level(level);
-
-    let enable_framework_debug =
-        args.verbose || matches!(level, LevelFilter::Debug | LevelFilter::Trace);
-    if enable_framework_debug {
-        builder
-            .filter_module("axum", LevelFilter::Debug)
-            .filter_module("tower_http", LevelFilter::Debug)
-            .filter_module("hyper", LevelFilter::Debug);
-    }
-
-    builder.init();
 }
 
 /// What was created, and what to do next.
@@ -109,16 +88,16 @@ async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         let search_roots = load_search_roots(&args)?;
-        let plugin_paths =
-            aether_core::plugin_manager::load_paths::resolve_load_paths(&entries, &search_roots)
-                .await?;
         if args.dry_run {
+            let plan =
+                aether_core::plugin_manager::load_paths::resolve_load_paths(&entries, &search_roots)
+                    .await?;
             let report = check_plugins(
                 ctx.db,
                 &ctx.namespace,
                 &ctx.database,
                 &ctx.config.app_dir,
-                &plugin_paths,
+                &plan.packages,
             )
             .await?;
             print_check_summary(&report);
@@ -126,19 +105,22 @@ async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 return Err(format!(
                     "--load-plugins --dry-run: {} of {} package(s) failed validation",
                     report.errors.len(),
-                    plugin_paths.len()
+                    plan.packages.len()
                 )
                 .into());
             }
         } else {
-            let loaded = load_plugins(
+            let loaded = aether_core::plugin_manager::load::load_into_catalog(
                 ctx.db,
                 &ctx.namespace,
                 &ctx.database,
                 &ctx.config.app_dir,
-                &plugin_paths,
+                None,
+                &entries,
+                &search_roots,
             )
-            .await?;
+            .await
+            .map_err(|error| error.to_string())?;
             print_load_summary(&loaded);
         }
     }
@@ -151,6 +133,14 @@ async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         let ctx = get_db_context(&args).await;
         let report = install_plugins(ctx.db, &ctx.namespace, &ctx.database, org, specs).await?;
         print_install_summary(org, &report);
+        let seeded: Vec<String> = report.installed.iter().map(|(name, _)| name.clone()).collect();
+        crate::cli::commands::run_lifecycle_seeds(
+            ctx,
+            org,
+            &seeded,
+            aether_core::plugin_manager::commands::LifecyclePhase::Install,
+        )
+        .await?;
     }
 
     if let Some(specs) = &args.upgrade_plugin {
@@ -160,6 +150,14 @@ async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         let ctx = get_db_context(&args).await;
         let report = upgrade_plugins(ctx.db, &ctx.namespace, &ctx.database, org, specs).await?;
         print_upgrade_summary(org, &report);
+        let seeded: Vec<String> = report.upgraded.iter().map(|(name, _, _)| name.clone()).collect();
+        crate::cli::commands::run_lifecycle_seeds(
+            ctx,
+            org,
+            &seeded,
+            aether_core::plugin_manager::commands::LifecyclePhase::Upgrade,
+        )
+        .await?;
     }
 
     if let Some(theme) = &args.activate_theme {
@@ -275,6 +273,30 @@ async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    if args.grant_developer || args.revoke_developer {
+        let on = args.grant_developer;
+        if on && args.revoke_developer {
+            log::error!("use either --grant-developer or --revoke-developer, not both");
+            return Ok(());
+        }
+        let Some(login) = &args.username else {
+            log::error!("--username must name the user whose developer access changes");
+            return Ok(());
+        };
+        let ctx = get_db_context(&args).await;
+        let scope = args.org.as_deref();
+        match aether_core::org_admin::set_developer_by_login(ctx.db, &ctx.namespace, login, scope, on).await {
+            Ok(()) => match (on, scope) {
+                (true, Some(org)) => println!("'{login}' is now a developer of '{org}'."),
+                (false, Some(org)) => println!("'{login}' is no longer a developer of '{org}'."),
+                (true, None) => println!("'{login}' is now an unrestricted developer."),
+                (false, None) => println!("'{login}' is no longer an unrestricted developer."),
+            },
+            Err(err) => log::error!("Failed to change developer access: {err}"),
+        }
+        return Ok(());
+    }
+
     if args.grant_role.is_some() || args.revoke_role.is_some() || args.list_roles {
         let Some(org) = &args.org else {
             log::error!("--org must name the organization database when working with roles");
@@ -306,8 +328,17 @@ async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 Ok(found) if found.is_empty() => println!("No roles in '{org}' yet."),
                 Ok(found) => {
                     for role in found {
-                        let holders = if role.holders.is_empty() { "nobody".to_string() } else { role.holders.join(", ") };
-                        println!("{:<28} {:<26} {}", role.name, role.label, holders);
+                        let holders = if role.holders.is_empty() {
+                            "nobody".to_string()
+                        } else {
+                            role.holders
+                                .iter()
+                                .map(|h| h.display_name.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        };
+                        let kind = if role.is_system { "system" } else { "custom" };
+                        println!("{:<28} {:<26} {:<8} {}", role.name, role.label, kind, holders);
                     }
                 }
                 Err(err) => log::error!("Failed to list roles: {err}"),
@@ -336,6 +367,8 @@ async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             name: organization_name,
             db_name: args.org_db_name.as_deref(),
             member: FirstMember::User { username, email, password },
+            description: None,
+            parent_db_name: None,
         };
         match create_organization(ctx.db, &ctx.namespace, &request, &storage).await {
             Ok((db_name, org_storage)) => println!(
@@ -371,6 +404,47 @@ async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         match assign_user(ctx.db, &ctx.namespace, user_login, org_db_name).await {
             Ok(()) => println!("Assigned user '{user_login}' to organization '{org_db_name}'."),
             Err(err) => log::error!("Failed to assign user '{user_login}': {err}"),
+        }
+        return Ok(());
+    }
+
+    if let Some(to_login) = &args.transfer_org_ownership {
+        let Some(org) = &args.org else {
+            log::error!("--org must name the organization when transferring ownership");
+            return Ok(());
+        };
+        let Some(owner_login) = &args.username else {
+            log::error!("--username must be the current owner transferring ownership");
+            return Ok(());
+        };
+        let ctx = get_db_context(&args).await;
+        ctx.db.use_ns(&ctx.namespace).await?;
+        ctx.db.use_db("core").await?;
+        let actor_id = match find_user_by_login(ctx.db, owner_login).await {
+            Ok(Some(user)) => format!("{}:{}", user.id.table, user.id.key.to_sql()),
+            Ok(None) => {
+                log::error!("No user '{owner_login}' exists");
+                return Ok(());
+            }
+            Err(err) => {
+                log::error!("Looking up '{owner_login}': {err}");
+                return Ok(());
+            }
+        };
+        match transfer_ownership(
+            ctx.db,
+            &ctx.namespace,
+            org,
+            &actor_id,
+            to_login,
+            args.transfer_note.as_deref(),
+        )
+        .await
+        {
+            Ok(()) => println!(
+                "Ownership of '{org}' transferred from '{owner_login}' to '{to_login}'."
+            ),
+            Err(err) => log::error!("Failed to transfer ownership: {err}"),
         }
         return Ok(());
     }
@@ -414,6 +488,17 @@ async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    if args.migrate {
+        let ctx = connect_context(&args).await;
+        match migrate_system(ctx.db, &ctx.namespace, &ctx.database).await {
+            Ok(result) => print_migrate_summary(&result),
+            Err(err) => {
+                log::error!("Migrate failed: {err}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if args.seed {
         let ctx = get_db_context(&args).await;
         if let Err(err) = seed_system(ctx.db, &ctx.namespace, &ctx.database).await {
@@ -424,7 +509,16 @@ async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     if let Some(_host) = &args.serve {
         let ctx = get_db_context(&args).await;
-        if let Err(err) = run_server(ctx.config, args.http_port, ctx.db, args.scheduling, args.watch).await {
+        if let Err(err) = run_server(
+            ctx.config,
+            args.http_port,
+            ctx.db,
+            args.scheduling,
+            args.watch,
+            ctx.config_path,
+        )
+        .await
+        {
             log::error!("Server failed: {err}");
             std::process::exit(1);
         }
@@ -472,9 +566,9 @@ fn describe_media(
     }
 }
 
-/// Connect, and require that `aether --init` has been run. Every command except
-/// `--init` itself works on an initialized database, so a fresh one gets a
-/// plain instruction instead of a "table does not exist" error.
+/// Connect, and require that the core schema is current. Every command except
+/// `--init` / `--migrate` works on an initialized database, so a fresh or stale
+/// one gets a plain instruction instead of a "table does not exist" error.
 async fn get_db_context(args: &Args) -> crate::cli::db::DbContext {
     let context = connect_context(args).await;
     match core_schema_status(context.db, &context.namespace, &context.database).await {
@@ -489,7 +583,7 @@ async fn get_db_context(args: &Args) -> crate::cli::db::DbContext {
         }
         Ok(SchemaStatus::Pending(pending)) => {
             log::error!(
-                "The database `{}/{}` is missing {} migration(s) shipped with this version of Aether ({}). Run `aether --init` to apply them.",
+                "The database `{}/{}` is missing {} migration(s) shipped with this version of Aether ({}). Run `aether --migrate` to apply them.",
                 context.namespace,
                 context.database,
                 pending.len(),

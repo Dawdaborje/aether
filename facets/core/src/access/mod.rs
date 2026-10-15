@@ -13,6 +13,7 @@
 pub mod audit;
 pub mod identity;
 pub mod ip;
+pub mod org_databases;
 pub mod organizations;
 pub mod ratelimit;
 pub mod visitor;

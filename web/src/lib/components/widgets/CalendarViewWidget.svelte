@@ -7,12 +7,15 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Skeleton } from '$lib/components/ui/skeleton';
 	import { navHref } from '$lib/components/layout/nav';
+	import { getPageChrome } from '$lib/pages/pageChrome.svelte';
 	import { getPageState, interpolate, keyOf, rowsOf, text } from '$lib/pages/pageContext.svelte';
 
 	let { node }: { node: PageNode } = $props();
 
 	const page = getPageState();
+	const chrome = getPageChrome();
 	const source = $derived(text(node.source));
+	const modelName = $derived(text(node.model) || page?.model || null);
 	const openTemplate = $derived(text(node.open));
 	const dateStart = $derived(text(node.date_start) ?? text(node.dateStart) ?? 'starts_at');
 	const dateStop = $derived(text(node.date_stop) ?? text(node.dateStop) ?? '');
@@ -99,6 +102,11 @@
 	}
 
 	$effect(() => {
+		if (!chrome) return;
+		return chrome.registerRefreshModel(modelName);
+	});
+
+	$effect(() => {
 		void page?.plugin;
 		void page?.tick;
 		void source;
@@ -146,7 +154,9 @@
 
 	function eventTitle(row: Record<string, unknown>): string {
 		const value = row[titleField];
-		return value === null || value === undefined || value === '' ? keyOf(row.id) || 'Event' : String(value);
+		return value === null || value === undefined || value === ''
+			? keyOf(row.id) || 'Event'
+			: String(value);
 	}
 
 	const weekdayLabels = $derived.by(() => {
@@ -196,10 +206,6 @@
 		</div>
 	</div>
 
-	{#if failure}
-		<p class="text-sm text-destructive" role="alert">{failure}</p>
-	{/if}
-
 	{#if rows === null}
 		<div class="space-y-2" aria-busy="true">
 			<Skeleton class="h-10 w-full" />
@@ -209,7 +215,9 @@
 		<PageRenderer node={empty} />
 	{:else}
 		<div class="overflow-hidden rounded-md border border-border">
-			<div class="grid grid-cols-7 border-b border-border bg-muted/40 text-center text-xs font-medium text-muted-foreground">
+			<div
+				class="grid grid-cols-7 border-b border-border bg-muted/40 text-center text-xs font-medium text-muted-foreground"
+			>
 				{#each weekdayLabels as label (label)}
 					<div class="px-1 py-2">{label}</div>
 				{/each}
@@ -217,7 +225,7 @@
 			<div class="grid grid-cols-7">
 				{#each days as day (dayKey(day.date))}
 					<div
-						class="min-h-24 border-b border-r border-border p-1 last:border-r-0 {day.inMonth
+						class="min-h-24 border-r border-b border-border p-1 last:border-r-0 {day.inMonth
 							? 'bg-background'
 							: 'bg-muted/20 text-muted-foreground'}"
 					>
@@ -239,7 +247,7 @@
 								</li>
 							{/each}
 							{#if day.events.length > 3}
-								<li class="px-1 text-[10px] text-muted-foreground">+{day.events.length - 3} more</li>
+								<li class="px-1 text-xs text-muted-foreground">+{day.events.length - 3} more</li>
 							{/if}
 						</ul>
 					</div>

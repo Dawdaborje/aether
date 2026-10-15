@@ -41,7 +41,9 @@ pub struct IpPolicy {
 
 impl std::fmt::Debug for IpPolicy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("IpPolicy").field("mode", &self.mode).finish_non_exhaustive()
+        f.debug_struct("IpPolicy")
+            .field("mode", &self.mode)
+            .finish_non_exhaustive()
     }
 }
 
@@ -78,7 +80,11 @@ impl IpPolicy {
             }
             Err(_) => Sha256::digest([self.key.as_slice(), text.as_bytes()].concat()).to_vec(),
         };
-        let hex: String = digest.iter().take(16).map(|byte| format!("{byte:02x}")).collect();
+        let hex: String = digest
+            .iter()
+            .take(16)
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
         format!("h:{hex}")
     }
 }
@@ -179,10 +185,17 @@ mod tests {
         let first = hashed.apply(address);
         assert_eq!(first, hashed.apply(address), "hash is stable");
         assert_ne!(first, hashed.apply(Some(ip("203.0.113.78"))));
-        assert!(first.as_deref().is_some_and(|h| h.starts_with("h:") && !h.contains("203")));
+        assert!(
+            first
+                .as_deref()
+                .is_some_and(|h| h.starts_with("h:") && !h.contains("203"))
+        );
         let other_key = IpPolicy::from_config(&config(IpStorage::Hashed, Some("fedcba9876543210")));
         assert_ne!(first, other_key.apply(address), "hash depends on the key");
 
-        assert_eq!(IpPolicy::from_config(&config(IpStorage::Full, None)).apply(None), None);
+        assert_eq!(
+            IpPolicy::from_config(&config(IpStorage::Full, None)).apply(None),
+            None
+        );
     }
 }

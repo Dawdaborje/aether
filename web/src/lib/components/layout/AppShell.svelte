@@ -4,6 +4,7 @@
 	import { themeStore } from '$lib/theme';
 	import ConfiguredLayout from './configured/ConfiguredLayout.svelte';
 	import { layoutFor } from './registry';
+	import PluginErrorModal from '$lib/components/errors/PluginErrorModal.svelte';
 
 	let { children } = $props();
 
@@ -52,3 +53,6 @@
 		{@render children()}
 	</Layout>
 {/if}
+
+<!-- Failed plugin calls and plugins that did not load pop up here, on every page. -->
+<PluginErrorModal />

@@ -15,7 +15,7 @@
 
 use aether_orm::ValidSession;
 use axum::http::{HeaderMap, Request, Uri};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use surrealdb::types::SurrealValue;
 
 use super::visitor::record_id_string;
@@ -24,11 +24,13 @@ use crate::state::AppState;
 use crate::tenancy::resolve_org_slug;
 
 /// An organization as read from the catalog.
-#[derive(Debug, Clone, PartialEq, Eq, SurrealValue)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, SurrealValue)]
 pub struct OrgChoice {
     /// The database name; what is sent as the organization identifier.
     pub db_name: String,
     pub name: String,
+    #[serde(default)]
+    pub logo_file: Option<String>,
 }
 
 /// An organization a user can enter, as shown in a chooser.
@@ -39,6 +41,9 @@ pub struct OrgEntry {
     /// The user belongs to it. A developer can also enter organizations they
     /// do not belong to; those have `member: false`.
     pub member: bool,
+    /// `/api/ui/organizations/{db}/logo` when a logo has been uploaded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logo_url: Option<String>,
 }
 
 /// How the app should treat organization choice for this deployment.
@@ -77,7 +82,7 @@ pub async fn user_organizations(
     let core = state.core().await?;
     if session.user.is_super_user {
         let mut response = core
-            .query("SELECT name, db_name FROM organizations ORDER BY name;")
+            .query("SELECT name, db_name, logo_file FROM organizations ORDER BY name;")
             .await?
             .check()?;
         return response.take(0);
@@ -85,24 +90,40 @@ pub async fn user_organizations(
 
     let user_id = record_id_string(&session.user.id);
     let mut response = core
-        .query("SELECT organization_id FROM organization_users WHERE user_id = $user;")
+        .query(
+            "SELECT organization_id FROM organization_users \
+             WHERE user_id = $user AND deleted_at = NONE;",
+        )
         .bind(("user", user_id))
         .await?
         .check()?;
     let memberships: Vec<MembershipRow> = response.take(0)?;
     let db_names: Vec<String> = memberships
         .into_iter()
-        .filter_map(|row| row.organization_id.strip_prefix("organizations:").map(str::to_string))
+        .filter_map(|row| {
+            row.organization_id
+                .strip_prefix("organizations:")
+                .map(str::to_string)
+        })
         .collect();
     if db_names.is_empty() {
         return Ok(Vec::new());
     }
     let mut response = core
-        .query("SELECT name, db_name FROM organizations WHERE db_name IN $dbs ORDER BY name;")
+        .query(
+            "SELECT name, db_name, logo_file FROM organizations WHERE db_name IN $dbs ORDER BY name;",
+        )
         .bind(("dbs", db_names))
         .await?
         .check()?;
     response.take(0)
+}
+
+fn org_logo_url(db_name: &str, logo_file: Option<&str>) -> Option<String> {
+    logo_file
+        .map(str::trim)
+        .filter(|file| !file.is_empty())
+        .map(|_| format!("/api/ui/organizations/{db_name}/logo"))
 }
 
 /// What the web app needs to know to offer an organization switch.
@@ -125,17 +146,18 @@ pub async fn overview(
     session: &ValidSession,
 ) -> Result<OrgOverview, surrealdb::Error> {
     let enterable = user_organizations(state, session).await?;
-    let memberships = membership_db_names(
-        state,
-        &super::visitor::record_id_string(&session.user.id),
-    )
-    .await?;
+    let memberships =
+        membership_db_names(state, &super::visitor::record_id_string(&session.user.id)).await?;
     let organizations: Vec<OrgEntry> = enterable
         .into_iter()
-        .map(|org| OrgEntry {
-            member: memberships.contains(&org.db_name),
-            db_name: org.db_name,
-            name: org.name,
+        .map(|org| {
+            let logo_url = org_logo_url(&org.db_name, org.logo_file.as_deref());
+            OrgEntry {
+                member: memberships.contains(&org.db_name),
+                db_name: org.db_name,
+                name: org.name,
+                logo_url,
+            }
         })
         .collect();
     let mode = SelectionMode::of(&state.config.tenancy.org_resolution);
@@ -186,6 +208,47 @@ pub fn session_left_organization(session: &ValidSession) -> bool {
         && session.org_database_id.as_deref() == Some(aether_orm::LEFT_ORGANIZATION)
 }
 
+/// Organization this session is effectively in: the stored choice, or the sole membership
+/// when nothing is stored yet (same rule as [`overview`] / [`identify`](super::identity::identify)).
+///
+/// Login may leave `org_database_id` empty; the Apps UI still shows the only org via overview,
+/// so capability checks (`/me`) must use this rather than the raw session field alone.
+pub async fn effective_org_database(
+    state: &AppState,
+    session: &ValidSession,
+) -> Result<Option<String>, surrealdb::Error> {
+    if session_left_organization(session) {
+        return Ok(None);
+    }
+    let memberships = membership_db_names(state, &record_id_string(&session.user.id)).await?;
+    let from_session = session
+        .org_database_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .filter(|v| *v != aether_orm::LEFT_ORGANIZATION)
+        .filter(|candidate| memberships.iter().any(|m| m == *candidate))
+        .map(str::to_string);
+    if from_session.is_some() {
+        return Ok(from_session);
+    }
+    // Developers may enter orgs they do not belong to; keep an explicit non-member choice.
+    if let Some(org) = session
+        .org_database_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .filter(|v| *v != aether_orm::LEFT_ORGANIZATION)
+        .filter(|_| session.user.is_super_user)
+    {
+        return Ok(Some(org.to_string()));
+    }
+    Ok(match memberships.as_slice() {
+        [only] => Some(only.clone()),
+        _ => None,
+    })
+}
+
 /// Which organization the request is for, and whether the user must choose first.
 ///
 /// An organization named by the request or remembered by the session wins. Otherwise a
@@ -213,17 +276,29 @@ pub async fn membership_db_names(
     state: &AppState,
     user_id: &str,
 ) -> Result<Vec<String>, surrealdb::Error> {
+    if let Ok(Some(orgs)) = state.cache.warm_get_memberships(user_id) {
+        return Ok(orgs);
+    }
     let core = state.core().await?;
     let mut response = core
-        .query("SELECT organization_id FROM organization_users WHERE user_id = $user;")
+        .query(
+            "SELECT organization_id FROM organization_users \
+             WHERE user_id = $user AND deleted_at = NONE;",
+        )
         .bind(("user", user_id.to_string()))
         .await?
         .check()?;
     let rows: Vec<MembershipRow> = response.take(0)?;
-    Ok(rows
+    let orgs: Vec<String> = rows
         .into_iter()
-        .filter_map(|row| row.organization_id.strip_prefix("organizations:").map(str::to_string))
-        .collect())
+        .filter_map(|row| {
+            row.organization_id
+                .strip_prefix("organizations:")
+                .map(str::to_string)
+        })
+        .collect();
+    let _ = state.cache.warm_set_memberships(user_id, &orgs);
+    Ok(orgs)
 }
 
 #[cfg(test)]
@@ -232,7 +307,12 @@ mod tests {
 
     #[test]
     fn org_entries_serialize_with_the_membership_flag() -> Result<(), serde_json::Error> {
-        let entry = OrgEntry { db_name: "acme".into(), name: "Acme".into(), member: true };
+        let entry = OrgEntry {
+            db_name: "acme".into(),
+            name: "Acme".into(),
+            member: true,
+            logo_url: None,
+        };
         assert_eq!(
             serde_json::to_value(&entry)?,
             serde_json::json!({ "db_name": "acme", "name": "Acme", "member": true })
@@ -252,13 +332,36 @@ mod tests {
     }
 
     #[test]
+    fn sole_membership_fills_in_when_session_has_no_org() {
+        // Same rule `/me` and login rely on via effective_org_database.
+        let (current, _) = decide_current(
+            None,
+            None,
+            &names(&["hrms_org"]),
+            false,
+            SelectionMode::Session,
+        );
+        assert_eq!(current.as_deref(), Some("hrms_org"));
+    }
+
+    #[test]
     fn several_memberships_and_no_choice_ask_the_user() {
-        let (current, required) =
-            decide_current(None, None, &names(&["acme", "globex"]), false, SelectionMode::Session);
+        let (current, required) = decide_current(
+            None,
+            None,
+            &names(&["acme", "globex"]),
+            false,
+            SelectionMode::Session,
+        );
         assert_eq!((current, required), (None, true));
         // An address-decided deployment never asks.
-        let (_, required) =
-            decide_current(None, None, &names(&["acme", "globex"]), false, SelectionMode::Address);
+        let (_, required) = decide_current(
+            None,
+            None,
+            &names(&["acme", "globex"]),
+            false,
+            SelectionMode::Address,
+        );
         assert!(!required);
     }
 
@@ -282,9 +385,21 @@ mod tests {
 
     #[test]
     fn only_header_and_session_tenancy_ask_the_user_to_choose() {
-        assert_eq!(SelectionMode::of(&OrgResolutionMode::Subdomain), SelectionMode::Address);
-        assert_eq!(SelectionMode::of(&OrgResolutionMode::Path), SelectionMode::Address);
-        assert_eq!(SelectionMode::of(&OrgResolutionMode::Header), SelectionMode::Header);
-        assert_eq!(SelectionMode::of(&OrgResolutionMode::SessionOnly), SelectionMode::Session);
+        assert_eq!(
+            SelectionMode::of(&OrgResolutionMode::Subdomain),
+            SelectionMode::Address
+        );
+        assert_eq!(
+            SelectionMode::of(&OrgResolutionMode::Path),
+            SelectionMode::Address
+        );
+        assert_eq!(
+            SelectionMode::of(&OrgResolutionMode::Header),
+            SelectionMode::Header
+        );
+        assert_eq!(
+            SelectionMode::of(&OrgResolutionMode::SessionOnly),
+            SelectionMode::Session
+        );
     }
 }

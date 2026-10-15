@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
+use surrealdb::Surreal;
 
 use crate::access::audit::AuditContext;
 use crate::notifications::NotificationHub;
@@ -147,6 +148,15 @@ pub struct HostServices {
     pub files_root: Option<std::path::PathBuf>,
     /// The bridges plugins call with `bridge::call`.
     pub bridges: Option<std::sync::Arc<dyn BridgeHandle>>,
+    /// Core database session for host tables that live outside the org (e.g. magic links).
+    pub core: Option<crate::state::Db>,
+    /// Public site origin for links in email (`http://localhost:5173`). Empty when unknown.
+    pub public_base: String,
+    /// Opens a database session that may switch between core and an organization.
+    /// Shared sessions must not be switched.
+    pub open_session: Option<
+        std::sync::Arc<dyn Fn() -> Surreal<surrealdb::engine::remote::ws::Client> + Send + Sync>,
+    >,
 }
 
 /// Execution context for one plugin invocation.
@@ -272,9 +282,9 @@ impl PluginHostContext {
     }
 
     pub fn services(&self) -> Result<&HostServices, super::error::HostError> {
-        self.services
-            .as_ref()
-            .ok_or_else(|| super::error::HostError::Message("this call has no cache or storage attached".into()))
+        self.services.as_ref().ok_or_else(|| {
+            super::error::HostError::Message("this call has no cache or storage attached".into())
+        })
     }
 
     pub fn require_cap(

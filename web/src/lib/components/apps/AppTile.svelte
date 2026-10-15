@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { navHref } from '$lib/components/layout/nav';
-	import * as Card from '$lib/components/ui/card/index.js';
 	import { appIcon } from './icons';
 	import type { AppTileData } from './types';
 
@@ -8,12 +7,15 @@
 		app,
 		href,
 		interactive = true,
+		/** Compact for the home-menu Apps grid; default matches the full Apps launcher. */
+		size = 'default',
 		onclick
 	}: {
 		app: AppTileData;
 		/** Override the launcher route; pass `null` for a non-linking tile. */
 		href?: string | null;
 		interactive?: boolean;
+		size?: 'default' | 'compact';
 		onclick?: () => void;
 	} = $props();
 
@@ -21,6 +23,7 @@
 	const link = $derived(href === undefined ? navHref(app.route) : href);
 	let logoFailed = $state(false);
 	const showLogo = $derived(Boolean(app.logo_url) && !logoFailed);
+	const compact = $derived(size === 'compact');
 
 	$effect(() => {
 		void app.logo_url;
@@ -29,44 +32,45 @@
 </script>
 
 {#snippet body()}
-	<Card.Root
-		size="sm"
-		class="h-full transition-colors {interactive
-			? 'group-hover:bg-accent/40 group-focus-visible:ring-2 group-focus-visible:ring-ring'
+	<!-- A launcher tile: icon and name, no frame until hovered. -->
+	<div
+		data-part="apps.tile"
+		class="flex h-full flex-col items-center rounded-xl text-center transition-colors {compact
+			? 'gap-2 p-3'
+			: 'gap-3 p-4'} {interactive
+			? 'group-hover:bg-accent group-focus-visible:ring-2 group-focus-visible:ring-ring'
 			: ''}"
 	>
-		<Card.Content
-			class="flex flex-col items-center gap-2.5 px-(--card-spacing) pt-(--card-spacing) text-center"
+		<span
+			class="flex items-center justify-center overflow-hidden bg-primary/10 text-primary {compact
+				? 'size-11 rounded-xl'
+				: 'size-14 rounded-2xl sm:size-16'}"
+			aria-hidden="true"
 		>
-			<span
-				class="flex size-12 items-center justify-center overflow-hidden bg-primary/10 text-primary ring-1 ring-primary/15 transition {interactive
-					? 'group-hover:bg-primary/15 group-hover:ring-primary/30'
-					: ''}"
-				aria-hidden="true"
-			>
-				{#if showLogo && app.logo_url}
-					<img
-						src={app.logo_url}
-						alt=""
-						class="size-10 object-contain"
-						onerror={() => (logoFailed = true)}
-					/>
-				{:else if Icon}
-					<Icon class="size-6" />
-				{:else}
-					<span class="text-xl font-semibold">{app.label.charAt(0).toUpperCase()}</span>
-				{/if}
-			</span>
-			<div class="max-w-full space-y-0.5">
-				<Card.Title class="truncate text-[13px] font-medium">{app.label}</Card.Title>
-				{#if app.description}
-					<Card.Description class="line-clamp-2 text-[11px] leading-snug">
-						{app.description}
-					</Card.Description>
-				{/if}
-			</div>
-		</Card.Content>
-	</Card.Root>
+			{#if showLogo && app.logo_url}
+				<img
+					src={app.logo_url}
+					alt=""
+					class="object-contain {compact ? 'size-8' : 'size-10 sm:size-12'}"
+					onerror={() => (logoFailed = true)}
+				/>
+			{:else if Icon}
+				<Icon class={compact ? 'size-5' : 'size-7'} />
+			{:else}
+				<span class="font-semibold {compact ? 'text-base' : 'text-xl'}"
+					>{app.label.charAt(0).toUpperCase()}</span
+				>
+			{/if}
+		</span>
+		<div class="max-w-full space-y-0.5">
+			<p class="truncate text-sm font-medium text-foreground">{app.label}</p>
+			{#if app.description && !compact}
+				<p class="line-clamp-2 text-xs leading-snug text-muted-foreground">
+					{app.description}
+				</p>
+			{/if}
+		</div>
+	</div>
 {/snippet}
 
 {#if onclick}

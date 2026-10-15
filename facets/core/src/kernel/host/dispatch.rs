@@ -3,7 +3,9 @@ use serde_json::Value as JsonValue;
 use super::context::PluginHostContext;
 use super::db;
 use super::error::HostError;
-use super::{bridge_call, communication, files, graph, http, plugin_call, scheduling, storage, store};
+use super::{
+    bridge_call, communication, files, graph, http, plugin_call, scheduling, storage, store,
+};
 
 /// Dispatch a kernel host command for a plugin.
 ///
@@ -18,13 +20,28 @@ pub async fn kernel_command(
         // Structured DB — no raw SurQL from the plugin.
         "db::get" => db::db_get(ctx, &payload).await,
         "db::find" | "db::query" => db::db_find(ctx, &payload).await,
-        "db::relate" => graph::db_relate(ctx, &payload).await,
-        "db::unrelate" => graph::db_unrelate(ctx, &payload).await,
+        "db::relate" => {
+            let reply = graph::db_relate(ctx, &payload).await;
+            bump_org_gen(ctx);
+            reply
+        }
+        "db::unrelate" => {
+            let reply = graph::db_unrelate(ctx, &payload).await;
+            bump_org_gen(ctx);
+            reply
+        }
         "db::related" => graph::db_related(ctx, &payload).await,
-        "db::transitions" => super::transitions::db_transitions(ctx, &payload).await,
+        "db::transitions" => {
+            let reply = super::transitions::db_transitions(ctx, &payload).await;
+            bump_org_gen(ctx);
+            reply
+        }
         "db::tree" => graph::db_tree(ctx, &payload).await,
         "db::count" => db::db_count(ctx, &payload).await,
         "db::aggregate" => db::db_aggregate(ctx, &payload).await,
+        "report::query" => super::report::report_query(ctx, &payload).await,
+        "report::export" => super::report::report_export(ctx, &payload).await,
+        "db::search" => db::db_search(ctx, &payload).await,
         "db::create" => db::db_create(ctx, &payload).await,
         "db::update" => db::db_update(ctx, &payload).await,
         "db::delete" => db::db_delete(ctx, &payload).await,
@@ -48,6 +65,14 @@ pub async fn kernel_command(
         // Other host surfaces — capability-gated stubs until wired to facets.
         "cache::get" => store::cache_get(ctx, &payload),
         "cache::set" => store::cache_set(ctx, &payload),
+        "cache::get_row" => store::cache_get_row(ctx, &payload),
+        "cache::set_row" => store::cache_set_row(ctx, &payload),
+        "cache::invalidate_row" => store::cache_invalidate_row(ctx, &payload),
+        "cache::get_list" => store::cache_get_list(ctx, &payload),
+        "cache::set_list" => store::cache_set_list(ctx, &payload),
+        "cache::get_meta" => store::cache_get_meta(ctx, &payload),
+        "cache::set_meta" => store::cache_set_meta(ctx, &payload),
+        "cache::set_agg" => store::cache_set_agg(ctx, &payload),
         "cache::invalidate" => store::cache_invalidate(ctx, &payload),
         "cache::clear" => store::cache_clear(ctx, &payload),
         "fs::read" => files::read(ctx, &payload).await,
@@ -61,6 +86,12 @@ pub async fn kernel_command(
         "storage::delete" => storage::storage_delete(ctx, &payload).await,
         "storage::list" => storage::storage_list(ctx, &payload).await,
         "communication::send" => communication::send(ctx, &payload).await,
+        "org::members" => super::org::members(ctx, &payload).await,
+        "org::create_member" => super::org::create_member(ctx, &payload).await,
+        "org::invite" => super::org::invite(ctx, &payload).await,
+        "magic_link::create" => super::magic_link::create(ctx, &payload).await,
+        "magic_link::revoke" => super::magic_link::revoke(ctx, &payload).await,
+        "magic_link::inspect" => super::magic_link::inspect(ctx, &payload).await,
         "events::emit" => {
             ctx.require_cap(command)?;
             let answer = emit_ui_event(ctx, &payload)?;
@@ -69,7 +100,10 @@ pub async fn kernel_command(
             if let Some(event) = payload.get("event").and_then(|event| event.as_str()) {
                 let data = payload.get("payload").cloned().unwrap_or(JsonValue::Null);
                 if let Err(error) = crate::plugin_events::dispatch(ctx, event, &data).await {
-                    log::warn!("{}: event `{event}` could not be passed to plugins: {error}", ctx.database);
+                    log::warn!(
+                        "{}: event `{event}` could not be passed to plugins: {error}",
+                        ctx.database
+                    );
                 }
             }
             Ok(answer)
@@ -80,13 +114,52 @@ pub async fn kernel_command(
             // The roles an administrator gave this person. Visitors and anonymous callers have none.
             let roles = match ctx.audit.actor.id() {
                 Some(user) if ctx.audit.actor.kind() == "user" => {
-                    crate::roles::roles_of(&ctx.db, user).await.map_err(HostError::Db)?
+                    if let Some(services) = ctx.services.as_ref() {
+                        crate::roles::roles_of_cached(&services.cache, &ctx.database, &ctx.db, user)
+                            .await
+                            .map_err(HostError::Db)?
+                    } else {
+                        crate::roles::roles_of(&ctx.db, user)
+                            .await
+                            .map_err(HostError::Db)?
+                    }
                 }
                 _ => Vec::new(),
+            };
+            // Working company (shell context). Shared masters such as party are not filtered by it.
+            let company = match ctx.audit.actor.id() {
+                Some(user) if ctx.audit.actor.kind() == "user" => {
+                    match crate::company_context::resolve_current(&ctx.db, user).await {
+                        Ok(current) => current
+                            .map(|c| {
+                                serde_json::json!({
+                                    "id": c.id,
+                                    "name": c.name,
+                                    "is_default": c.is_default,
+                                })
+                            })
+                            .unwrap_or(serde_json::Value::Null),
+                        Err(crate::company_context::CompanyContextError::Unavailable) => {
+                            serde_json::Value::Null
+                        }
+                        Err(crate::company_context::CompanyContextError::Database(message))
+                            if message.contains("does not exist")
+                                || message.to_lowercase().contains("company") =>
+                        {
+                            serde_json::Value::Null
+                        }
+                        Err(error) => {
+                            log::warn!("{}: context::get company: {error}", ctx.database);
+                            serde_json::Value::Null
+                        }
+                    }
+                }
+                _ => serde_json::Value::Null,
             };
             Ok(serde_json::json!({
             "ok": true,
             "roles": roles,
+            "company": company,
             "now": surrealdb::types::Datetime::now().to_string(),
             "plugin": ctx.plugin_name,
             "function": ctx.function,
@@ -102,14 +175,21 @@ pub async fn kernel_command(
         "events::subscribe" => {
             ctx.require_cap(command)?;
             let event = payload.get("event").and_then(|v| v.as_str()).unwrap_or("");
-            let function = payload.get("function").and_then(|v| v.as_str()).unwrap_or("");
-            crate::plugin_events::subscribe(ctx, event, function).await.map_err(event_error)?;
+            let function = payload
+                .get("function")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            crate::plugin_events::subscribe(ctx, event, function)
+                .await
+                .map_err(event_error)?;
             Ok(serde_json::json!({ "ok": true, "data": null }))
         }
         "events::unsubscribe" => {
             ctx.require_cap("events::subscribe")?;
             let event = payload.get("event").and_then(|v| v.as_str()).unwrap_or("");
-            let removed = crate::plugin_events::unsubscribe(ctx, event).await.map_err(event_error)?;
+            let removed = crate::plugin_events::unsubscribe(ctx, event)
+                .await
+                .map_err(event_error)?;
             Ok(serde_json::json!({ "ok": true, "data": { "removed": removed } }))
         }
         "http::request" => http::http_request(ctx, &payload).await,
@@ -122,6 +202,14 @@ pub async fn kernel_command(
         "scheduler::cancel" => scheduling::cancel(ctx, &payload).await,
         "db::transaction" => db::db_transaction(ctx, &payload).await,
         other => Err(HostError::UnknownCommand(other.into())),
+    }
+}
+
+/// A write that cannot be pinned to one table: treat every cached query of the org as stale.
+fn bump_org_gen(ctx: &PluginHostContext) {
+    if let Ok(services) = ctx.services() {
+        services.cache.bump_org_gen(&ctx.database);
+        super::db::announce(ctx, "*");
     }
 }
 
@@ -141,7 +229,12 @@ fn event_error(error: crate::plugin_events::EventError) -> HostError {
 async fn notify_send(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonValue, HostError> {
     use crate::notifications::{Audience, Level, NewNotification, NotifyError};
 
-    let text = |key: &str| payload.get(key).and_then(JsonValue::as_str).map(str::to_string);
+    let text = |key: &str| {
+        payload
+            .get(key)
+            .and_then(JsonValue::as_str)
+            .map(str::to_string)
+    };
     let title = text("title")
         .ok_or_else(|| HostError::InvalidPayload("notify::send requires a title".into()))?;
     let level = match text("level") {
@@ -158,7 +251,9 @@ async fn notify_send(ctx: &PluginHostContext, payload: &JsonValue) -> Result<Jso
                 Audience::Everyone
             }
             "caller" => match ctx.audit.actor.id() {
-                Some(actor) => Audience::Actors { actors: vec![actor.to_string()] },
+                Some(actor) => Audience::Actors {
+                    actors: vec![actor.to_string()],
+                },
                 None => {
                     return Err(HostError::InvalidPayload(
                         "this call has no caller to notify".into(),
@@ -166,7 +261,9 @@ async fn notify_send(ctx: &PluginHostContext, payload: &JsonValue) -> Result<Jso
                 }
             },
             other => {
-                return Err(HostError::InvalidPayload(format!("unknown audience `{other}`")));
+                return Err(HostError::InvalidPayload(format!(
+                    "unknown audience `{other}`"
+                )));
             }
         },
         Some(other) => serde_json::from_value::<Audience>(serde_json::json!({
@@ -186,7 +283,10 @@ async fn notify_send(ctx: &PluginHostContext, payload: &JsonValue) -> Result<Jso
             title,
             body: text("body"),
             link: text("link"),
-            payload: payload.get("payload").cloned().filter(|value| !value.is_null()),
+            payload: payload
+                .get("payload")
+                .cloned()
+                .filter(|value| !value.is_null()),
             audience,
             expires_in_secs: payload.get("expires_in_secs").and_then(JsonValue::as_u64),
         },
@@ -221,11 +321,13 @@ fn emit_ui_event(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonVal
 
     ctx.notifications.publish(
         &ctx.database,
-        crate::notifications::HubMessage::Event(std::sync::Arc::new(crate::notifications::UiEvent {
-            plugin: ctx.plugin_name.clone(),
-            event: event.to_string(),
-            payload: data,
-        })),
+        crate::notifications::HubMessage::Event(std::sync::Arc::new(
+            crate::notifications::UiEvent {
+                plugin: ctx.plugin_name.clone(),
+                event: event.to_string(),
+                payload: data,
+            },
+        )),
     );
 
     Ok(serde_json::json!({ "ok": true }))
@@ -234,8 +336,8 @@ fn emit_ui_event(ctx: &PluginHostContext, payload: &JsonValue) -> Result<JsonVal
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kernel::host::test_support::{dummy_ctx, in_memory_media, with_services};
     use crate::kernel::host::context::{ModelGrant, PluginHostContext};
+    use crate::kernel::host::test_support::{dummy_ctx, in_memory_media, with_services};
     use std::collections::{HashMap, HashSet};
     use surrealdb::Surreal;
     use surrealdb::engine::remote::ws::Client;
@@ -281,21 +383,73 @@ mod tests {
     async fn every_capability_a_command_checks_is_in_the_catalog() {
         let catalog = aether_security::capabilities::CapabilityCatalog::builtin().unwrap();
         let commands = [
-            "db::get", "db::find", "db::query", "db::count", "db::aggregate", "db::relate", "db::unrelate", "db::related", "db::transitions", "db::tree", "db::create", "db::update", "db::delete", "db::increment",
-            "db::mutate", "db::transaction", "cache::get", "cache::set", "cache::invalidate",
-            "cache::clear", "storage::read", "storage::write", "storage::delete",
-            "storage::list", "fs::read", "fs::write", "fs::list", "fs::stat", "fs::rename", "fs::delete", "communication::send", "events::emit", "events::subscribe", "events::unsubscribe",
-            "http::request", "plugins::call", "bridge::call", "scheduler::register",
-            "scheduler::cancel", "scheduler::enqueue", "scheduler::job", "scheduler::cancel_job", "notify::send",
+            "db::get",
+            "db::find",
+            "db::query",
+            "db::count",
+            "db::aggregate",
+            "db::search",
+            "report::query",
+            "report::export",
+            "db::relate",
+            "db::unrelate",
+            "db::related",
+            "db::transitions",
+            "db::tree",
+            "db::create",
+            "db::update",
+            "db::delete",
+            "db::increment",
+            "db::mutate",
+            "db::transaction",
+            "cache::get",
+            "cache::set",
+            "cache::invalidate",
+            "cache::clear",
+            "storage::read",
+            "storage::write",
+            "storage::delete",
+            "storage::list",
+            "fs::read",
+            "fs::write",
+            "fs::list",
+            "fs::stat",
+            "fs::rename",
+            "fs::delete",
+            "communication::send",
+            "magic_link::create",
+            "magic_link::revoke",
+            "magic_link::inspect",
+            "org::members",
+            "org::create_member",
+            "org::invite",
+            "events::emit",
+            "events::subscribe",
+            "events::unsubscribe",
+            "http::request",
+            "plugins::call",
+            "bridge::call",
+            "scheduler::register",
+            "scheduler::cancel",
+            "scheduler::enqueue",
+            "scheduler::job",
+            "scheduler::cancel_job",
+            "notify::send",
         ];
         let ctx = dummy_ctx(&[]);
         for command in commands {
-            let refused = kernel_command(&ctx, command, serde_json::json!({})).await.unwrap_err();
-            let HostError::Capability(aether_security::capabilities::CapabilityError::Denied(key)) = refused
+            let refused = kernel_command(&ctx, command, serde_json::json!({}))
+                .await
+                .unwrap_err();
+            let HostError::Capability(aether_security::capabilities::CapabilityError::Denied(key)) =
+                refused
             else {
                 panic!("{command} should be refused without a capability, got {refused:?}");
             };
-            assert!(catalog.contains(&key), "`{key}` (needed by {command}) is not in capabilities/");
+            assert!(
+                catalog.contains(&key),
+                "`{key}` (needed by {command}) is not in capabilities/"
+            );
         }
         // The one that is only checked for some audiences.
         assert!(catalog.contains("notify::public"));
@@ -305,7 +459,9 @@ mod tests {
     async fn context_tells_a_plugin_who_is_calling_without_any_capability() {
         let mut ctx = dummy_ctx(&[]);
         ctx.database = "org_acme".into();
-        let context = kernel_command(&ctx, "context::get", serde_json::json!({})).await.unwrap();
+        let context = kernel_command(&ctx, "context::get", serde_json::json!({}))
+            .await
+            .unwrap();
         assert_eq!(context["plugin"], "test");
         assert_eq!(context["organization"], "org_acme");
         assert_eq!(context["actor"]["kind"], "anonymous");
@@ -344,74 +500,184 @@ mod tests {
 
     #[tokio::test]
     async fn cache_round_trips_json_and_is_private_to_each_plugin() {
-        let caps = ["cache::get", "cache::set", "cache::invalidate", "cache::clear"];
+        let caps = [
+            "cache::get",
+            "cache::set",
+            "cache::invalidate",
+            "cache::clear",
+        ];
         let first = with_services(dummy_ctx(&caps), in_memory_media());
         let mut second = first.clone();
         second.plugin_name = "other".into();
 
         let value = serde_json::json!({ "n": 1, "list": [1, 2] });
-        kernel_command(&first, "cache::set", serde_json::json!({ "key": "k", "value": value })).await.unwrap();
-        let got = kernel_command(&first, "cache::get", serde_json::json!({ "key": "k" })).await.unwrap();
+        kernel_command(
+            &first,
+            "cache::set",
+            serde_json::json!({ "key": "k", "value": value }),
+        )
+        .await
+        .unwrap();
+        let got = kernel_command(&first, "cache::get", serde_json::json!({ "key": "k" }))
+            .await
+            .unwrap();
         assert_eq!(got["data"], value);
-        let other = kernel_command(&second, "cache::get", serde_json::json!({ "key": "k" })).await.unwrap();
-        assert!(other["data"].is_null(), "another plugin must not see the entry");
+        let other = kernel_command(&second, "cache::get", serde_json::json!({ "key": "k" }))
+            .await
+            .unwrap();
+        assert!(
+            other["data"].is_null(),
+            "another plugin must not see the entry"
+        );
 
-        kernel_command(&second, "cache::clear", serde_json::json!({})).await.unwrap();
-        let still = kernel_command(&first, "cache::get", serde_json::json!({ "key": "k" })).await.unwrap();
+        kernel_command(&second, "cache::clear", serde_json::json!({}))
+            .await
+            .unwrap();
+        let still = kernel_command(&first, "cache::get", serde_json::json!({ "key": "k" }))
+            .await
+            .unwrap();
         assert_eq!(still["data"], value, "clearing is per plugin");
-        let gone = kernel_command(&first, "cache::invalidate", serde_json::json!({ "key": "k" })).await.unwrap();
+        let gone = kernel_command(
+            &first,
+            "cache::invalidate",
+            serde_json::json!({ "key": "k" }),
+        )
+        .await
+        .unwrap();
         assert_eq!(gone["data"]["removed"], 1);
     }
 
     #[tokio::test]
     async fn cache_refuses_bad_requests() {
         let ctx = with_services(dummy_ctx(&["cache::get", "cache::set"]), in_memory_media());
-        let zero = kernel_command(&ctx, "cache::set", serde_json::json!({ "key": "k", "value": 1, "ttl_secs": 0 })).await;
+        let zero = kernel_command(
+            &ctx,
+            "cache::set",
+            serde_json::json!({ "key": "k", "value": 1, "ttl_secs": 0 }),
+        )
+        .await;
         assert!(matches!(zero, Err(HostError::InvalidPayload(_))));
         let empty = kernel_command(&ctx, "cache::get", serde_json::json!({ "key": "" })).await;
         assert!(matches!(empty, Err(HostError::InvalidPayload(_))));
         let big = "x".repeat(2000);
-        let too_big = kernel_command(&ctx, "cache::set", serde_json::json!({ "key": "k", "value": big })).await;
+        let too_big = kernel_command(
+            &ctx,
+            "cache::set",
+            serde_json::json!({ "key": "k", "value": big }),
+        )
+        .await;
         assert!(matches!(too_big, Err(HostError::Message(_))));
     }
 
     #[tokio::test]
     async fn storage_keeps_each_plugin_in_its_own_folder() {
-        let caps = ["storage::read", "storage::write", "storage::delete", "storage::list"];
+        let caps = [
+            "storage::read",
+            "storage::write",
+            "storage::delete",
+            "storage::list",
+        ];
         let media = in_memory_media();
         let first = with_services(dummy_ctx(&caps), media.clone());
         let mut second = first.clone();
         second.plugin_name = "other".into();
 
-        kernel_command(&first, "storage::write", serde_json::json!({ "key": "a/b.txt", "text": "hello" })).await.unwrap();
-        let read = kernel_command(&first, "storage::read", serde_json::json!({ "key": "a/b.txt" })).await.unwrap();
+        kernel_command(
+            &first,
+            "storage::write",
+            serde_json::json!({ "key": "a/b.txt", "text": "hello" }),
+        )
+        .await
+        .unwrap();
+        let read = kernel_command(
+            &first,
+            "storage::read",
+            serde_json::json!({ "key": "a/b.txt" }),
+        )
+        .await
+        .unwrap();
         assert_eq!(read["data"]["text"], "hello");
         // Stored under the plugin's folder, invisible to another plugin.
-        assert!(media.exists(&aether_storage::MediaKey::parse("plugins/test/a/b.txt").unwrap()).await.unwrap());
-        let hidden = kernel_command(&second, "storage::read", serde_json::json!({ "key": "a/b.txt" })).await.unwrap();
-        assert!(hidden["data"].is_null(), "another plugin's file is simply not there");
-        let theirs = kernel_command(&second, "storage::list", serde_json::json!({})).await.unwrap();
+        assert!(
+            media
+                .exists(&aether_storage::MediaKey::parse("plugins/test/a/b.txt").unwrap())
+                .await
+                .unwrap()
+        );
+        let hidden = kernel_command(
+            &second,
+            "storage::read",
+            serde_json::json!({ "key": "a/b.txt" }),
+        )
+        .await
+        .unwrap();
+        assert!(
+            hidden["data"].is_null(),
+            "another plugin's file is simply not there"
+        );
+        let theirs = kernel_command(&second, "storage::list", serde_json::json!({}))
+            .await
+            .unwrap();
         assert_eq!(theirs["data"], serde_json::json!([]));
-        let mine = kernel_command(&first, "storage::list", serde_json::json!({})).await.unwrap();
-        assert_eq!(mine["data"], serde_json::json!([{ "key": "a/b.txt", "size": 5 }]));
+        let mine = kernel_command(&first, "storage::list", serde_json::json!({}))
+            .await
+            .unwrap();
+        assert_eq!(
+            mine["data"],
+            serde_json::json!([{ "key": "a/b.txt", "size": 5 }])
+        );
 
         for bad in ["../other/x", "a/../../x", "/x", ""] {
-            let refused = kernel_command(&first, "storage::write", serde_json::json!({ "key": bad, "text": "x" })).await;
-            assert!(matches!(refused, Err(HostError::InvalidPayload(_))), "{bad}: {refused:?}");
+            let refused = kernel_command(
+                &first,
+                "storage::write",
+                serde_json::json!({ "key": bad, "text": "x" }),
+            )
+            .await;
+            assert!(
+                matches!(refused, Err(HostError::InvalidPayload(_))),
+                "{bad}: {refused:?}"
+            );
         }
 
-        kernel_command(&first, "storage::write", serde_json::json!({ "key": "bin", "base64": "AAEC" })).await.unwrap();
-        let bin = kernel_command(&first, "storage::read", serde_json::json!({ "key": "bin", "encoding": "base64" })).await.unwrap();
+        kernel_command(
+            &first,
+            "storage::write",
+            serde_json::json!({ "key": "bin", "base64": "AAEC" }),
+        )
+        .await
+        .unwrap();
+        let bin = kernel_command(
+            &first,
+            "storage::read",
+            serde_json::json!({ "key": "bin", "encoding": "base64" }),
+        )
+        .await
+        .unwrap();
         assert_eq!(bin["data"]["base64"], "AAEC");
-        kernel_command(&first, "storage::delete", serde_json::json!({ "key": "bin" })).await.unwrap();
-        let gone = kernel_command(&first, "storage::read", serde_json::json!({ "key": "bin" })).await.unwrap();
+        kernel_command(
+            &first,
+            "storage::delete",
+            serde_json::json!({ "key": "bin" }),
+        )
+        .await
+        .unwrap();
+        let gone = kernel_command(&first, "storage::read", serde_json::json!({ "key": "bin" }))
+            .await
+            .unwrap();
         assert!(gone["data"].is_null());
     }
 
     #[tokio::test]
     async fn storage_and_cache_say_so_when_the_call_has_no_services() {
         let ctx = dummy_ctx(&["storage::list", "cache::get"]);
-        assert!(matches!(kernel_command(&ctx, "storage::list", serde_json::json!({})).await, Err(HostError::Message(_))));
-        assert!(matches!(kernel_command(&ctx, "cache::get", serde_json::json!({ "key": "k" })).await, Err(HostError::Message(_))));
+        assert!(matches!(
+            kernel_command(&ctx, "storage::list", serde_json::json!({})).await,
+            Err(HostError::Message(_))
+        ));
+        assert!(matches!(
+            kernel_command(&ctx, "cache::get", serde_json::json!({ "key": "k" })).await,
+            Err(HostError::Message(_))
+        ));
     }
 }

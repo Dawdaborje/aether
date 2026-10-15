@@ -45,23 +45,45 @@ pub fn dummy_ctx(caps: &[&str]) -> PluginHostContext {
     )
 }
 
-pub fn with_services(mut ctx: PluginHostContext, media: std::sync::Arc<dyn aether_storage::MediaBackend>) -> PluginHostContext {
+pub fn with_services(
+    mut ctx: PluginHostContext,
+    media: std::sync::Arc<dyn aether_storage::MediaBackend>,
+) -> PluginHostContext {
     let built = crate::cache::Cache::from_config(&crate::cache::CacheConfig {
         backend: crate::cache::CacheBackendKind::Moka,
         default_ttl_secs: None,
         max_entries: 100,
+        max_bytes: 1024 * 1024,
         max_value_bytes: 1024,
+        ghost_capacity: 128,
+        heat_half_life_secs: 3600,
+        compress_min_bytes: 4096,
         redis: None,
+        memcached: None,
+        coherence_signals: true,
+        app_dir: None,
     });
     // Without a cache the context has no services, and the tests that need them fail saying so.
     match built {
-        Ok(cache) => ctx.services = Some(crate::kernel::HostServices { cache, media, scheduler: None, files_root: None, bridges: None }),
+        Ok(cache) => {
+            ctx.services = Some(crate::kernel::HostServices {
+                cache,
+                media,
+                scheduler: None,
+                files_root: None,
+                bridges: None,
+                core: None,
+                public_base: String::new(),
+                open_session: None,
+            })
+        }
         Err(error) => log::error!("test cache could not be built: {error}"),
     }
     ctx
 }
 
 pub fn in_memory_media() -> std::sync::Arc<dyn aether_storage::MediaBackend> {
-    std::sync::Arc::new(aether_storage::ObjectStoreBackend::new(object_store::memory::InMemory::new()))
+    std::sync::Arc::new(aether_storage::ObjectStoreBackend::new(
+        object_store::memory::InMemory::new(),
+    ))
 }
-
