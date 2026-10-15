@@ -35,3 +35,6 @@ cargo-check.log
 .cache-test-out.txt
 
 histories.txt
+history.txt
+p_focus.txt
+pane_0.txt
