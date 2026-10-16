@@ -11,14 +11,14 @@
 
 #[path = "src/model.rs"]
 mod model;
+#[path = "src/render.rs"]
+mod render;
 
 use model::*;
-use pulldown_cmark::{CowStr, Event, HeadingLevel, Options, Parser, Tag, TagEnd, html};
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
-use std::ops::Range;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 const SECTIONS: &[&str] = &["guide", "architecture", "plugin", "capabilities"];
 
@@ -43,6 +43,7 @@ fn main() {
     let caps_dir = repo.join("capabilities");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/model.rs");
+    println!("cargo:rerun-if-changed=src/render.rs");
     println!("cargo:rerun-if-changed={}", docs_dir.display());
     println!("cargo:rerun-if-changed={}", caps_dir.display());
 
@@ -78,7 +79,7 @@ fn main() {
     let mut docs = Vec::new();
     for p in &pages {
         scan_forbidden(&p.rel, &p.body, &mut errors);
-        docs.push(render(p, &by_path, &mut errors));
+        docs.push(render_page(p, &by_path, &mut errors));
     }
     docs.sort_by(|a, b| {
         (section_rank(&a.section), a.order, &a.slug).cmp(&(section_rank(&b.section), b.order, &b.slug))
@@ -291,100 +292,10 @@ fn one_line(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ").replace('|', "\\|")
 }
 
-// ---- rendering --------------------------------------------------------------------------------
+// ---- rendering ----------------------------------------------------------------------------------
 
-fn render(page: &Page, by_path: &BTreeMap<String, String>, errors: &mut Vec<String>) -> Doc {
-    let opts = Options::ENABLE_TABLES
-        | Options::ENABLE_STRIKETHROUGH
-        | Options::ENABLE_TASKLISTS
-        | Options::ENABLE_FOOTNOTES;
-    let events: Vec<(Event, Range<usize>)> = Parser::new_ext(&page.body, opts).into_offset_iter().collect();
-
-    // Headings: text, GitHub-style ids (so `file.md#some-heading` links keep working), source offset.
-    struct H {
-        level: u8,
-        id: String,
-        text: String,
-        start: usize,
-    }
-    let mut hs: Vec<H> = Vec::new();
-    let mut used: HashSet<String> = HashSet::new();
-    let mut open: Option<(usize, String)> = None;
-    for (ev, range) in &events {
-        match ev {
-            Event::Start(Tag::Heading { level, .. }) => {
-                hs.push(H { level: level_num(*level), id: String::new(), text: String::new(), start: range.start });
-                open = Some((hs.len() - 1, String::new()));
-            }
-            Event::Text(t) | Event::Code(t) => {
-                if let Some((_, buf)) = open.as_mut() {
-                    buf.push_str(t);
-                }
-            }
-            Event::End(TagEnd::Heading(_)) => {
-                if let Some((i, text)) = open.take() {
-                    let base = slugify(&text);
-                    let mut id = base.clone();
-                    let mut n = 1;
-                    while !used.insert(id.clone()) {
-                        id = format!("{base}-{n}");
-                        n += 1;
-                    }
-                    hs[i].id = id;
-                    hs[i].text = text;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    // Chunks: from one heading (levels 1-3) up to the next one.
-    let cuts: Vec<usize> = (0..hs.len()).filter(|&i| hs[i].level <= 3).collect();
-    let mut chunks = Vec::new();
-    if let Some(&first) = cuts.first() {
-        if hs[first].start > 0 && !page.body[..hs[first].start].trim().is_empty() {
-            chunks.push(Chunk { heading: page.meta.title.clone(), anchor: String::new(), markdown: page.body[..hs[first].start].trim().to_string() });
-        }
-    } else if !page.body.trim().is_empty() {
-        chunks.push(Chunk { heading: page.meta.title.clone(), anchor: String::new(), markdown: page.body.trim().to_string() });
-    }
-    let mut trail: Vec<(u8, String)> = Vec::new();
-    for (n, &i) in cuts.iter().enumerate() {
-        let h = &hs[i];
-        while trail.last().is_some_and(|(l, _)| *l >= h.level) {
-            trail.pop();
-        }
-        trail.push((h.level, h.text.clone()));
-        let end = cuts.get(n + 1).map(|&j| hs[j].start).unwrap_or(page.body.len());
-        chunks.push(Chunk {
-            heading: trail.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>().join(" › "),
-            anchor: h.id.clone(),
-            markdown: page.body[h.start..end].trim().to_string(),
-        });
-    }
-
-    // Events -> HTML, with heading ids and links between pages.
-    let dir = page.rel.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
-    let mut next_heading = 0;
-    let mut out_events: Vec<Event> = Vec::with_capacity(events.len());
-    for (ev, _) in events {
-        out_events.push(match ev {
-            Event::Start(Tag::Heading { level, .. }) => {
-                let h = &hs[next_heading];
-                next_heading += 1;
-                Event::Html(format!("<h{} id=\"{}\">", level_num(level), h.id).into())
-            }
-            Event::End(TagEnd::Heading(level)) => Event::Html(format!("</h{}>\n", level_num(level)).into()),
-            Event::Start(Tag::Link { link_type, dest_url, title, id }) => {
-                let dest = rewrite_link(&page.rel, dir, &dest_url, by_path, errors);
-                Event::Start(Tag::Link { link_type, dest_url: CowStr::from(dest), title, id })
-            }
-            other => other,
-        });
-    }
-    let mut html_out = String::new();
-    html::push_html(&mut html_out, out_events.into_iter());
-
+fn render_page(page: &Page, by_path: &BTreeMap<String, String>, errors: &mut Vec<String>) -> Doc {
+    let r = render::render(&page.rel, &page.body, &page.meta.title, true, &|target| by_path.get(target).cloned(), errors);
     let source = if page.meta.source.is_empty() { page.rel.clone() } else { page.meta.source.clone() };
     Doc {
         slug: slug_of(&page.rel),
@@ -395,57 +306,8 @@ fn render(page: &Page, by_path: &BTreeMap<String, String>, errors: &mut Vec<Stri
         order: page.meta.order,
         source,
         markdown: page.body.clone(),
-        html: html_out,
-        headings: hs.into_iter().map(|h| Heading { level: h.level, id: h.id, text: h.text }).collect(),
-        chunks,
-    }
-}
-
-fn level_num(l: HeadingLevel) -> u8 {
-    l as u8
-}
-
-/// GitHub's anchor rule: lower-case, spaces to `-`, anything but letters, digits, `-` and `_` dropped.
-fn slugify(text: &str) -> String {
-    text.trim()
-        .to_lowercase()
-        .chars()
-        .filter_map(|c| match c {
-            ' ' => Some('-'),
-            c if c.is_alphanumeric() || c == '-' || c == '_' => Some(c),
-            _ => None,
-        })
-        .collect()
-}
-
-fn rewrite_link(from: &str, dir: &str, dest: &str, by_path: &BTreeMap<String, String>, errors: &mut Vec<String>) -> String {
-    if dest.contains("://") || dest.starts_with('#') || dest.starts_with("mailto:") {
-        return dest.to_string();
-    }
-    let (path, anchor) = match dest.split_once('#') {
-        Some((p, a)) => (p, format!("#{a}")),
-        None => (dest, String::new()),
-    };
-    if !path.ends_with(".md") {
-        errors.push(format!("{from}: link `{dest}` is relative but not to a .md page"));
-        return dest.to_string();
-    }
-    let mut parts: Vec<&str> = if dir.is_empty() { vec![] } else { dir.split('/').collect() };
-    for c in Path::new(path).components() {
-        match c {
-            Component::ParentDir => {
-                parts.pop();
-            }
-            Component::Normal(s) => parts.push(s.to_str().unwrap()),
-            _ => {}
-        }
-    }
-    let target = parts.join("/");
-    match by_path.get(&target) {
-        Some(slug) => format!("doc:{slug}{anchor}"),
-        None => {
-            errors.push(format!("{from}: link `{dest}` points to a page that does not exist (`{target}`)"));
-            dest.to_string()
-        }
+        html: r.html,
+        headings: r.headings,
+        chunks: r.chunks,
     }
 }

@@ -219,6 +219,8 @@ dependencies = [
 name = "aether_docs"
 version = "0.1.0"
 dependencies = [
+ "ammonia",
+ "async-trait",
  "axum",
  "http-body-util",
  "pulldown-cmark",

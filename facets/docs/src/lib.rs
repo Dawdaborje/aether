@@ -5,12 +5,16 @@
 //! read from here, so they can never disagree and neither needs the source tree at run time.
 
 mod model;
+pub mod plugin_docs;
+mod provider;
+mod render;
 mod search;
 mod site;
 
 pub use model::{Bundle, Capability, Chunk, Doc, Heading, Operation, Status};
-pub use search::{Hit, SearchOptions, search};
-pub use site::router;
+pub use search::{Hit, SearchOptions, search, search_in};
+pub use provider::{PluginDocsProvider, StaticDocs};
+pub use site::{router, router_with};
 
 use std::sync::OnceLock;
 

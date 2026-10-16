@@ -1,7 +1,7 @@
 //! Plain keyword search over the page chunks. The docs are ~60k words, so scanning every chunk per
 //! query is fast and needs no index, no embeddings and no network.
 
-use crate::{Status, bundle};
+use crate::{Doc, Status, bundle};
 
 #[derive(Debug, Clone, Default)]
 pub struct SearchOptions {
@@ -15,11 +15,13 @@ pub struct SearchOptions {
 
 #[derive(Debug, Clone)]
 pub struct Hit {
-    pub slug: &'static str,
-    pub title: &'static str,
+    /// The plugin whose docs the page belongs to; `None` for Aether's own documentation.
+    pub plugin: Option<String>,
+    pub slug: String,
+    pub title: String,
     /// Heading trail of the matching section.
-    pub heading: &'static str,
-    pub anchor: &'static str,
+    pub heading: String,
+    pub anchor: String,
     pub status: Status,
     pub score: u32,
     pub snippet: String,
@@ -33,13 +35,19 @@ fn tokens(s: &str) -> Vec<String> {
         .collect()
 }
 
+/// Search Aether's own documentation.
 pub fn search(query: &str, opts: &SearchOptions) -> Vec<Hit> {
+    search_in(&bundle().docs, query, opts)
+}
+
+/// Search any set of pages (a plugin's docs, for example). Hits have `plugin: None`; the caller names it.
+pub fn search_in<'a>(docs: impl IntoIterator<Item = &'a Doc>, query: &str, opts: &SearchOptions) -> Vec<Hit> {
     let terms = tokens(query);
     if terms.is_empty() {
         return Vec::new();
     }
     let mut hits = Vec::new();
-    for d in &bundle().docs {
+    for d in docs {
         if opts.section.as_deref().is_some_and(|s| s != d.section) || (opts.exclude_proposals && d.status == Status::Proposal) {
             continue;
         }
@@ -70,17 +78,18 @@ pub fn search(query: &str, opts: &SearchOptions) -> Vec<Hit> {
                 score = score * 3 / 4;
             }
             hits.push(Hit {
-                slug: &d.slug,
-                title: &d.title,
-                heading: &c.heading,
-                anchor: &c.anchor,
+                plugin: None,
+                slug: d.slug.clone(),
+                title: d.title.clone(),
+                heading: c.heading.clone(),
+                anchor: c.anchor.clone(),
                 status: d.status,
                 score,
                 snippet: snippet(&c.markdown, &body, &terms),
             });
         }
     }
-    hits.sort_by(|a, b| b.score.cmp(&a.score).then(a.slug.cmp(b.slug)));
+    hits.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.slug.cmp(&b.slug)));
     hits.truncate(opts.limit.unwrap_or(10));
     hits
 }
@@ -105,7 +114,7 @@ mod tests {
     fn finds_the_page_that_explains_a_thing() {
         let hits = search("kernel commands db::create", &SearchOptions::default());
         assert!(!hits.is_empty());
-        assert!(hits.iter().take(5).any(|h| h.slug == "plugin/commands"), "{:?}", hits.iter().map(|h| h.slug).collect::<Vec<_>>());
+        assert!(hits.iter().take(5).any(|h| h.slug == "plugin/commands"), "{:?}", hits.iter().map(|h| h.slug.as_str()).collect::<Vec<_>>());
     }
 
     #[test]
