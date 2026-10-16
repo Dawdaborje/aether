@@ -16,14 +16,19 @@
 	const sections = $derived.by(() => {
 		const items: Array<
 			| { kind: 'link'; item: NavItem }
-			| { kind: 'group'; label: string; entries: NavItem[] }
+			| { kind: 'group'; label: string; icon?: string; entries: NavItem[] }
 		> = [];
 		for (const item of menus) {
 			if (item.children?.length) {
 				if (item.children.length === 1 && item.children[0]) {
 					items.push({ kind: 'link', item: item.children[0] });
 				} else {
-					items.push({ kind: 'group', label: item.label, entries: item.children });
+					items.push({
+						kind: 'group',
+						label: item.label,
+						icon: item.icon,
+						entries: item.children
+					});
 				}
 				continue;
 			}
@@ -55,10 +60,10 @@
 
 {#if showSidebar}
 	<aside
-		class="flex w-56 shrink-0 flex-col border-r border-border bg-card"
+		class="flex w-56 max-w-80 shrink-0 flex-col border-r border-border bg-card transition-[width] duration-200 ease-out has-[[data-slot=collapsible][data-state=open]]:w-max"
 		aria-label="App menu"
 	>
-		<nav class="min-h-0 flex-1 space-y-0.5 overflow-y-auto p-2">
+		<nav class="min-h-0 min-w-full w-max flex-1 space-y-0.5 overflow-y-auto p-2">
 			{#each sections as section (section.kind === 'link' ? section.item.label + (section.item.href ?? '') : section.label)}
 				{#if section.kind === 'link'}
 					{@const Icon = appIcon(section.item.icon)}
@@ -69,27 +74,32 @@
 							aria-current={isMenuCurrent(section.item, page.url.pathname, allLinks)
 								? 'page'
 								: undefined}
-							class="flex items-center gap-2.5 rounded-md px-2.5 py-2 text-[13px] text-muted-foreground transition hover:bg-accent hover:text-foreground aria-[current=page]:bg-accent aria-[current=page]:font-medium aria-[current=page]:text-foreground"
+							class="flex items-center gap-2.5 rounded-md px-2.5 py-2 text-[13px] whitespace-nowrap text-muted-foreground transition hover:bg-accent hover:text-foreground aria-[current=page]:bg-accent aria-[current=page]:font-medium aria-[current=page]:text-foreground"
 						>
 							{#if Icon}<Icon class="size-4 shrink-0 opacity-70" />{/if}
-							<span class="truncate">{section.item.label}</span>
+							<span>{section.item.label}</span>
 						</a>
 						<!-- eslint-enable svelte/no-navigation-without-resolve -->
 					{/if}
 				{:else}
+					{@const open = isGroupOpen(section.label, section.entries)}
+					{@const GroupIcon = appIcon(section.icon ?? 'folder')}
 					<Collapsible.Root
-						open={isGroupOpen(section.label, section.entries)}
+						{open}
 						onOpenChange={(next) => {
 							openByGroup[section.label] = next;
 						}}
 						class="pt-1"
 					>
 						<Collapsible.Trigger
-							class="flex w-full items-center gap-1 rounded-md px-2.5 py-1.5 text-[11px] font-medium tracking-wide text-muted-foreground transition hover:bg-accent/60 hover:text-foreground"
+							class="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-[13px] whitespace-nowrap text-muted-foreground transition hover:bg-accent hover:text-foreground"
 						>
-							<span class="truncate">{section.label}</span>
+							{#if GroupIcon}<GroupIcon class="size-4 shrink-0 opacity-70" />{/if}
+							<span>{section.label}</span>
 							<ChevronDownIcon
-								class="ml-auto size-3.5 shrink-0 opacity-60 transition-transform data-[state=open]:rotate-180"
+								class="ml-auto size-3.5 shrink-0 opacity-60 transition-transform {open
+									? 'rotate-180'
+									: ''}"
 							/>
 						</Collapsible.Trigger>
 						<Collapsible.Content class="space-y-0.5 pt-0.5">
@@ -102,10 +112,10 @@
 										aria-current={isMenuCurrent(entry, page.url.pathname, allLinks)
 											? 'page'
 											: undefined}
-										class="flex items-center gap-2.5 rounded-md px-2.5 py-2 pl-3 text-[13px] text-muted-foreground transition hover:bg-accent hover:text-foreground aria-[current=page]:bg-accent aria-[current=page]:font-medium aria-[current=page]:text-foreground"
+										class="flex items-center gap-2.5 rounded-md py-2 pr-2.5 pl-8 text-[13px] whitespace-nowrap text-muted-foreground transition hover:bg-accent hover:text-foreground aria-[current=page]:bg-accent aria-[current=page]:font-medium aria-[current=page]:text-foreground"
 									>
 										{#if Icon}<Icon class="size-4 shrink-0 opacity-70" />{/if}
-										<span class="truncate">{entry.label}</span>
+										<span>{entry.label}</span>
 									</a>
 									<!-- eslint-enable svelte/no-navigation-without-resolve -->
 								{/if}

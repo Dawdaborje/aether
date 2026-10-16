@@ -15,14 +15,20 @@
 	 */
 	const sections = $derived.by(() => {
 		const items: Array<
-			{ kind: 'link'; item: NavItem } | { kind: 'group'; label: string; entries: NavItem[] }
+			| { kind: 'link'; item: NavItem }
+			| { kind: 'group'; label: string; icon?: string; entries: NavItem[] }
 		> = [];
 		for (const item of shell.appMenus) {
 			if (item.children?.length) {
 				if (item.children.length === 1 && item.children[0]) {
 					items.push({ kind: 'link', item: item.children[0] });
 				} else {
-					items.push({ kind: 'group', label: item.label, entries: item.children });
+					items.push({
+						kind: 'group',
+						label: item.label,
+						icon: item.icon,
+						entries: item.children
+					});
 				}
 				continue;
 			}
@@ -44,20 +50,20 @@
 	}
 
 	const linkClass =
-		'flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm text-region-muted-foreground outline-none transition hover:bg-region-hover hover:text-region-hover-foreground focus-visible:ring-2 focus-visible:ring-region-ring aria-[current=page]:bg-region-active aria-[current=page]:font-medium aria-[current=page]:text-region-foreground';
+		'flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm whitespace-nowrap text-region-muted-foreground outline-none transition hover:bg-region-hover hover:text-region-hover-foreground focus-visible:ring-2 focus-visible:ring-region-ring aria-[current=page]:bg-region-active aria-[current=page]:font-medium aria-[current=page]:text-region-foreground';
 </script>
 
-{#snippet link(item: NavItem)}
+{#snippet link(item: NavItem, nested = false)}
 	{@const Icon = appIcon(item.icon)}
 	{#if item.href}
 		<!-- eslint-disable svelte/no-navigation-without-resolve -- navHref() applies the base path -->
 		<a
 			href={navHref(item.href)}
 			aria-current={isMenuCurrent(item, page.url.pathname, allLinks) ? 'page' : undefined}
-			class={linkClass}
+			class="{linkClass} {nested ? 'pl-8' : ''}"
 		>
 			{#if Icon}<Icon class="size-4 shrink-0" />{/if}
-			<span class="truncate">{item.label}</span>
+			<span>{item.label}</span>
 		</a>
 		<!-- eslint-enable svelte/no-navigation-without-resolve -->
 	{/if}
@@ -65,29 +71,34 @@
 
 <!-- The current app's pages. Renders nothing when the app has none (the region then hides). -->
 {#if sections.length > 0}
-	<nav aria-label="App menu" class="w-full space-y-0.5">
+	<nav aria-label="App menu" class="min-w-full w-max space-y-0.5">
 		{#each sections as section (section.kind === 'link' ? section.item.label + (section.item.href ?? '') : section.label)}
 			{#if section.kind === 'link'}
 				{@render link(section.item)}
 			{:else}
+				{@const open = isGroupOpen(section.label, section.entries)}
+				{@const GroupIcon = appIcon(section.icon ?? 'folder')}
 				<Collapsible.Root
-					open={isGroupOpen(section.label, section.entries)}
+					{open}
 					onOpenChange={(next) => {
 						openByGroup[section.label] = next;
 					}}
 					class="pt-2"
 				>
 					<Collapsible.Trigger
-						class="flex w-full items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium text-region-muted-foreground transition hover:text-region-foreground"
+						class="flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm whitespace-nowrap text-region-muted-foreground transition hover:bg-region-hover hover:text-region-hover-foreground"
 					>
-						<span class="truncate">{section.label}</span>
+						{#if GroupIcon}<GroupIcon class="size-4 shrink-0" />{/if}
+						<span>{section.label}</span>
 						<ChevronDownIcon
-							class="ml-auto size-3.5 shrink-0 transition-transform data-[state=open]:rotate-180"
+							class="ml-auto size-3.5 shrink-0 transition-transform {open
+								? 'rotate-180'
+								: ''}"
 						/>
 					</Collapsible.Trigger>
 					<Collapsible.Content class="space-y-0.5 pt-0.5">
 						{#each section.entries as entry (entry.label + (entry.href ?? ''))}
-							{@render link(entry)}
+							{@render link(entry, true)}
 						{/each}
 					</Collapsible.Content>
 				</Collapsible.Root>

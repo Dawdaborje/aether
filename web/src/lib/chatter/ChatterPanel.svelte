@@ -10,9 +10,11 @@
 	import { Textarea } from '$lib/components/ui/textarea';
 	import { notificationsStore } from '$lib/notifications/notificationsStore.svelte';
 	import { timeAgo } from '$lib/notifications/time';
+	import { recordTitles } from '$lib/records/titles';
 	import {
 		changeLines,
 		chatterApi,
+		linkIdsByTarget,
 		type ChatterMessage,
 		type ChatterThread,
 		type Person
@@ -35,6 +37,8 @@
 	let thread = $state<ChatterThread | null>(null);
 	let loadError = $state<string | null>(null);
 	let showTrash = $state(false);
+	/** Titles of linked records in change lines (`id → display name`). */
+	let linkTitles = $state<Record<string, string>>({});
 
 	let mode = $state<'message' | 'note'>('message');
 	let draft = $state('');
@@ -69,8 +73,17 @@
 			thread = data;
 			if (!data.can.note && mode === 'note') mode = 'message';
 			if (!data.can.message && data.can.note) mode = 'note';
+			const titles: Record<string, string> = {};
+			await Promise.all(
+				[...linkIdsByTarget(data)].map(async ([target, ids]) => {
+					Object.assign(titles, await recordTitles(plugin, target, ids));
+				})
+			);
+			if (current !== latest) return;
+			linkTitles = titles;
 		} else {
 			thread = null;
+			linkTitles = {};
 		}
 	}
 
@@ -341,7 +354,7 @@
 
 						{#if message.kind === 'change'}
 							<ul class="space-y-0.5 text-sm text-muted-foreground">
-								{#each changeLines(message, thread.tracked) as line (line.label)}
+								{#each changeLines(message, thread.tracked, linkTitles) as line (line.label)}
 									<li>
 										<span class="text-foreground">{line.label}:</span>
 										{line.from} <span aria-hidden="true">→</span><span class="sr-only">to</span>

@@ -5,6 +5,8 @@ export interface AppMenuItem {
 	icon?: string | null;
 	/** Collapsible sidebar section (page `menu_group`). */
 	group?: string | null;
+	/** Lucide icon for that section (page `menu_group_icon`). */
+	group_icon?: string | null;
 }
 
 /** Workspace group on the Apps launcher (`GET /api/ui/apps` → `categories`). */

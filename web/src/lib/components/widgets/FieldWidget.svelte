@@ -12,6 +12,7 @@
 	import { Field, FieldLabel, FieldContent, FieldDescription } from '$lib/components/ui/field';
 	import { recordOptions, recordTitles } from '$lib/records/titles';
 	import { SearchPicker, type SearchPickerItem } from '$lib/components/ui/search-picker';
+	import PhoneField from '$lib/components/widgets/PhoneField.svelte';
 	import {
 		getFormState,
 		getPageState,
@@ -50,6 +51,10 @@
 		attrText(node.optionLabel) ?? attrText(node.option_label) ?? ''
 	);
 	const entityLabel = $derived(attrText(node.entity) ?? label.toLowerCase() + 's');
+	const creatable = $derived(node.creatable === true || node.creatable === 'true');
+	const createFn = $derived(attrText(node.create) ?? '');
+	/** Another form field whose value is sent to `source` and reloads this picker when it changes. */
+	const dependsOn = $derived(attrText(node.depends) ?? '');
 
 	// Inside a form the field edits the form's values; elsewhere it only holds its own.
 	const form = getFormState();
@@ -57,8 +62,11 @@
 	let own = $state<unknown>('');
 	let linkItems = $state<SearchPickerItem[]>([]);
 	let linkLoading = $state(false);
-	let linkError = $state<string | null>(null);
+	let linkCreating = $state(false);
 	const id = $props.id();
+	const dependsValue = $derived(
+		dependsOn && form ? String(form.values[dependsOn] ?? '').trim() : ''
+	);
 
 	const value = {
 		get current(): unknown {
@@ -82,12 +90,14 @@
 	}
 
 	function sublabelOfRow(row: Record<string, unknown>): string | undefined {
-		for (const key of ['code', 'employee_no', 'email', 'work_email'] as const) {
+		for (const key of ['phone_prefix', 'code', 'employee_no', 'email', 'work_email'] as const) {
 			const raw = row[key];
 			if (typeof raw === 'string' && raw.trim() && raw !== labelOfRow(row)) return raw;
 		}
 		return undefined;
 	}
+
+	const countryField = $derived(attrText(node.countryField) ?? attrText(node.country_field) ?? '');
 
 	function sameId(a: string, b: string): boolean {
 		if (!a || !b) return false;
@@ -105,7 +115,6 @@
 		if (isLink && !linkSource && kernelTarget && page) {
 			let cancelled = false;
 			linkLoading = true;
-			linkError = null;
 			void recordOptions(page.plugin, kernelTarget, '', 200).then(async (options) => {
 				if (cancelled) return;
 				let items: SearchPickerItem[] = options.map((option) => ({
@@ -129,32 +138,60 @@
 		}
 		if (!isLink || !linkSource || !page) {
 			linkItems = [];
-			linkError = null;
 			return;
 		}
+		void dependsValue;
 		let cancelled = false;
 		linkLoading = true;
-		linkError = null;
-		void page.call(linkSource, { ...page.params, limit: 500 }).then((result) => {
+		const payload: Record<string, unknown> = { ...page.params, limit: 500 };
+		if (dependsOn) payload[dependsOn] = dependsValue;
+		// Failures open the shared error modal via `callPlugin` → `pageError`.
+		void page.call(linkSource, payload).then((result) => {
 			if (cancelled) return;
 			linkLoading = false;
 			if (!result.ok) {
 				linkItems = [];
-				linkError = result.error;
 				return;
 			}
-			linkItems = rowsOf(result.data)
+			const items = rowsOf(result.data)
 				.map((row) => ({
 					id: String(row.id ?? ''),
 					label: labelOfRow(row),
 					sublabel: sublabelOfRow(row)
 				}))
 				.filter((item) => item.id);
+			linkItems = items;
+			// Dependent pickers drop a value that no longer matches the parent (e.g. branch after bank change).
+			if (dependsOn) {
+				const current = String(value.current ?? '').trim();
+				if (current && !items.some((item) => sameId(item.id, current))) {
+					value.current = '';
+				}
+			}
 		});
 		return () => {
 			cancelled = true;
 		};
 	});
+
+	async function createLink(query: string) {
+		if (!page || !createFn || linkCreating) return;
+		linkCreating = true;
+		try {
+			const result = await page.call(createFn, { name: query.trim() });
+			if (!result.ok || !result.data || typeof result.data !== 'object') return;
+			const row = result.data as Record<string, unknown>;
+			const nextId = String(row.id ?? '');
+			if (!nextId) return;
+			const item = { id: nextId, label: labelOfRow(row), sublabel: sublabelOfRow(row) };
+			if (!linkItems.some((existing) => sameId(existing.id, nextId))) {
+				linkItems = [...linkItems, item];
+			}
+			value.current = nextId;
+		} finally {
+			linkCreating = false;
+		}
+	}
 </script>
 
 {#if fieldType === 'badge' || node.type === 'badge'}
@@ -207,6 +244,15 @@
 			{/if}
 		</FieldContent>
 	</Field>
+{:else if fieldType === 'phone'}
+	<PhoneField
+		{id}
+		{name}
+		{label}
+		{required}
+		{help}
+		countryField={countryField}
+	/>
 {:else if fieldType === 'boolean'}
 	<label class="flex items-center gap-2.5 text-sm" data-part="form.field" data-field={name}>
 		<Switch
@@ -267,13 +313,13 @@
 					searchPlaceholder={`Search ${entityLabel}…`}
 					{entityLabel}
 					clearable={!required}
+					creatable={creatable && Boolean(createFn)}
+					creating={linkCreating}
 					onchange={(next) => {
 						value.current = next || '';
 					}}
+					onCreate={createLink}
 				/>
-				{#if linkError}
-					<p class="text-xs text-destructive" role="alert">{linkError}</p>
-				{/if}
 			{/if}
 			{#if help}
 				<FieldDescription>{help}</FieldDescription>

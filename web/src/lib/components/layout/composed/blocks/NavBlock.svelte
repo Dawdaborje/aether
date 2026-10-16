@@ -3,6 +3,7 @@
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
+	import { appIcon } from '$lib/components/apps/icons';
 	import type { LayoutBlock, NavItem } from '$lib/theme/types';
 	import { isActive, navHref } from '../../nav';
 	import { getShellState } from '../shellContext.svelte';
@@ -42,13 +43,17 @@
 >
 	{#each shell.nav.items as item (item.label + (item.href ?? ''))}
 		{#if item.children?.length && !column}
+			{@const Icon = appIcon(item.icon ?? 'folder')}
 			<DropdownMenu.Root>
 				<DropdownMenu.Trigger
 					data-active={groupHasActive(item) || undefined}
-					class="flex items-center gap-1 rounded-md px-2.5 py-1.5 text-sm text-region-muted-foreground transition outline-none hover:bg-region-hover hover:text-region-hover-foreground data-[active]:font-medium data-[active]:text-region-foreground data-[state=open]:bg-region-hover"
+					class="group flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-region-muted-foreground transition outline-none hover:bg-region-hover hover:text-region-hover-foreground data-[active]:font-medium data-[active]:text-region-foreground data-[state=open]:bg-region-hover"
 				>
+					{#if Icon}<Icon class="size-4 shrink-0" />{/if}
 					{item.label}
-					<ChevronDownIcon class="size-3.5 opacity-60" />
+					<ChevronDownIcon
+						class="size-3.5 opacity-60 transition-transform group-data-[state=open]:rotate-180"
+					/>
 				</DropdownMenu.Trigger>
 				<DropdownMenu.Content align="start" class="min-w-48">
 					{#each item.children as child (child.label + (child.href ?? ''))}

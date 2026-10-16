@@ -19,7 +19,8 @@ export type FieldType =
 	| 'image'
 	| 'file'
 	| 'json'
-	| 'progress';
+	| 'progress'
+	| 'phone';
 
 export type ViewType =
 	| 'list'

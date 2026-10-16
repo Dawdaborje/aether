@@ -41,8 +41,9 @@
 	});
 </script>
 
+<!-- Above page modals (same default z-50) so a failed picker/load is still visible. -->
 <Dialog.Root bind:open>
-	<Dialog.Content>
+	<Dialog.Content class="z-[100]" overlayClass="z-[100]">
 		<Dialog.Header>
 			<Dialog.Title>{err ? TITLES[err.kind] : ''}</Dialog.Title>
 			<Dialog.Description>

@@ -367,7 +367,14 @@
 	}
 </script>
 
-<form class="flex w-full flex-col gap-6" onsubmit={submit} aria-busy={loading}>
+<!-- Nested forms (a tab inside the employee page, a modal) must not use <form>: HTML forbids a
+     form inside a form, and the browser would close the outer one. -->
+<svelte:element
+	this={nested ? 'div' : 'form'}
+	class="flex w-full flex-col gap-6"
+	aria-busy={loading}
+	{...(nested ? {} : { onsubmit: submit })}
+>
 	{#if loading}
 		<p class="text-sm text-muted-foreground">Loading…</p>
 	{/if}
@@ -463,7 +470,7 @@
 			</div>
 		</div>
 	{/if}
-</form>
+</svelte:element>
 
 <Dialog.Root open={leaving !== null} onOpenChange={(open) => !open && (leaving = null)}>
 	<Dialog.Content>

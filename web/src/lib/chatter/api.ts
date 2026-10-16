@@ -6,6 +6,8 @@ export interface TrackedField {
 	label: string;
 	type: string;
 	options: { value: string; label?: string }[];
+	/** Model a link field points at (`department` or `hr.employee`). */
+	target?: string;
 }
 
 export interface ChatterMessage {
@@ -124,29 +126,61 @@ export const chatterApi = {
 	people: (q: string) => request<{ people: Person[] }>(`people?q=${encodeURIComponent(q)}`)
 };
 
-/** A tracked value as people read it: option labels, yes/no, and "empty" for nothing. */
-export function showValue(field: TrackedField | undefined, value: unknown): string {
+/** A tracked value as people read it: option labels, yes/no, link titles, and "empty" for nothing. */
+export function showValue(
+	field: TrackedField | undefined,
+	value: unknown,
+	titles: Record<string, string> = {}
+): string {
 	if (value === undefined || value === null || value === '') return 'empty';
 	if (field?.type === 'bool') return value ? 'yes' : 'no';
 	if (field?.type === 'select') {
 		const option = field.options.find((option) => option.value === value);
 		return option?.label ?? String(value);
 	}
+	if (field?.type === 'link' && typeof value === 'string') {
+		const plain = value.replace(/[⟨⟩]/g, '');
+		return titles[value] ?? titles[plain] ?? plain;
+	}
 	return typeof value === 'object' ? JSON.stringify(value) : String(value);
+}
+
+/** Link record ids in a thread, grouped by the model they point at. */
+export function linkIdsByTarget(thread: ChatterThread): Map<string, string[]> {
+	const byTarget = new Map<string, string[]>();
+	for (const message of thread.messages) {
+		if (message.kind !== 'change') continue;
+		const keys = new Set([
+			...Object.keys(message.before ?? {}),
+			...Object.keys(message.after ?? {})
+		]);
+		for (const key of keys) {
+			const field = thread.tracked.find((tracked) => tracked.id === key);
+			if (field?.type !== 'link' || !field.target) continue;
+			for (const raw of [message.before?.[key], message.after?.[key]]) {
+				if (typeof raw !== 'string' || !raw.includes(':')) continue;
+				const list = byTarget.get(field.target) ?? [];
+				list.push(raw);
+				byTarget.set(field.target, list);
+			}
+		}
+	}
+	return byTarget;
 }
 
 /** The lines of a change: what changed from what to what, with today's field labels. */
 export function changeLines(
 	message: ChatterMessage,
-	tracked: TrackedField[]
+	tracked: TrackedField[],
+	titles: Record<string, string> = {}
 ): { label: string; from: string; to: string }[] {
 	const ids = new Set([...Object.keys(message.before ?? {}), ...Object.keys(message.after ?? {})]);
 	return [...ids].map((id) => {
 		const field = tracked.find((field) => field.id === id);
 		return {
-			label: field?.label ?? 'A field that is no longer tracked',
-			from: showValue(field, message.before?.[id]),
-			to: showValue(field, message.after?.[id])
+			label: field?.label ?? field?.name ?? 'A field that is no longer tracked',
+			from: showValue(field, message.before?.[id], titles),
+			to: showValue(field, message.after?.[id], titles)
 		};
 	});
 }

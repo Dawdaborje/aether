@@ -28,7 +28,9 @@
 		banner:
 			'flex min-h-9 shrink-0 items-center gap-2 border-b border-region-border px-4 py-1.5 text-sm',
 		topbar: 'z-30 flex h-12 shrink-0 items-center gap-1 border-b border-region-border px-2',
-		sidebar: 'flex shrink-0 flex-col gap-0.5 overflow-y-auto p-2 max-md:hidden',
+		// Grows when a collapsible menu group is open so indented labels are not clipped.
+		sidebar:
+			'flex w-[var(--side-min)] max-w-80 shrink-0 flex-col gap-0.5 overflow-y-auto p-2 transition-[width] duration-200 ease-out max-md:hidden has-[[data-slot=collapsible][data-state=open]]:w-max',
 		aside: 'flex shrink-0 flex-col gap-2 overflow-y-auto p-3 max-lg:hidden',
 		footer: 'flex shrink-0 items-center gap-2 border-t border-region-border px-4 py-2 text-sm'
 	};
@@ -42,7 +44,11 @@
 	);
 	const sticky = $derived(region.sticky && name === 'topbar' ? 'sticky top-0' : '');
 	const width = $derived(
-		vertical ? `width: ${region.width ?? (name === 'aside' ? '18rem' : '14rem')}` : undefined
+		vertical
+			? name === 'sidebar'
+				? `--side-min: ${region.width ?? '14rem'}`
+				: `width: ${region.width ?? '18rem'}`
+			: undefined
 	);
 
 	const Tag = $derived(

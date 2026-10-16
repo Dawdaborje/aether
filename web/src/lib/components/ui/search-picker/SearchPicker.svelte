@@ -2,6 +2,7 @@
 	import type { Component } from 'svelte';
 	import CheckIcon from '@lucide/svelte/icons/check';
 	import ChevronsUpDownIcon from '@lucide/svelte/icons/chevrons-up-down';
+	import PlusIcon from '@lucide/svelte/icons/plus';
 	import SearchIcon from '@lucide/svelte/icons/search';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
@@ -20,8 +21,11 @@
 		entityLabel = 'items',
 		icon: Icon = undefined,
 		clearable = false,
+		creatable = false,
+		creating = false,
 		class: className = '',
-		onchange
+		onchange,
+		onCreate
 	}: {
 		items: SearchPickerItem[];
 		value?: string | null;
@@ -35,8 +39,13 @@
 		icon?: Component<{ class?: string }>;
 		/** Show a control to clear the selection. */
 		clearable?: boolean;
+		/** Offer to create a new item when the search has no exact label match. */
+		creatable?: boolean;
+		/** True while `onCreate` is in flight. */
+		creating?: boolean;
 		class?: string;
 		onchange?: (id: string) => void;
+		onCreate?: (query: string) => void | Promise<void>;
 	} = $props();
 
 	let open = $state(false);
@@ -67,6 +76,13 @@
 
 	const shown = $derived(ranked.slice(0, query.trim() ? SEARCH_VISIBLE : DEFAULT_VISIBLE));
 	const hiddenCount = $derived(Math.max(0, ranked.length - shown.length));
+	const createQuery = $derived(query.trim());
+	const canCreate = $derived(
+		creatable &&
+			Boolean(onCreate) &&
+			createQuery.length > 0 &&
+			!items.some((item) => item.label.toLowerCase() === createQuery.toLowerCase())
+	);
 
 	function pick(id: string) {
 		value = id;
@@ -80,6 +96,13 @@
 		open = false;
 		query = '';
 		onchange?.('');
+	}
+
+	async function createFromQuery() {
+		if (!canCreate || creating || !onCreate) return;
+		await onCreate(createQuery);
+		open = false;
+		query = '';
 	}
 
 	function onWindowPointerDown(event: PointerEvent) {
@@ -143,7 +166,7 @@
 						</button>
 					</li>
 				{/if}
-				{#if shown.length === 0}
+				{#if shown.length === 0 && !canCreate}
 					<li class="px-2 py-3 text-center text-sm text-muted-foreground">
 						No {entityLabel} match.
 					</li>
@@ -171,6 +194,21 @@
 							</button>
 						</li>
 					{/each}
+				{/if}
+				{#if canCreate}
+					<li>
+						<button
+							type="button"
+							class="mt-0.5 flex w-full items-center gap-2 rounded-sm px-2 py-2 text-left text-sm transition hover:bg-accent disabled:opacity-60"
+							disabled={creating}
+							onclick={() => void createFromQuery()}
+						>
+							<PlusIcon class="size-3.5 shrink-0 text-muted-foreground" />
+							<span class="truncate">
+								{creating ? 'Creating…' : `Create “${createQuery}”`}
+							</span>
+						</button>
+					</li>
 				{/if}
 			</ul>
 			{#if !query.trim() && items.length > DEFAULT_VISIBLE}
