@@ -2,6 +2,7 @@
 	import { resolveField } from '$lib/dsl/resolveFieldType';
 	import { goto } from '$app/navigation';
 	import SearchXIcon from '@lucide/svelte/icons/search-x';
+	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import ChevronLeftIcon from '@lucide/svelte/icons/chevron-left';
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
 	import type { ColumnDef, RowSelectionState } from '@tanstack/table-core';
@@ -9,6 +10,7 @@
 	import type { PageNode } from '$lib/dsl/types';
 	import PageRenderer from './PageRenderer.svelte';
 	import ListViewActions from './ListViewActions.svelte';
+	import RecordActions from './RecordActions.svelte';
 	import { recordTitles } from '$lib/records/titles';
 	import ListViewCell from './ListViewCell.svelte';
 	import ListViewSortHeader from './ListViewSortHeader.svelte';
@@ -183,7 +185,7 @@
 		}))
 	);
 
-	// Register Odoo control-panel chrome (New + faceted search) with PageShell.
+	// Register control-panel chrome (New + faceted search) with PageShell.
 	// Reset only on destroy. Clearing inside this effect made every re-run write
 	// `groupByOptions = []` and then the real list, which blew the update-depth limit.
 	$effect(() => {
@@ -227,13 +229,18 @@
 		offset = 0;
 	});
 
+	/** A load is in flight: the Refresh button spins so the person knows data is coming. */
+	let loading = $state(false);
+
 	async function load() {
 		const current = ++latest;
 		if (!source || !page) {
 			rows = [];
 			total = undefined;
+			loading = false;
 			return;
 		}
+		loading = true;
 		const payload: Record<string, unknown> = { ...page.params };
 		if (serverMode) {
 			payload.limit = effectivePageSize;
@@ -270,6 +277,7 @@
 		}
 		const result = await page.call(source, payload);
 		if (current !== latest) return;
+		loading = false;
 		if (result.ok) {
 			let next = rowsOf(result.data);
 			let nextTotal = serverMode ? totalOf(result.data) : undefined;
@@ -592,9 +600,47 @@
 	const selectedCount = $derived(
 		Object.keys(rowSelection).filter((key) => rowSelection[key]).length
 	);
+	/** The ids of the selected rows, as the plugin's functions expect them. */
+	const selectedIds = $derived(
+		(rows ?? [])
+			.filter((row, index) => rowSelection[String(row.id ?? index)])
+			.map((row) => keyOf(row.id))
+			.filter(Boolean)
+	);
+
+	function refreshList() {
+		rowSelection = {};
+		page?.refresh();
+	}
 </script>
 
 <div class="space-y-3">
+	<div class="flex flex-wrap items-center justify-between gap-2">
+		<div class="flex flex-wrap items-center gap-2">
+			{#if modelName}
+				<RecordActions
+					bulk
+					ids={selectedIds}
+					model={modelName}
+					extra={actions}
+					showRefresh={false}
+					onDone={refreshList}
+				/>
+			{/if}
+		</div>
+		<Button
+			type="button"
+			size="sm"
+			variant="ghost"
+			title="Refresh"
+			aria-label="Refresh"
+			disabled={loading}
+			aria-busy={loading}
+			onclick={refreshList}
+		>
+			<RefreshCwIcon class={loading ? 'size-4 animate-spin' : 'size-4'} />
+		</Button>
+	</div>
 	{#if rows === null}
 		<div class="space-y-2" aria-busy="true">
 			<Skeleton class="h-9 w-full" />

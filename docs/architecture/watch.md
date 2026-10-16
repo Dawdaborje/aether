@@ -1,3 +1,10 @@
+---
+title: "File watches: telling a plugin that a file arrived"
+description: "Plugins often need to react to files: a bank statement dropped by an accountant, a CSV exported by another system, a scan from a copier."
+section: architecture
+status: stable
+order: 450
+---
 # File watches: telling a plugin that a file arrived
 
 Plugins often need to react to files: a bank statement dropped by an accountant, a CSV exported by

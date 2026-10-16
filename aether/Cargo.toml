@@ -3,6 +3,11 @@ name = "aether"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["mcp"]
+# `aether --mcp`: the Model Context Protocol server (documentation and plugin tools for LLMs).
+mcp = ["dep:rmcp", "dep:tempfile"]
+
 [dependencies]
 axum.workspace = true
 serde = { version = "1.0.229", features = ["derive"] }
@@ -19,10 +24,13 @@ aether_core = { path = "../facets/core" }
 aether_orm = { path = "../facets/orm" }
 aether_storage = { path = "../facets/storage" }
 aether_authentication = { path = "../facets/authentication" }
+aether_docs = { path = "../facets/docs" }
 include_dir = "0.7.4"
 directories = "6.0.0"
 toml_edit = "0.25.15"
 notify = "8"
+rmcp = { version = "3.5", default-features = false, features = ["server", "macros", "transport-io"], optional = true }
+tempfile = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

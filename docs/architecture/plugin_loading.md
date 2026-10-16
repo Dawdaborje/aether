@@ -1,3 +1,10 @@
+---
+title: "Plugin loading"
+description: "Plugins are WebAssembly modules run by Extism. Compiling one is the expensive step, so Aether never compiles at start-up: a plugin is compiled the first time it is called, kept ready while there is…"
+section: architecture
+status: stable
+order: 330
+---
 # Plugin loading
 
 Plugins are WebAssembly modules run by Extism. Compiling one is the expensive step, so

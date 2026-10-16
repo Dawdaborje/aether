@@ -5,7 +5,7 @@
 
 	let { node }: { node: PageNode } = $props();
 
-	/// `cols="1|2|3"` — Frappe-style section columns (default 2).
+	/// `cols="1|2|3"` — section columns (default 2).
 	const cols = $derived.by(() => {
 		const raw = node.cols ?? node.columns;
 		const n = typeof raw === 'number' ? raw : Number(raw);

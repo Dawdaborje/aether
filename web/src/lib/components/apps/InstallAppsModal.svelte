@@ -15,6 +15,7 @@
 	import { formatCatalogDate } from '$lib/apps/formatCatalogDate';
 	import { matchPlugin } from '$lib/apps/matchPlugin';
 	import { appIcon } from '$lib/components/apps/icons';
+	import OrgPicker from '$lib/components/apps/OrgPicker.svelte';
 	import { orgStore } from '$lib/org/orgStore.svelte';
 
 	let {
@@ -93,8 +94,6 @@
 		}
 		return map;
 	});
-
-	const allOrgs = $derived(organizations.map((org) => org.db_name));
 
 	async function load() {
 		catalog = null;
@@ -423,49 +422,8 @@
 					</ul>
 				</section>
 
-				<section class="flex min-h-0 flex-col gap-2">
-					<div class="flex shrink-0 items-center justify-between">
-						<h3 class="text-sm font-semibold">Organizations</h3>
-						{#if organizations.length > 1}
-							<button
-								type="button"
-								class="text-xs text-primary hover:underline"
-								onclick={() => (chosenOrgs = chosenOrgs.length === allOrgs.length ? [] : allOrgs)}
-							>
-								{chosenOrgs.length === allOrgs.length ? 'Clear' : 'Select all'}
-							</button>
-						{/if}
-					</div>
-					<ul
-						class="min-h-0 flex-1 space-y-1 overflow-auto rounded-md border border-border p-1.5"
-					>
-						{#if organizations.length === 0}
-							<li class="p-2 text-sm text-muted-foreground">
-								There are no organizations to install into yet.
-							</li>
-						{:else}
-							{#each organizations as org (org.db_name)}
-								<li>
-									<label
-										class="flex cursor-pointer items-center gap-2.5 rounded-md p-2.5 hover:bg-accent"
-									>
-										<input
-											type="checkbox"
-											class="rounded-sm"
-											checked={chosenOrgs.includes(org.db_name)}
-											onchange={() => (chosenOrgs = toggle(chosenOrgs, org.db_name))}
-										/>
-										<span class="min-w-0">
-											<span class="block text-sm font-medium">{org.name}</span>
-											<span class="block truncate text-xs text-muted-foreground"
-												>{org.db_name}</span
-											>
-										</span>
-									</label>
-								</li>
-							{/each}
-						{/if}
-					</ul>
+				<section class="flex min-h-0 flex-col">
+					<OrgPicker orgs={organizations} bind:selected={chosenOrgs} />
 				</section>
 			</div>
 

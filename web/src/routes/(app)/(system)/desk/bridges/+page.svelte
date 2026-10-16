@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { reportError } from '$lib/errors/report';
 	import { onMount } from 'svelte';
 	import PlugIcon from '@lucide/svelte/icons/plug';
 	import SearchIcon from '@lucide/svelte/icons/search';
@@ -24,7 +25,7 @@
 		try {
 			bridges = await fetchBridges();
 		} catch (error) {
-			failed = error instanceof Error ? error.message : 'The bridges could not be loaded.';
+			failed = reportError(error, 'The bridges could not be loaded.');
 			bridges = [];
 		}
 	});

@@ -264,6 +264,22 @@ pub struct SequenceDef {
     pub pattern: String,
     #[serde(default)]
     pub reset: SequenceReset,
+    /// A field of the model (a link or a string): each value has its own counter, so the numbers
+    /// of one company (or one warehouse) run without gaps of their own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    /// Number the record when it first gets one of these values, instead of when it is created:
+    /// a draft has no number, so a deleted draft leaves no gap in the series.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assign_on: Option<SequenceTrigger>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SequenceTrigger {
+    /// A `select` field of the model, usually the state.
+    pub field: String,
+    pub values: Vec<String>,
 }
 
 /// A rule every record of the model must satisfy after it is written, such as "the end date is
@@ -273,6 +289,19 @@ pub struct SequenceDef {
 #[serde(deny_unknown_fields)]
 pub struct CheckDef {
     pub require: serde_json::Map<String, Value>,
+    pub message: String,
+}
+
+/// No two records that match `when` may share the values of `fields`. The database cannot index
+/// "only some rows", so the kernel enforces it after every create and update, in the write's own
+/// transaction (a refused write changes nothing). An empty `when` makes it an ordinary unique key.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UniqueWhenDef {
+    /// One or more fields (usually the group: `item`).
+    pub fields: Vec<String>,
+    #[serde(default)]
+    pub when: serde_json::Map<String, Value>,
     pub message: String,
 }
 
@@ -393,6 +422,9 @@ pub struct ModelDef {
     /// Rules every record must satisfy after a write.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub checks: Vec<CheckDef>,
+    /// Uniqueness among the records that match a filter ("one preferred supplier per item").
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unique_when: Vec<UniqueWhenDef>,
 }
 
 /// The field names a `title_template` uses, in order: `{first} {last}` → `first`, `last`.
@@ -611,6 +643,60 @@ impl ModelDef {
                 Ok(filter) => {
                     if let Err(error) =
                         super::query::compile_filter(&filter, &FieldNames(&self.fields), "c")
+                    {
+                        problems.push(format!("{label}: {error}"));
+                    }
+                }
+            }
+        }
+        for field in self.live_fields() {
+            let Some(sequence) = &field.sequence else { continue };
+            let label = format!("{model}.{}", field.name);
+            if let Some(scope) = &sequence.scope {
+                let ok = self.live_fields().any(|f| {
+                    &f.name == scope && matches!(f.kind, FieldType::Link | FieldType::String)
+                });
+                if !ok {
+                    problems.push(format!("{label}: sequence `scope` `{scope}` is not a link or string field"));
+                }
+            }
+            if let Some(trigger) = &sequence.assign_on {
+                match self.live_fields().find(|f| f.name == trigger.field) {
+                    Some(f) if f.kind == FieldType::Select => {
+                        for value in &trigger.values {
+                            if !f.options.iter().any(|o| &o.value == value) {
+                                problems.push(format!("{label}: `assign_on` value `{value}` is not an option of `{}`", f.name));
+                            }
+                        }
+                        if trigger.values.is_empty() {
+                            problems.push(format!("{label}: `assign_on` needs at least one value"));
+                        }
+                    }
+                    _ => problems.push(format!("{label}: `assign_on.field` must be a select field of the model")),
+                }
+            }
+        }
+        if self.unique_when.len() > MAX_CHECKS {
+            problems.push(format!("{model}: at most {MAX_CHECKS} `unique_when` rules"));
+        }
+        for (position, rule) in self.unique_when.iter().enumerate() {
+            let label = format!("{model}: unique_when #{}", position + 1);
+            if rule.message.trim().is_empty() || rule.message.chars().count() > 200 {
+                problems.push(format!("{label}: `message` is 1 to 200 characters"));
+            }
+            if rule.fields.is_empty() || rule.fields.len() > 8 {
+                problems.push(format!("{label} needs 1 to 8 fields"));
+            }
+            for name in &rule.fields {
+                if !self.live_fields().any(|f| &f.name == name && f.kind.has_column()) {
+                    problems.push(format!("{label}: `{name}` is not a field with a value"));
+                }
+            }
+            match super::query::Filter::parse(&rule.when) {
+                Err(error) => problems.push(format!("{label}: {error}")),
+                Ok(filter) => {
+                    if let Err(error) =
+                        super::query::compile_filter(&filter, &FieldNames(&self.fields), "u")
                     {
                         problems.push(format!("{label}: {error}"));
                     }

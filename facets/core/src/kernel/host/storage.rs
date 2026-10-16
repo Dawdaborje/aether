@@ -51,7 +51,7 @@ fn parse<T: serde::de::DeserializeOwned>(payload: &JsonValue) -> Result<T, HostE
 }
 
 /// The plugin's key placed under its own folder.
-fn plugin_key(ctx: &PluginHostContext, key: &str) -> Result<MediaKey, HostError> {
+pub(super) fn plugin_key(ctx: &PluginHostContext, key: &str) -> Result<MediaKey, HostError> {
     // Checked on its own first, so a key like `../x` is refused rather than normalised.
     MediaKey::parse(key).map_err(storage_error)?;
     MediaKey::parse(&format!("plugins/{}/{key}", ctx.plugin_name)).map_err(storage_error)

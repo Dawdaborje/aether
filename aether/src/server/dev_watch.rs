@@ -162,13 +162,70 @@ async fn reload(state: &AppState, namespace: &str, app_dir: &Path, name: &str, d
         return;
     }
     aether_core::plugin_manager::surface::invalidate(&state.cache, name, &loaded.version);
+    let actor = aether_core::plugin_activity::Actor::system("watch");
+    aether_core::plugin_activity::record(
+        state,
+        aether_core::plugin_activity::Entry {
+            kind: aether_core::plugin_activity::kind::CATALOG_LOAD,
+            plugin: name.to_string(),
+            from_version: None,
+            to_version: Some(loaded.version.clone()),
+            organization: None,
+            actor: actor.clone(),
+            source: "watch".into(),
+            ok: true,
+            error: None,
+            detail: serde_json::Value::Null,
+        },
+    )
+    .await;
     let spec = PluginSpec { name: name.to_string(), version: Some(loaded.version.clone()) };
     let mut moved = Vec::new();
     for org in organizations_with(state, name).await {
         let session = state.fresh_session();
         match catalog::upgrade_plugins(&session, namespace, &state.core_database, &org, std::slice::from_ref(&spec)).await {
-            Ok(_) => {
+            Ok(report) => {
                 aether_core::plugin_manager::installed::invalidate(&state.cache, &org);
+                for (plugin, from, to) in &report.upgraded {
+                    aether_core::plugin_activity::record(
+                        state,
+                        aether_core::plugin_activity::Entry {
+                            kind: aether_core::plugin_activity::kind::UPGRADE,
+                            plugin: plugin.clone(),
+                            from_version: Some(from.clone()),
+                            to_version: Some(to.clone()),
+                            organization: Some(org.clone()),
+                            actor: actor.clone(),
+                            source: "watch".into(),
+                            ok: true,
+                            error: None,
+                            detail: serde_json::Value::Null,
+                        },
+                    )
+                    .await;
+                }
+                // An upgrade runs the plugin's seeds, as install and the Desk do.
+                match aether_core::plugin_manager::commands::run_lifecycle(
+                    state,
+                    &org,
+                    &[name.to_string()],
+                    aether_core::plugin_manager::commands::LifecyclePhase::Upgrade,
+                    "system:watch",
+                )
+                .await
+                {
+                    Ok(seeds) => {
+                        for seed in seeds.iter().filter(|s| !s.ok) {
+                            log::warn!(
+                                "--watch: seed {}.{} in `{org}` failed: {}",
+                                seed.plugin,
+                                seed.command,
+                                seed.detail.as_deref().unwrap_or("unknown")
+                            );
+                        }
+                    }
+                    Err(error) => log::warn!("--watch: seeds of `{name}` in `{org}` failed: {error}"),
+                }
                 moved.push(org);
             }
             Err(error) => log::error!("--watch: `{name}` could not be moved to {} in `{org}`: {error}", loaded.version),

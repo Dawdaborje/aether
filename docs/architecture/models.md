@@ -1,3 +1,10 @@
+---
+title: "Models"
+description: "A model describes the records of a plugin: which fields they have, their types and rules. It is a JSON file, models/<name>.json, in the plugin."
+section: architecture
+status: stable
+order: 280
+---
 # Models
 
 A model describes the records of a plugin: which fields they have, their types and rules. It is
@@ -72,6 +79,20 @@ creation, UTC) and exactly one `{#####}` (the zero-padded counter; more digits t
 (`aether_sequence`) is incremented in the same transaction as the create, so a create that fails gives its number
 back: numbers are never skipped or repeated. Give the field a `unique` index if hand-typed values could collide.
 
+A series can also say **when** a record is numbered and **what** its counter is shared by:
+
+```json
+{ "name": "number", "type": "string", "index": "unique",
+  "sequence": { "pattern": "SO-{YYYY}-{#####}", "reset": "yearly", "scope": "company",
+                "assign_on": { "field": "state", "values": ["confirmed"] } } }
+```
+
+* `scope` names a link or string field; each value of it has its own counter (one run of numbers per company).
+  A create or a first numbering without a value for it is refused.
+* `assign_on` numbers the record when its `select` field is first set to one of `values` (at create, if it is born
+  in one), not when it is created: a draft has no number, so a deleted draft leaves no gap. A record that already
+  has a number keeps it and takes no new one when the state is written again.
+
 ### Checks on the whole record
 
 ```json
@@ -98,13 +119,15 @@ refilled by the kernel on **every create and update** of the record, inside the 
 
 * `"related": "customer.name"` copies a field of the record a link points at. The link must point at a model of the
   same plugin, and the field must have the same type (and decimal scale); links, many2many, json and select fields
-  cannot be copies. It is a *copy*: when the customer is renamed, the copy changes the next time the record is
-  written, not before. Clearing the link clears the copy.
+  cannot be copies. It is a *copy*, refilled by the kernel in the transaction that changes the source: when the customer is renamed,
+  every record that copies `customer.name` is updated with it (one statement per dependent model; only a write that
+  sets or clears the source field does this, and the copies are written without audit rows of their own). Clearing the link clears the copy.
 * `"compute": "qty * price"` is a number worked out from the record's own `int` and `decimal` fields: numbers, field
-  names, `+`, `-`, `*` and parentheses (up to 8 deep). It is integer arithmetic on the stored whole units, so it is
+  names, `+`, `-`, `*`, `/` and parentheses (up to 8 deep). It is integer arithmetic on the stored whole units, so it is
   exact; a result with more digits than the field has is rounded half away from zero (`58.97 * 0.075` into a
-  2-digit field is `4.42`). A missing number counts as zero. There is no division, because it cannot be exact:
-  work it out in the plugin. A calculated field may use another one declared before it. The expression's
+  2-digit field is `4.42`). A missing number counts as zero. `/` divides: a quotient is
+  worked out to 6 digits after the point (rounded half away from zero) and is 0 when the divisor is 0, then
+  rounded again to the field's own digits. A calculated field may use another one declared before it. The expression's
   field names are checked when the model loads.
 
 ```json
@@ -113,7 +136,6 @@ refilled by the kernel on **every create and update** of the record, inside the 
 { "name": "customer_name", "type": "string", "related": "customer.name" }
 ```
 
-Not yet: propagating a changed source to its copies.
 
 ### Child rows (one-to-many)
 
@@ -149,6 +171,22 @@ adds these behaviours to the record's own commands:
   negative" sees the new rows.
 
 Not in `db::transaction`: nest rows with `db::create`/`db::update` there, or write the rows as their own operations.
+
+### Uniqueness among some records
+
+`"unique_when": [{ "fields": ["item"], "when": { "is_preferred": true }, "message": "one preferred supplier per item" }]`
+says that no two records matching `when` may share the values of `fields` ("one default address per party",
+"one active price per item and date"). The database cannot index only some rows, so the kernel checks it after
+every create and update, in the write's own transaction: a refused write changes nothing. An empty `when` is an
+ordinary multi-field unique key. At most 20 per model; fields and filter are checked when the model loads.
+Not checked: `db::increment`. An unset field compares equal to another unset one.
+
+### Create or update by key
+
+`db::upsert` (`{ model, key: { field: value }, data }`, Rhai `db::upsert(model, key, data)`, Rust `db::upsert`)
+updates the one record whose fields equal `key`, else creates it with `key` and `data`. It is a normal
+`db::create` / `db::update` for rules, checks and audit, and answers with `created`. Two callers racing to create
+the same key are stopped by a unique index or `unique_when` on it. More than one match is refused.
 
 ### Several fields in one index
 

@@ -4,7 +4,6 @@
 	import {
 		createSvelteTable,
 		DataTable,
-		DataTableSelected,
 		renderComponent,
 		selectColumn
 	} from '$lib/components/ui/data-table';
@@ -17,6 +16,8 @@
 		rows,
 		emptyLabel,
 		rowWorking = null,
+		selectedKeys,
+		onSelect,
 		onOpen,
 		onStop,
 		onRestart,
@@ -25,18 +26,18 @@
 		rows: ScheduleTask[];
 		emptyLabel: string;
 		rowWorking?: string | null;
+		selectedKeys: Set<string>;
+		onSelect: (keys: Set<string>) => void;
 		onOpen: (task: ScheduleTask) => void;
 		onStop: (task: ScheduleTask, event: MouseEvent) => void;
 		onRestart: (task: ScheduleTask, event: MouseEvent) => void;
 		onRunNow: (task: ScheduleTask, event: MouseEvent) => void;
 	} = $props();
 
-	let rowSelection = $state<RowSelectionState>({});
-
-	$effect(() => {
-		void rows;
-		rowSelection = {};
-	});
+	// Selection lives in the panel so "select all" can span every table and survive filtering.
+	const rowSelection = $derived<RowSelectionState>(
+		Object.fromEntries([...selectedKeys].map((key) => [key, true]))
+	);
 
 	function scheduleKey(task: ScheduleTask): string {
 		return `${task.plugin}:${task.name}`;
@@ -61,12 +62,7 @@
 			id: 'schedule',
 			header: 'Schedule',
 			cell: ({ row }) =>
-				renderComponent(ScheduleTaskNameCell, {
-					plugin: row.original.plugin,
-					name: row.original.name,
-					functionName: row.original.function,
-					source: row.original.source
-				})
+				renderComponent(ScheduleTaskNameCell, { task: row.original })
 		},
 		{
 			id: 'expression',
@@ -113,22 +109,25 @@
 				return rowSelection;
 			}
 		},
+		getRowId: (row) => scheduleKey(row),
 		onRowSelectionChange: (updater) => {
-			rowSelection = typeof updater === 'function' ? updater(rowSelection) : updater;
+			const next = typeof updater === 'function' ? updater(rowSelection) : updater;
+			// Keep selections that belong to other tables or are hidden by the filter.
+			const visible = new Set(rows.map(scheduleKey));
+			const keys = new Set([...selectedKeys].filter((key) => !visible.has(key)));
+			for (const [key, on] of Object.entries(next)) if (on) keys.add(key);
+			onSelect(keys);
 		},
 		getCoreRowModel: getCoreRowModel(),
-		enableRowSelection: true,
-		getRowId: (row) => scheduleKey(row)
+		enableRowSelection: true
 	});
 
-	const selectedCount = $derived(Object.keys(rowSelection).filter((key) => rowSelection[key]).length);
 </script>
 
 {#if rows.length === 0}
 	<p class="text-sm text-muted-foreground">{emptyLabel}</p>
 {:else}
 	<div class="space-y-2">
-		<DataTableSelected count={selectedCount} onClear={() => (rowSelection = {})} />
 		<DataTable {table} onRowClick={onOpen} class="min-w-[640px]" />
 	</div>
 {/if}

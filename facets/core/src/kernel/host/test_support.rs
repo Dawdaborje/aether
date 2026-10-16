@@ -22,6 +22,7 @@ pub fn dummy_ctx(caps: &[&str]) -> PluginHostContext {
             can_write: true,
             schema: None,
             rules: None,
+            direct: false,
         },
     );
     // Surreal::init is fine for constructing context; we only test cap denial paths.

@@ -143,7 +143,7 @@ pub struct PageDocument {
     pub menu_visible: bool,
     /// Optional Lucide icon id for menu entries.
     pub icon: Option<String>,
-    /// Sidebar section label (Frappe-style collapsible group). Empty = ungrouped.
+    /// Sidebar section label (collapsible group). Empty = ungrouped.
     pub menu_group: Option<String>,
     /// Sort key among menu entries (lower first). Default 0.
     pub sort_order: i64,

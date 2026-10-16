@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { reportError } from '$lib/errors/report';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import type { ColumnDef, RowSelectionState } from '@tanstack/table-core';
@@ -163,7 +164,7 @@
 			members = nextMembers;
 			roleCatalog = nextRoles;
 		} catch (error) {
-			failed = error instanceof Error ? error.message : 'Members could not be loaded.';
+			failed = reportError(error, 'Members could not be loaded.');
 			members = members ?? [];
 		}
 	}
@@ -202,7 +203,7 @@
 				login = '';
 			}
 		} catch (error) {
-			failed = error instanceof Error ? error.message : 'Member could not be added.';
+			failed = reportError(error, 'Member could not be added.');
 		} finally {
 			working = false;
 		}

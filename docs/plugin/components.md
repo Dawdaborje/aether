@@ -1,3 +1,10 @@
+---
+title: "UI components"
+description: "A component is a reusable XML fragment. Define it under components/, then pull it into pages (or other components) with <use>."
+section: plugin
+status: stable
+order: 40
+---
 # UI components
 
 A component is a reusable XML fragment. Define it under `components/`, then pull it into

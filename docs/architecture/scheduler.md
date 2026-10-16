@@ -1,3 +1,10 @@
+---
+title: "The scheduler: background jobs and recurring tasks"
+description: "Anything that should not make a person wait (sending an email, building a report, calling a slow API) or should happen on a timetable (a nightly export, a sweep every 15 minutes) is the scheduler's…"
+section: architecture
+status: stable
+order: 390
+---
 # The scheduler: background jobs and recurring tasks
 
 Anything that should not make a person wait (sending an email, building a report, calling a slow
@@ -25,6 +32,8 @@ scheduled work gets the same retries, queues and limits as everything else.
 # plugin.toml: tasks that always exist
 [[schedule]]
 name = "nightly-report"
+title = "Nightly report"       # optional: the label shown in lists (the name is the key)
+description = "Emails the day's totals to the managers."   # optional
 function = "send_report"
 cron = "0 2 * * *"              # five fields: minute hour day month weekday
 timezone = "Africa/Lagos"        # optional; UTC otherwise
@@ -46,7 +55,7 @@ scheduler::register(#{ name: "sweep", function: "sweep_stale", every: "30m" });
 | `scheduler::enqueue { function, payload?, delay_secs?, queue?, max_attempts?, unique_key? }` | `scheduler::enqueue` | queue a job; answers `{ id, created }` |
 | `scheduler::job { id }` | `scheduler::enqueue` | the job's state (`queued`, `running`, `succeeded`, `failed`, `cancelled`), attempts and last error |
 | `scheduler::cancel_job { id }` | `scheduler::enqueue` | cancel a job that has not started |
-| `scheduler::register { name, function, cron \| every, timezone?, payload?, queue?, max_attempts?, catch_up? }` | `scheduler::register` | add or update a recurring task (up to 100 per plugin) |
+| `scheduler::register { name, function, title?, description?, cron \| every, timezone?, payload?, queue?, max_attempts?, catch_up? }` | `scheduler::register` | add or update a recurring task (up to 100 per plugin) |
 | `scheduler::cancel { name }` | `scheduler::cancel` | remove a task registered while running; manifest tasks cannot be removed this way |
 
 A job calls one of **the plugin's own** functions. To involve another plugin, that function calls

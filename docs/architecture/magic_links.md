@@ -1,3 +1,10 @@
+---
+title: "Magic links"
+description: "Single-use tokens for auth and plugin workflows. Rows live in core magic_links and are never hard-deleted: consume sets used_at, supersede/revoke sets revoked_at."
+section: architecture
+status: stable
+order: 250
+---
 # Magic links
 
 Single-use tokens for auth and plugin workflows. Rows live in core `magic_links`

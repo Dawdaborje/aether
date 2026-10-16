@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { reportError } from '$lib/errors/report';
 	import ControlPanel from '$lib/components/layout/shell/ControlPanel.svelte';
 	import SettingsNav from '$lib/components/settings/SettingsNav.svelte';
 	import { fetchSettingsCatalog, type CatalogGroup } from '$lib/settings/api';
@@ -23,7 +24,7 @@
 		try {
 			groups = (await fetchSettingsCatalog()).groups;
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Failed to load settings';
+			error = reportError(err, 'Failed to load settings');
 		} finally {
 			loading = false;
 		}

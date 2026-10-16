@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { reportError } from '$lib/errors/report';
 	import { onMount } from 'svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
@@ -19,6 +20,7 @@
 	const detail = getOrgDetailContext();
 
 	let name = $state('');
+	let email = $state('');
 	let description = $state('');
 	let parent = $state('');
 	let parents = $state<OrganizationProfile[]>([]);
@@ -31,6 +33,7 @@
 	function syncFrom(org: OrganizationProfile | null) {
 		if (!org) return;
 		name = org.name;
+		email = org.email ?? '';
 		description = org.description ?? '';
 		parent = org.parent_db_name ?? '';
 	}
@@ -57,6 +60,8 @@
 		try {
 			const next = await updateOrganization(params.db, {
 				name,
+				// Only sent when filled: the address can be changed but not cleared.
+				email: email.trim() || undefined,
 				description,
 				parent,
 				set: ['description', 'parent']
@@ -64,7 +69,7 @@
 			detail.setOrganization(next);
 			message = 'Saved.';
 		} catch (error) {
-			failed = error instanceof Error ? error.message : 'Could not save.';
+			failed = reportError(error, 'Could not save.');
 		} finally {
 			working = false;
 		}
@@ -83,7 +88,7 @@
 			detail.setOrganization(next);
 			message = 'Logo updated.';
 		} catch (error) {
-			failed = error instanceof Error ? error.message : 'Could not upload the logo.';
+			failed = reportError(error, 'Could not upload the logo.');
 		} finally {
 			logoWorking = false;
 		}
@@ -99,7 +104,7 @@
 			detail.setOrganization(next);
 			message = 'Logo removed.';
 		} catch (error) {
-			failed = error instanceof Error ? error.message : 'Could not remove the logo.';
+			failed = reportError(error, 'Could not remove the logo.');
 		} finally {
 			logoWorking = false;
 		}
@@ -111,6 +116,13 @@
 		<div class="space-y-1.5">
 			<Label for="org-detail-name">Name</Label>
 			<Input id="org-detail-name" bind:value={name} autocomplete="off" />
+		</div>
+		<div class="space-y-1.5">
+			<Label for="org-detail-email">Email</Label>
+			<Input id="org-detail-email" type="email" bind:value={email} autocomplete="off" />
+			<p class="text-xs text-muted-foreground">
+				The organization's contact address. It is the email of its default company.
+			</p>
 		</div>
 		<div class="space-y-1.5">
 			<Label for="org-detail-description">Description</Label>

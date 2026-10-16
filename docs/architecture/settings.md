@@ -1,3 +1,10 @@
+---
+title: "Settings"
+description: "Settings live under the desk (/desk/settings). Developers (superusers) can read and change global defaults and any organization's overrides."
+section: architecture
+status: stable
+order: 400
+---
 # Settings
 
 Settings live under the desk (`/desk/settings`). **Developers** (superusers) can

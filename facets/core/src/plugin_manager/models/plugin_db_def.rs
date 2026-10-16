@@ -68,6 +68,9 @@ pub struct PluginDbDefinition {
     /// The roles the plugin offers, created in an organization when it installs the plugin.
     #[serde(default)]
     pub roles: Option<Vec<serde_json::Value>>,
+    /// The plugin's `[[ai_tool]]` entries: what the AI assistant may ask it for.
+    #[serde(default)]
+    pub ai_tools: Option<Vec<serde_json::Value>>,
     pub workspace: Option<String>,
     pub kind: Option<String>,
     pub artifact_path: Option<String>,
@@ -105,6 +108,7 @@ impl From<PluginDbDefinition> for PluginDefinition {
                 .map(Into::into)
                 .collect(),
             dependencies: plugin.dependencies.unwrap_or_default(),
+            optional_dependencies: Vec::new(),
             capabilities: Vec::new(),
             access_models: Vec::new(),
             public_functions: Vec::new(),

@@ -1,4 +1,4 @@
-import { categoryLabel } from '$lib/apps/categories';
+import { categoryIcon, categoryLabel } from '$lib/apps/categories';
 import type { AppCategory, AppTileData } from '$lib/components/apps/types';
 
 /** One entry on the Apps home grid: a single app or a folder of apps. */
@@ -21,10 +21,6 @@ type FolderBucket = {
 	sort: string;
 };
 
-function absorbVisuals(bucket: FolderBucket, app: AppTileData) {
-	if (!bucket.logo_url && app.logo_url) bucket.logo_url = app.logo_url;
-	if (!bucket.icon && app.icon) bucket.icon = app.icon;
-}
 
 /**
  * Build the Apps home grid.
@@ -32,7 +28,7 @@ function absorbVisuals(bucket: FolderBucket, app: AppTileData) {
  * - `[app] folder="…"` → plugins that share a folder (same workspace) form a folder tile.
  * - Workspace `launcher = "flat"` → remaining members are individual tiles (Base).
  * - Workspace `launcher = "folder"` (default) → remaining members share the workspace folder.
- * - Folders with only one app collapse to that app's tile.
+ * - A folder with one app stays a folder, so every role sees the workspace's icon.
  */
 export function buildHomeEntries(
 	apps: AppTileData[],
@@ -56,12 +52,11 @@ export function buildHomeEntries(
 			const existing = buckets.get(id);
 			if (existing) {
 				existing.apps.push(app);
-				absorbVisuals(existing, app);
 			} else {
 				buckets.set(id, {
 					label: pluginFolder,
-					icon: app.icon,
-					logo_url: app.logo_url,
+					icon: categoryIcon(categoryId),
+					logo_url: null,
 					apps: [app],
 					sort: pluginFolder.toLowerCase()
 				});
@@ -75,15 +70,11 @@ export function buildHomeEntries(
 			const existing = buckets.get(id);
 			if (existing) {
 				existing.apps.push(app);
-				absorbVisuals(existing, app);
-				// Workspace logo/icon always win over member fallbacks.
-				if (metaRow?.logo_url) existing.logo_url = metaRow.logo_url;
-				if (metaRow?.icon) existing.icon = metaRow.icon;
 			} else {
 				buckets.set(id, {
 					label: metaRow?.label ?? categoryLabel(categoryId),
-					icon: metaRow?.icon ?? app.icon,
-					logo_url: metaRow?.logo_url ?? app.logo_url,
+					icon: metaRow?.icon ?? categoryIcon(categoryId),
+					logo_url: metaRow?.logo_url ?? null,
 					apps: [app],
 					sort: (metaRow?.label ?? categoryId).toLowerCase()
 				});
@@ -96,18 +87,16 @@ export function buildHomeEntries(
 
 	const entries: HomeEntry[] = [];
 	for (const [id, bucket] of buckets) {
-		if (bucket.apps.length === 1 && bucket.apps[0]) {
-			entries.push({ kind: 'app', app: bucket.apps[0] });
-		} else {
-			entries.push({
-				kind: 'folder',
-				id,
-				label: bucket.label,
-				icon: bucket.icon,
-				logo_url: bucket.logo_url,
-				apps: bucket.apps.sort((a, b) => a.label.localeCompare(b.label))
-			});
-		}
+		// A workspace always shows as its folder, even when a role leaves one app in it, so
+		// members see the same icons a developer does.
+		entries.push({
+			kind: 'folder',
+			id,
+			label: bucket.label,
+			icon: bucket.icon,
+			logo_url: bucket.logo_url,
+			apps: bucket.apps.sort((a, b) => a.label.localeCompare(b.label))
+		});
 	}
 	for (const app of singles) {
 		entries.push({ kind: 'app', app });

@@ -124,6 +124,11 @@ pub fn print_upgrade_summary(org_database: &str, report: &UpgradeReport) {
 
 pub fn print_load_summary(loaded: &[LoadedPlugin]) {
     for plugin in loaded {
+        // Nothing was parsed for a folder that hashes the same as last time.
+        if !plugin.created && plugin.pages == 0 && plugin.public_pages == 0 && plugin.theme.is_none() {
+            println!("Already loaded plugin '{}@{}' (unchanged on disk).", plugin.name, plugin.version);
+            continue;
+        }
         let status = if plugin.created {
             "Loaded"
         } else {

@@ -56,6 +56,7 @@ async fn world() -> Result<Option<World>, Box<dyn std::error::Error>> {
 fn request<'a>(name: &'a str, member: FirstMember<'a>) -> OrganizationRequest<'a> {
     OrganizationRequest {
         name,
+        email: "hello@acme.io",
         db_name: None,
         member,
         description: None,
@@ -118,6 +119,25 @@ async fn creates_the_organization_with_its_schema_user_and_storage() -> TestResu
         .map(ToString::to_string)
         .unwrap_or_default();
     assert!(tables.contains("notifications"), "tables: {tables}");
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "needs SurrealDB (AETHER_TEST_DB)"]
+async fn creates_an_organization_without_a_member() -> TestResult {
+    let Some(world) = world().await? else {
+        return Ok(());
+    };
+    let (db_name, _) = create_organization(
+        &world.db,
+        &world.namespace,
+        &request("Empty Co", FirstMember::None),
+        &world.storage,
+    )
+    .await?;
+    assert_eq!(db_name, "empty_co");
+    assert_eq!(count(&world, "SELECT * FROM organization_users;").await?, 0);
+    assert_eq!(count(&world, "SELECT * FROM users;").await?, 0);
     Ok(())
 }
 

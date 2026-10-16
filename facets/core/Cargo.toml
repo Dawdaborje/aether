@@ -23,6 +23,12 @@ termii = { path = "../../bridges/communications/termii" }
 africas_talking = { path = "../../bridges/communications/africas_talking" }
 aether_paystack_integration = { path = "../../bridges/payments/paystack" }
 open_street_map = { path = "../../bridges/maps_and_locations/open_street_map" }
+liteparse = { path = "../../bridges/document_parsing/liteparse" }
+aether_ocr = { path = "../ocr" }
+aether_ai = { path = "../ai" }
+ollama = { path = "../../bridges/ai/ollama" }
+openai_compatible = { path = "../../bridges/ai/openai_compatible" }
+anthropic = { path = "../../bridges/ai/anthropic" }
 # deps
 extism.workspace = true
 axum.workspace = true

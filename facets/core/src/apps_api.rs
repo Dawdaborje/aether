@@ -29,7 +29,7 @@ use surrealdb::types::SurrealValue;
 
 use crate::access::{
     audit::Actor,
-    identity::{IdentityError, identify, with_retry_after},
+    identity::{Identity, IdentityError, identify, with_retry_after},
 };
 use crate::app_dir::AppDir;
 use crate::pages_api::{locale_chain, translator};
@@ -59,7 +59,7 @@ struct AppRow {
     standalone: Option<bool>,
     #[serde(default)]
     folder: Option<String>,
-    /// Roles that may see this tile (OR). Empty = any member.
+    /// Roles that may see this tile (OR). Empty = anyone holding a role of the plugin.
     #[serde(default)]
     roles: Option<Vec<String>>,
 }
@@ -85,6 +85,10 @@ struct MenuPageRow {
     is_pattern: bool,
     #[serde(default)]
     required_roles: Option<Vec<String>>,
+    /// `menu_when="<function>"` on the page: the entry is shown only when that function of the
+    /// plugin answers something (a record, `true`, a non-empty list) for the person asking.
+    #[serde(default)]
+    menu_when: Option<String>,
     plugin_name: String,
     plugin_version: String,
     workspace: Option<String>,
@@ -127,7 +131,7 @@ struct AppTile {
     standalone: bool,
 }
 
-/// One workspace group on the Apps launcher (folder / Frappe-style workspace).
+/// One workspace group on the Apps launcher (a folder of related apps).
 #[derive(Debug, Serialize, PartialEq, Eq)]
 struct AppCategory {
     /// Workspace name (`base`, `crm`, …); matches `AppTile.category`.
@@ -195,7 +199,7 @@ async fn launcher_catalog(
         let mut pages_resp = core
             .query(
                 "SELECT route, title, icon, menu_group, sort_order, is_menu_visible, is_pattern, \
-                 required_roles, \
+                 required_roles, component_tree.menu_when AS menu_when, \
                  plugin.name AS plugin_name, plugin.version AS plugin_version, \
                  plugin.workspace AS workspace \
                  FROM plugin_ui_pages \
@@ -231,6 +235,20 @@ async fn launcher_catalog(
         let _ = state.cache.warm_set_apps_launcher_json(org, &json);
     }
     Ok(catalog)
+}
+
+/// Whether a `menu_when` function says the entry applies to this person. A function that fails
+/// hides the entry (and is logged): showing a link that leads nowhere is worse than a missing one.
+async fn menu_applies(state: &AppState, identity: &Identity, plugin: &str, function: &str) -> bool {
+    match crate::plugin_manager::api::call_as_identity(state, identity, plugin, function, json!({})).await {
+        Ok(Value::Null) | Ok(Value::Bool(false)) => false,
+        Ok(Value::Array(items)) => !items.is_empty(),
+        Ok(_) => true,
+        Err(error) => {
+            log::warn!("apps: menu_when `{plugin}.{function}` failed: {error}");
+            false
+        }
+    }
 }
 
 fn failure(status: StatusCode, message: &str) -> Response {
@@ -389,6 +407,22 @@ async fn list_apps(
             }
         }
     };
+    // Every role defined here: a page or app that names no roles is gated on its own plugin's roles.
+    let org_roles = if is_developer {
+        Vec::new()
+    } else {
+        match roles::all_names(&org_db).await {
+            Ok(names) => names,
+            Err(error) => {
+                log::error!("apps: roles of `{}`: {error}", identity.org_db);
+                return failure(StatusCode::INTERNAL_SERVER_ERROR, "database error");
+            }
+        }
+    };
+    log::debug!(
+        "apps: `{user_id}` in `{}`: developer={is_developer}, roles={user_roles:?}",
+        identity.org_db
+    );
     let installed = match installed::list_cached(&state.cache, &identity.org_db, &org_db).await {
         Ok(rows) => rows
             .into_iter()
@@ -422,11 +456,32 @@ async fn list_apps(
         let chain = locale_chain(&state, &identity, &headers);
         let loc = translator(&state, &identity).await.ok();
         let mut grouped: HashMap<(String, String), Vec<MenuPageRow>> = HashMap::new();
+        // The answer of each `menu_when` function, asked once per request.
+        let mut applies: HashMap<(String, String), bool> = HashMap::new();
         for row in catalog.menus {
             if !is_developer
-                && !roles::allows(&user_roles, row.required_roles.as_deref().unwrap_or(&[]))
+                && !roles::allows_in_plugin(
+                    &user_roles,
+                    row.required_roles.as_deref().unwrap_or(&[]),
+                    &row.plugin_name,
+                    &org_roles,
+                )
             {
                 continue;
+            }
+            if let Some(function) = row.menu_when.as_deref().map(str::trim).filter(|f| !f.is_empty()) {
+                let key = (row.plugin_name.clone(), function.to_string());
+                let shown = match applies.get(&key) {
+                    Some(shown) => *shown,
+                    None => {
+                        let shown = menu_applies(&state, &identity, &row.plugin_name, function).await;
+                        applies.insert(key, shown);
+                        shown
+                    }
+                };
+                if !shown {
+                    continue;
+                }
             }
             grouped
                 .entry((row.plugin_name.clone(), row.plugin_version.clone()))
@@ -484,7 +539,7 @@ async fn list_apps(
             }
         };
         let app_roles = row.app.roles.clone().unwrap_or_default();
-        if !is_developer && !roles::allows(&user_roles, &app_roles) {
+        if !is_developer && !roles::allows_in_plugin(&user_roles, &app_roles, &row.name, &org_roles) {
             // Drop menus so they are not folded into a host the caller cannot open.
             menus_by_plugin.remove(&(row.name.clone(), row.version.clone()));
             continue;
@@ -586,8 +641,8 @@ async fn list_apps(
                     row.logo_file.as_deref(),
                     row.group_icon.as_deref(),
                 )
-            })
-            .or_else(|| tile.logo_url.clone());
+            });
+        // A group shows its workspace's own logo or icon, never a member app's logo.
         let launcher = meta
             .and_then(|row| {
                 row.launcher
@@ -669,6 +724,7 @@ mod tests {
             is_menu_visible: Some(true),
             is_pattern: false,
             required_roles: None,
+            menu_when: None,
             plugin_name: "hr".into(),
             plugin_version: "0.1.0".into(),
             workspace: Some("hrms".into()),

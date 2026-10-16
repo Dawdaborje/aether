@@ -1,3 +1,10 @@
+---
+title: "Queries: filters, counts and aggregates"
+description: "Plugins never write SurrealQL. db::find, db::count, db::aggregate and db::search take a filter, and data_model/query.rs is the only place that turns it into a WHERE clause."
+section: architecture
+status: stable
+order: 360
+---
 # Queries: filters, counts and aggregates
 
 Plugins never write SurrealQL. `db::find`, `db::count`, `db::aggregate` and `db::search` take a
@@ -64,17 +71,37 @@ row. The answer has no record ids.
 }
 ```
 
-* `dimensions` are field names. `grain` is `day`, `week` or `month`, and only on a date or datetime.
-* `measures` are `count`, `{sum|avg|min|max: field}`, `{count_if: filter}` (the same filter language)
+* `dimensions` are field names. `grain` is `day`, `week`, `month`, `quarter` (`YYYY-Qn`) or `year`, and only on a date or datetime. A record without the date falls in a group with no value, not an error.
+* `measures` are `count`, `{sum|avg|min|max: field}`, `{count_if: filter}` (the same filter language),
+  `{sum_if: {field, where}}` and `{avg_if: {field, where}}` (the figure over only the rows matching `where`:
+  the value of won deals, the average of late invoices; `sum_if` is 0 and `avg_if` null when none match)
   and `{avg_days: {from, to}}`. `to` is a field on the same model, or `"now"`.
+* `formulas` derive extra columns from measures of the same report, after the query (so they are not
+  orderable): `{ratio: [num, den]}` (null when `den` is 0), `{delta: [a, b]}` and `{share: measure}`
+  (row over report total). `{prev: measure}` and `{change: measure}` read the previous period: the
+  preceding row when ordered by the first dimension, among rows that share the other dimensions
+  (`change` is `(now - prev) / prev`; null on the first period). They also appear on `total`.
+* `subtotals: true` with two or more dimensions adds `subtotals: { "1": rows, … }`, the measures
+  grouped by the first 1, 2, … dimensions (correct for avg too). Use it for pivots.
+* A filter field may be `{ "in_period": name }` (in `filter` and in `count_if`, `sum_if`, `avg_if`), replaced by
+  `gte`/`lt` bounds in UTC. Names: `today yesterday this_week last_week this_month last_month
+  this_quarter last_quarter this_year last_year last_7_days last_30_days last_90_days`.
+* `limit` is at most 10000 groups for a report (1000 default).
 * `fill` reads the dimension model and adds groups the fact table did not produce, with zero
   measures, so an empty stage still appears. `fill.model` uses the same own-or-dependency rule.
-* `limit` is at most 1000.
 * `preview: true` returns only the first `ui.report.preview_rows` groups (5, 10, 25 or 50; default
   10). Organizations override that setting the same way as `ui.list.page_size`. `total` stays the
-  full ungrouped measures, so a headline is not clipped. The 1000-row cap does not change.
+  full ungrouped measures, so a headline is not clipped. The group cap does not change.
 
-The answer is `{ rows, total, shown, total_groups, preview_rows? }`.
+The answer is `{ rows, total, shown, total_groups, preview_rows?, subtotals? }`.
+
+`report::sources` (capability `report::query`) lists what a report may read, for a query builder:
+`{ sources: [{ name, plugin, model, fields: [{ name, label, type, target, scale, options }] }] }`.
+It holds the plugin's own models and its dependencies'. A model the caller's rules let them read
+nothing of is left out, and so is any field those rules hide, so the builder never offers a column
+the query would refuse. `"*"` under `optional_dependencies` stands for every plugin installed in
+the organization (a reporting tool's way of reading whatever the user picks); such a model is
+attached only when it has record rules, so a wildcard never opens a model nobody wrote rules for.
 
 `report::export` (capability `report::export`) does not query. It turns rows the plugin already has
 into a table:
@@ -84,7 +111,7 @@ into a table:
 ```
 
 `format` is `xlsx` or `pdf`. The answer is `{ filename, content_type, data }` with `data` base64.
-At most 1000 rows. The Rust SDK is `report::query` and `report::export`. Rhai and Lua call
+At most 10000 rows. The Rust SDK is `report::query` and `report::export`. Rhai and Lua call
 `report::query(#{ ... })` and `report::export(#{ ... })`.
 
 Successful `db::create` / `db::update` / `db::delete` also publish a transient `aether` /

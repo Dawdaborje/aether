@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { reportError } from '$lib/errors/report';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { SvelteSet } from 'svelte/reactivity';
@@ -85,7 +86,7 @@
 				editDescription = role.description ?? '';
 			}
 		} catch (err) {
-			failed = err instanceof Error ? err.message : 'Role could not be loaded.';
+			failed = reportError(err, 'Role could not be loaded.');
 			role = null;
 		} finally {
 			loading = false;
@@ -105,7 +106,7 @@
 		try {
 			await action();
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'The action failed.';
+			error = reportError(err, 'The action failed.');
 		} finally {
 			working = false;
 		}

@@ -21,7 +21,15 @@ export type FieldType =
 	| 'json'
 	| 'progress';
 
-export type ViewType = 'list' | 'form' | 'kanban' | 'dashboard' | 'calendar' | 'tree' | 'pivot';
+export type ViewType =
+	| 'list'
+	| 'form'
+	| 'kanban'
+	| 'dashboard'
+	| 'board'
+	| 'calendar'
+	| 'tree'
+	| 'pivot';
 
 export type ButtonVariant = 'default' | 'outline' | 'secondary' | 'destructive' | 'ghost' | 'link';
 

@@ -842,6 +842,93 @@ async fn a_unique_multi_field_index_refuses_duplicates_and_follows_renames() -> 
     Ok(())
 }
 
+#[tokio::test]
+#[ignore = "needs SurrealDB (AETHER_TEST_DB)"]
+async fn unique_when_allows_one_matching_record_per_group() -> TestResult {
+    let Some(world) = World::new("unique_when").await? else {
+        return Ok(());
+    };
+    let mut model: ModelDef = serde_json::from_value(json!({
+        "name": "supplier_row",
+        "fields": [
+            { "name": "item", "type": "string" },
+            { "name": "preferred", "type": "bool", "default": false }
+        ],
+        "unique_when": [ {
+            "fields": ["item"], "when": { "preferred": true },
+            "message": "one preferred row per item"
+        } ]
+    }))?;
+    sync_ids(&mut model);
+    world.apply(std::slice::from_ref(&model)).await?;
+    let ctx = world.ctx(std::slice::from_ref(&model));
+    let make = |item: &str, preferred: bool| {
+        json!({ "model": "supplier_row", "data": { "item": item, "preferred": preferred } })
+    };
+    kernel_command(&ctx, "db::create", make("a", true)).await?;
+    kernel_command(&ctx, "db::create", make("a", false)).await?;
+    kernel_command(&ctx, "db::create", make("a", false)).await?;
+    kernel_command(&ctx, "db::create", make("b", true)).await?;
+    let second = kernel_command(&ctx, "db::create", make("a", true)).await;
+    assert!(second.is_err(), "{second:?}");
+    // Promoting another row of the group is refused too, until the first is cleared.
+    let rows = kernel_command(
+        &ctx,
+        "db::find",
+        json!({ "model": "supplier_row", "filter": { "item": "a", "preferred": false } }),
+    )
+    .await?;
+    let id = rows["data"][0]["id"].as_str().unwrap_or_default().to_string();
+    let promote = kernel_command(
+        &ctx,
+        "db::update",
+        json!({ "model": "supplier_row", "id": id, "data": { "preferred": true } }),
+    )
+    .await;
+    assert!(promote.is_err(), "{promote:?}");
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "needs SurrealDB (AETHER_TEST_DB)"]
+async fn a_series_numbers_on_a_state_change_and_per_scope() -> TestResult {
+    let Some(world) = World::new("series_on").await? else {
+        return Ok(());
+    };
+    let mut model: ModelDef = serde_json::from_value(json!({
+        "name": "order",
+        "fields": [
+            { "name": "company", "type": "string" },
+            { "name": "state", "type": "select", "default": "draft",
+              "options": [ { "value": "draft" }, { "value": "confirmed" } ] },
+            { "name": "number", "type": "string",
+              "sequence": { "pattern": "SO-{#####}", "scope": "company",
+                            "assign_on": { "field": "state", "values": ["confirmed"] } } }
+        ]
+    }))?;
+    sync_ids(&mut model);
+    world.apply(std::slice::from_ref(&model)).await?;
+    let ctx = world.ctx(std::slice::from_ref(&model));
+    let make = |company: &str| json!({ "model": "order", "data": { "company": company } });
+    let a1 = kernel_command(&ctx, "db::create", make("a")).await?;
+    let a2 = kernel_command(&ctx, "db::create", make("a")).await?;
+    let b1 = kernel_command(&ctx, "db::create", make("b")).await?;
+    // A draft has no number.
+    assert!(a1["data"]["number"].is_null(), "{a1:?}");
+    let confirm = |id: &Value| json!({ "model": "order", "id": id["data"]["id"], "data": { "state": "confirmed" } });
+    let second = kernel_command(&ctx, "db::update", confirm(&a2)).await?;
+    let first = kernel_command(&ctx, "db::update", confirm(&a1)).await?;
+    let other = kernel_command(&ctx, "db::update", confirm(&b1)).await?;
+    // Numbers follow confirmation, and each company counts for itself.
+    assert_eq!(second["data"]["number"], "SO-00001");
+    assert_eq!(first["data"]["number"], "SO-00002");
+    assert_eq!(other["data"]["number"], "SO-00001");
+    // Writing the state again keeps the number and takes no new one.
+    let again = kernel_command(&ctx, "db::update", confirm(&a2)).await?;
+    assert_eq!(again["data"]["number"], "SO-00001");
+    Ok(())
+}
+
 fn org_models() -> Vec<ModelDef> {
     let mut models: Vec<ModelDef> = serde_json::from_value(json!([
         { "name": "unit", "fields": [

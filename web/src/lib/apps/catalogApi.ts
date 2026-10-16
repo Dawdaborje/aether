@@ -230,12 +230,18 @@ export interface CatalogLoadResult {
 	staged?: string;
 }
 
-/** Re-read `plugin_paths` from aether.toml (or load `paths`) into the catalog. */
-export async function reloadCatalog(paths?: string[]): Promise<CatalogLoadResult> {
+/**
+ * Re-read `plugin_paths` from aether.toml (or load `paths`) into the catalog. With `apply`, every
+ * organization that has a changed plugin installed is also moved to the new revision.
+ */
+export async function reloadCatalog(
+	paths?: string[],
+	options: { apply?: boolean } = {}
+): Promise<CatalogLoadResult> {
 	const res = await apiFetch('/api/ui/catalog/reload', {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify(paths?.length ? { paths } : {})
+		body: JSON.stringify({ ...(paths?.length ? { paths } : {}), apply: options.apply === true })
 	});
 	if (!res.ok) throw await failure(res, 'Could not reload the catalog');
 	return (await res.json()) as CatalogLoadResult;

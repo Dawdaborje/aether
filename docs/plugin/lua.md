@@ -1,3 +1,10 @@
+---
+title: "Lua plugins"
+description: "A plugin can be one Lua script instead of a WebAssembly module. The language is Luau, the sandboxed Lua: familiar Lua syntax, with the file, package and code-loading parts removed."
+section: plugin
+status: stable
+order: 50
+---
 # Lua plugins
 
 A plugin can be one Lua script instead of a WebAssembly module. The language is

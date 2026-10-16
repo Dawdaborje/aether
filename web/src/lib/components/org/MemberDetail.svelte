@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { reportError } from '$lib/errors/report';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { Badge } from '$lib/components/ui/badge';
@@ -94,7 +95,7 @@
 				failed = 'That person is not a member of this organization.';
 			}
 		} catch (err) {
-			failed = err instanceof Error ? err.message : 'User could not be loaded.';
+			failed = reportError(err, 'User could not be loaded.');
 			member = null;
 		} finally {
 			loading = false;
@@ -115,7 +116,7 @@
 		try {
 			await action();
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'The action failed.';
+			error = reportError(err, 'The action failed.');
 		} finally {
 			working = false;
 		}
@@ -441,7 +442,7 @@
 						</div>
 					</section>
 
-					<section class="max-w-xl">
+					<section class="w-full">
 						<RoleGrantPicker
 							roles={availableToGrant}
 							disabled={working}

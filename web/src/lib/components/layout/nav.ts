@@ -76,7 +76,7 @@ export const deskNav: ThemeNav = {
 };
 
 /**
- * The top-level item the current page belongs to (an "app" in Odoo's terms): the item
+ * The top-level item the current page belongs to (an "app"): the item
  * itself, or the one holding the page among its children.
  */
 export function activeApp(nav: ThemeNav, pathname: string): NavItem | null {

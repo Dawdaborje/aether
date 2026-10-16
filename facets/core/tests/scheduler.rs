@@ -313,6 +313,8 @@ async fn queues_are_served_separately_and_cancelling_works() -> TestResult {
 fn task(name: &str, every: &str) -> TaskDef {
     TaskDef {
         name: name.into(),
+        title: None,
+        description: None,
         function: "run".into(),
         cron: None,
         every: Some(every.into()),

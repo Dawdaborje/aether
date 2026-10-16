@@ -25,12 +25,14 @@
 	} = $props();
 
 	let name = $state('');
+	/** The organization's own contact address (not the first user's). */
+	let orgEmail = $state('');
 	let identifier = $state('');
 	/** The identifier follows the name until the person edits it. */
 	let identifierEdited = $state(false);
 	let description = $state('');
 	let parent = $state('');
-	let mode = $state<'new' | 'existing'>('new');
+	let mode = $state<'none' | 'new' | 'existing'>('none');
 	let username = $state('');
 	let email = $state('');
 	let password = $state('');
@@ -42,9 +44,9 @@
 	// Start empty each time the dialog opens.
 	$effect(() => {
 		if (!open) return;
-		name = identifier = description = parent = username = email = password = login = '';
+		name = orgEmail = identifier = description = parent = username = email = password = login = '';
 		identifierEdited = false;
-		mode = 'new';
+		mode = 'none';
 		failed = null;
 		created = null;
 	});
@@ -55,9 +57,11 @@
 
 	const ready = $derived(
 		name.trim() !== '' &&
-			(mode === 'existing'
-				? login.trim() !== ''
-				: username.trim().length >= 3 && email.includes('@') && password.length >= 8)
+			/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(orgEmail.trim()) &&
+			(mode === 'none' ||
+				(mode === 'existing'
+					? login.trim() !== ''
+					: username.trim().length >= 3 && email.includes('@') && password.length >= 8))
 	);
 
 	async function submit(event: SubmitEvent) {
@@ -68,13 +72,16 @@
 		try {
 			created = await createOrganization({
 				name,
+				email: orgEmail,
 				identifier,
 				description,
 				parent: parent || undefined,
 				member:
-					mode === 'existing'
-						? { mode, login }
-						: { mode, username, email, password }
+					mode === 'none'
+						? null
+						: mode === 'existing'
+							? { mode, login }
+							: { mode, username, email, password }
 			});
 			await orgStore.load();
 			await onCreated?.();
@@ -100,7 +107,7 @@
 			<Dialog.Header>
 				<Dialog.Title>{created.organization.name} is ready</Dialog.Title>
 				<Dialog.Description>
-					Its database, files and first member are set up. Open it to add a logo and description, or
+					Its database and files are set up. Open it to add a logo and description, or
 					install apps from the desk.
 				</Dialog.Description>
 			</Dialog.Header>
@@ -124,7 +131,7 @@
 			<Dialog.Header>
 				<Dialog.Title>Create organization</Dialog.Title>
 				<Dialog.Description>
-					An organization has its own database and files, and starts with one member (the owner).
+					An organization has its own database and files. It can start with an owner, or empty.
 				</Dialog.Description>
 			</Dialog.Header>
 			<form class="space-y-5" onsubmit={submit}>
@@ -132,6 +139,20 @@
 					<div class="space-y-1.5">
 						<Label for="org-name">Name</Label>
 						<Input id="org-name" bind:value={name} placeholder="Acme Corporation" autocomplete="off" />
+					</div>
+					<div class="space-y-1.5">
+						<Label for="org-contact-email">Email</Label>
+						<Input
+							id="org-contact-email"
+							type="email"
+							bind:value={orgEmail}
+							placeholder="hello@acme.com"
+							autocomplete="off"
+							required
+						/>
+						<p class="text-xs text-muted-foreground">
+							The organization's contact address. It becomes the email of its default company.
+						</p>
 					</div>
 					<div class="space-y-1.5">
 						<Label for="org-identifier">Identifier</Label>
@@ -175,9 +196,9 @@
 				</div>
 
 				<fieldset class="space-y-3">
-					<legend class="text-sm font-semibold">First member (owner)</legend>
+					<legend class="text-sm font-semibold">First member (owner) · optional</legend>
 					<div class="inline-flex rounded-md border border-border p-0.5 text-sm">
-						{#each [['new', 'New user'], ['existing', 'Existing user']] as const as [value, label] (value)}
+						{#each [['none', 'No member yet'], ['new', 'New user'], ['existing', 'Existing user']] as const as [value, label] (value)}
 							<button
 								type="button"
 								onclick={() => (mode = value)}
@@ -188,7 +209,12 @@
 							</button>
 						{/each}
 					</div>
-					{#if mode === 'new'}
+					{#if mode === 'none'}
+						<p class="text-xs text-muted-foreground">
+							The organization is created empty, with no owner. Add members later from its
+							details page.
+						</p>
+					{:else if mode === 'new'}
 						<div class="grid gap-3 sm:grid-cols-2">
 							<div class="space-y-1.5">
 								<Label for="org-username">Username</Label>

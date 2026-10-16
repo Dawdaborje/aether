@@ -3,7 +3,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { goto } from '$app/navigation';
 	import { navHref } from '$lib/components/layout/nav';
-	import { getPageState, text } from '$lib/pages/pageContext.svelte';
+	import { getPageState, interpolate, text } from '$lib/pages/pageContext.svelte';
 
 	let { node }: { node: PageNode } = $props();
 
@@ -15,8 +15,11 @@
 				? node.variant
 				: 'default') as ButtonVariant
 	);
+	// `{id}` and other route values in an href are filled from the page's own (`/crm/deals/{id}/edit`).
 	const href = $derived(
-		typeof node.href === 'string' && node.href.trim() ? navHref(node.href.trim()) : null
+		typeof node.href === 'string' && node.href.trim()
+			? navHref(interpolate(node.href.trim(), { ...(page?.params ?? {}) }))
+			: null
 	);
 	const fn = $derived(text(node.function));
 	const label = $derived(String(node.label ?? node.name ?? 'Action'));

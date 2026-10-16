@@ -104,12 +104,16 @@ pub struct ModelSchema {
     pub sequences: Vec<SequenceField>,
     /// The rules every record must satisfy after a write.
     pub checks: Vec<ModelCheck>,
+    /// The `unique_when` rules: uniqueness among the records matching a filter.
+    pub uniques: Vec<ModelUnique>,
     /// The fields the kernel calculates, in the order they are filled.
     pub derived: Vec<DerivedField>,
     /// The model's child fields.
     pub children: Vec<ChildField>,
     /// Models whose totals count rows of this one.
     pub parents: Vec<ParentLink>,
+    /// Models that keep copies of this model's fields, to refill when those change.
+    pub dependents: Vec<CopyDependent>,
 }
 
 /// A `child` field: rows of another model that point back at this model's records.
@@ -165,11 +169,33 @@ pub struct SequenceField {
     pub column: String,
     pub pattern: Pattern,
     pub reset: super::definition::SequenceReset,
+    /// Column whose value gives each value its own counter.
+    pub scope_column: Option<String>,
+    /// `(column, values)`: the record is numbered when the column is set to one of the values.
+    pub trigger: Option<(String, Vec<String>)>,
 }
 
 /// One of the model's `checks`, parsed.
 #[derive(Debug, Clone)]
 pub struct ModelCheck {
+    pub filter: Filter,
+    pub message: String,
+}
+
+/// Another model's copies (`related`) of this model's fields, refilled when a source changes.
+#[derive(Debug, Clone)]
+pub struct CopyDependent {
+    pub table: String,
+    /// The dependent's column that links to this model's record.
+    pub link_column: String,
+    /// `(copy column in the dependent, source column here)`.
+    pub copies: Vec<(String, String)>,
+}
+
+/// One of the model's `unique_when` rules, parsed. `columns` are stored column ids.
+#[derive(Debug, Clone)]
+pub struct ModelUnique {
+    pub columns: Vec<String>,
     pub filter: Filter,
     pub message: String,
 }
@@ -281,11 +307,27 @@ impl ModelSchema {
                 None => None,
             };
             if let Some(sequence) = &field.sequence {
+                let id_of = |name: &str| {
+                    model
+                        .live_fields()
+                        .find(|f| f.name == name)
+                        .and_then(|f| f.id.clone())
+                };
+                let scope_column = match &sequence.scope {
+                    Some(name) => Some(id_of(name)?),
+                    None => None,
+                };
+                let trigger = match &sequence.assign_on {
+                    Some(t) => Some((id_of(&t.field)?, t.values.clone())),
+                    None => None,
+                };
                 sequences.push(SequenceField {
                     field: field.name.clone(),
                     column: field.id.clone()?,
                     pattern: Pattern::parse(&sequence.pattern).ok()?,
                     reset: sequence.reset,
+                    scope_column,
+                    trigger,
                 });
             }
             columns.push(Column {
@@ -372,6 +414,19 @@ impl ModelSchema {
                 message: check.message.clone(),
             });
         }
+        let mut uniques = Vec::new();
+        for rule in &model.unique_when {
+            let mut columns = Vec::new();
+            for name in &rule.fields {
+                let field = model.fields.iter().find(|f| &f.name == name && !f.deprecated)?;
+                columns.push(field.id.clone()?);
+            }
+            uniques.push(ModelUnique {
+                columns,
+                filter: Filter::parse(&rule.when).ok()?,
+                message: rule.message.clone(),
+            });
+        }
         Some(Self {
             name: model.name.clone(),
             table,
@@ -385,9 +440,11 @@ impl ModelSchema {
             links,
             sequences,
             checks,
+            uniques,
             derived,
             children,
             parents: Vec::new(),
+            dependents: Vec::new(),
         })
     }
 
@@ -437,6 +494,12 @@ impl ModelSchema {
     /// What the chatter panel needs to show a tracked change: for each tracked field id, its
     /// current name, label, type and (for a choice) the options. Looked up by id, so a field
     /// renamed after the change was recorded still reads correctly.
+    /// The model's field definitions in declaration order, for tools that describe a model
+    /// (the report source catalog).
+    pub fn fields(&self) -> impl Iterator<Item = &FieldDef> {
+        self.columns.iter().map(|column| &column.def)
+    }
+
     pub fn tracked_fields(&self) -> Vec<Value> {
         self.columns
             .iter()
@@ -691,6 +754,51 @@ pub fn schemas_of(models: &[ModelDef]) -> HashMap<String, std::sync::Arc<ModelSc
     for (rows_model, link) in parents {
         if let Some(rows) = schemas.iter_mut().find(|schema| schema.name == rows_model) {
             rows.parents.push(link);
+        }
+    }
+    // A model that is copied from must refill the copies when the source field changes.
+    for model in models {
+        let Some(table) = model.model_id.clone() else {
+            continue;
+        };
+        let mut by_link: Vec<(String, String, CopyDependent)> = Vec::new();
+        for field in model.live_fields() {
+            let Some(related) = &field.related else { continue };
+            let Some((link_name, source_name)) = related.split_once('.') else {
+                continue;
+            };
+            let Some(link) = model.live_fields().find(|f| f.name == link_name) else {
+                continue;
+            };
+            let Some(target_name) = link.target.clone() else { continue };
+            let Some(target) = models.iter().find(|m| m.name == target_name) else {
+                continue;
+            };
+            let Some(source) = target.live_fields().find(|f| f.name == source_name) else {
+                continue;
+            };
+            let (Some(link_id), Some(copy_id), Some(source_id)) =
+                (link.id.clone(), field.id.clone(), source.id.clone())
+            else {
+                continue;
+            };
+            match by_link.iter_mut().find(|(t, l, _)| *t == target_name && *l == link_id) {
+                Some((_, _, dep)) => dep.copies.push((copy_id, source_id)),
+                None => by_link.push((
+                    target_name,
+                    link_id.clone(),
+                    CopyDependent {
+                        table: table.clone(),
+                        link_column: link_id,
+                        copies: vec![(copy_id, source_id)],
+                    },
+                )),
+            }
+        }
+        for (target_name, _, dependent) in by_link {
+            if let Some(owner) = schemas.iter_mut().find(|s| s.name == target_name) {
+                owner.dependents.push(dependent);
+            }
         }
     }
     schemas
@@ -1323,6 +1431,8 @@ mod foreign_link_tests {
                     field.sequence = Some(crate::data_model::definition::SequenceDef {
                         pattern: "NO-NUMBER".into(),
                         reset: Default::default(),
+                        scope: None,
+                        assign_on: None,
                     })
                 }
                 _ => {}

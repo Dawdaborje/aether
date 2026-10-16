@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { reportError } from '$lib/errors/report';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
@@ -45,8 +46,7 @@
 			})
 			.catch((error) => {
 				if (cancelled) return;
-				resolveFailed =
-					error instanceof Error ? error.message : 'Could not resolve the user’s organization.';
+				resolveFailed = reportError(error, 'Could not resolve the user’s organization.');
 			});
 		return () => {
 			cancelled = true;

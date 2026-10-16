@@ -77,6 +77,7 @@ async fn context(
                     can_write: *write,
                     schema: None,
                     rules: None,
+                    direct: false,
                 },
             )
         })

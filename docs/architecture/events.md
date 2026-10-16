@@ -1,3 +1,10 @@
+---
+title: "Events between plugins"
+description: "A plugin announces something that happened (a chat message was posted, a lead was won, a payment cleared) and other plugins react, without the first knowing who they are."
+section: architecture
+status: stable
+order: 150
+---
 # Events between plugins
 
 A plugin announces something that happened (a chat message was posted, a lead was won, a payment

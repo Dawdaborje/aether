@@ -97,6 +97,29 @@ pub struct Action {
 #[async_trait]
 pub trait ActionBridge: Send + Sync {
     async fn call(&self, action: &str, params: &serde_json::Value) -> Result<serde_json::Value, SendError>;
+
+    /// Like [`ActionBridge::call`], handing `sink` each piece of text as the provider produces it (a language
+    /// model's answer, word by word), and still answering the whole result at the end. A bridge that cannot
+    /// stream an action answers it whole, and `sink` is never called.
+    async fn stream(
+        &self,
+        action: &str,
+        params: &serde_json::Value,
+        _sink: &dyn TextSink,
+    ) -> Result<serde_json::Value, SendError> {
+        self.call(action, params).await
+    }
+}
+
+/// Where a streamed answer's text goes, piece by piece. Any `Fn(&str)` is one.
+pub trait TextSink: Send + Sync {
+    fn emit(&self, piece: &str);
+}
+
+impl<F: Fn(&str) + Send + Sync> TextSink for F {
+    fn emit(&self, piece: &str) {
+        self(piece);
+    }
 }
 
 /// A bridge cannot be built from the settings it was given.

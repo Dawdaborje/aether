@@ -1367,6 +1367,81 @@ pub async fn db_create(
     .await
 }
 
+/// Create the record, or update the one that has these `key` values. Payload:
+/// `{ "model", "key": { field: value, … }, "data": { … } }`. The key fields are written on create
+/// (and never changed on update). The write is an ordinary `db::create` or `db::update`, so rules,
+/// checks, audit and chatter all apply; two callers racing to create the same key are stopped by
+/// a unique index (or `unique_when`) on it, as for any create. More than one record with the key
+/// is refused rather than guessed. The reply is the write's, with `created: true | false`.
+pub async fn db_upsert(
+    ctx: &PluginHostContext,
+    payload: &JsonValue,
+) -> Result<JsonValue, HostError> {
+    ctx.require_cap("db::mutate")?;
+    ctx.require_cap("db::query")?;
+    let model = payload
+        .get("model")
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| HostError::InvalidPayload("`model` is required".into()))?;
+    let key = payload
+        .get("key")
+        .and_then(JsonValue::as_object)
+        .filter(|k| !k.is_empty() && k.len() <= 8)
+        .ok_or_else(|| HostError::InvalidPayload("`key` is 1 to 8 fields".into()))?;
+    let data = match payload.get("data") {
+        Some(JsonValue::Object(map)) => map.clone(),
+        None | Some(JsonValue::Null) => Map::new(),
+        _ => return Err(HostError::InvalidPayload("`data` must be an object".into())),
+    };
+    let found = find_records(
+        ctx,
+        &serde_json::json!({ "model": model, "filter": key, "limit": 2 }),
+    )
+    .await?;
+    let rows = found
+        .get("data")
+        .and_then(JsonValue::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut reply = match rows.as_slice() {
+        [] => {
+            let mut full = data;
+            for (name, value) in key {
+                full.insert(name.clone(), value.clone());
+            }
+            let mut reply =
+                db_create(ctx, &serde_json::json!({ "model": model, "data": full })).await?;
+            reply["created"] = JsonValue::Bool(true);
+            reply
+        }
+        [row] => {
+            let id = record_id_of(row)
+                .ok_or_else(|| HostError::InvalidPayload("the record has no id".into()))?
+                .to_string();
+            let mut changes = data;
+            for name in key.keys() {
+                changes.remove(name);
+            }
+            let mut reply = if changes.is_empty() {
+                serde_json::json!({ "ok": true, "data": row })
+            } else {
+                db_update(ctx, &serde_json::json!({ "model": model, "id": id, "data": changes })).await?
+            };
+            reply["created"] = JsonValue::Bool(false);
+            reply
+        }
+        _ => {
+            return Err(HostError::InvalidPayload(format!(
+                "more than one `{model}` record has that key; it is not unique"
+            )))
+        }
+    };
+    if reply.get("ok").is_none() {
+        reply["ok"] = JsonValue::Bool(true);
+    }
+    Ok(reply)
+}
+
 async fn plan_create<'a>(
     ctx: &'a PluginHostContext,
     payload: &JsonValue,
@@ -1533,7 +1608,16 @@ pub(super) async fn plan_update_with<'a>(
             if !options.skip_parent_refresh {
                 super::integrity::refresh_parents(schema, &mut extra)?;
             }
-            let mut assignments = Vec::new();
+            if !schema.dependents.is_empty() {
+                let touched: Vec<&str> = set
+                    .iter()
+                    .map(|(column, _)| column.as_str())
+                    .chain(clear.iter().map(|c| c.as_str()))
+                    .collect();
+                super::integrity::propagate_copies(schema, &touched, &mut extra)?;
+            }
+            let mut assignments =
+                super::integrity::assign_on_update(schema, &set, &mut binds, &mut extra)?;
             for (index, (column, value)) in set.into_iter().enumerate() {
                 validate_field_name(&column)?;
                 assignments.push(format!("{column} = $d{index}"));

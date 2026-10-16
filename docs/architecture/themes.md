@@ -1,3 +1,10 @@
+---
+title: "Themes, layouts and navigation"
+description: "What the web app looks like, and how it is laid out, is decided per organization by the theme plugin installed there. Nothing about it is hard-coded in the app."
+section: architecture
+status: stable
+order: 420
+---
 # Themes, layouts and navigation
 
 What the web app looks like, and how it is laid out, is decided per

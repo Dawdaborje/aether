@@ -1,3 +1,10 @@
+---
+title: "Deduplication: finding records that are the same thing"
+description: "A plugin declares that some of its models can have duplicates (a party, an employee, a lead) and which fields say so."
+section: architecture
+status: proposal
+order: 140
+---
 # Deduplication: finding records that are the same thing (proposal)
 
 **Status: proposal, nothing built.** Every choice below is marked *Decide* in the last section so we can

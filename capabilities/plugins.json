@@ -6,7 +6,7 @@
     {
       "code": "call",
       "name": "Call Plugin",
-      "description": "Invoke an exported handler on another installed plugin. Maps to kernel command plugins::call."
+      "description": "Invoke an exported handler on another installed plugin. Maps to kernel command plugins::call; the same capability allows plugins::available (is an optional dependency installed here)."
     }
   ]
 }

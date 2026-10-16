@@ -35,6 +35,17 @@ pub fn all() -> [(&'static Spec, &'static [Action]); 2] {
     ]
 }
 
+/// Bridges only the kernel's own commands call (`ocr::parse`, `ai::complete` and the like). They are not in
+/// [`all`], so no plugin can name them in `bridges` or reach them with `bridge::call`.
+pub fn internal() -> [(&'static Spec, &'static [Action]); 4] {
+    [
+        (&liteparse::SPEC, liteparse::ACTIONS),
+        (&ollama::SPEC, ollama::ACTIONS),
+        (&openai_compatible::SPEC, openai_compatible::ACTIONS),
+        (&anthropic::SPEC, anthropic::ACTIONS),
+    ]
+}
+
 pub fn find(key: &str) -> Option<(&'static Spec, &'static [Action])> {
     all().into_iter().find(|(spec, _)| spec.key == key)
 }
@@ -63,6 +74,58 @@ fn build(key: &str, values: &Values) -> Result<Box<dyn ActionBridge>, SendError>
             )));
         }
     })
+}
+
+/// Build an internal bridge for an organization, checking it offers `action`.
+async fn internal_bridge(state: &AppState, org_db: &str, key: &str, action: &str) -> Result<Box<dyn ActionBridge>, SendError> {
+    let (spec, actions) = internal()
+        .into_iter()
+        .find(|(spec, _)| spec.key == key)
+        .ok_or_else(|| SendError::permanent(format!("`{key}` is not an engine the kernel knows")))?;
+    if !actions.iter().any(|offered| offered.name == action) {
+        return Err(SendError::permanent(format!("`{key}` has no action `{action}`")));
+    }
+    let org = OrgRef { slug: org_db.to_string(), db_name: org_db.to_string() };
+    let values = crate::messaging::resolve_values(state, &org, spec).await?;
+    Ok(match key {
+        "liteparse" => Box::new(liteparse::LiteParse::new(&values).map_err(config)?),
+        "ollama" => Box::new(ollama::Ollama::new(&values).map_err(config)?),
+        "openai_compatible" => Box::new(openai_compatible::OpenAiCompatible::new(&values).map_err(config)?),
+        "anthropic" => Box::new(anthropic::Anthropic::new(&values).map_err(config)?),
+        other => return Err(SendError::permanent(format!("`{other}` cannot be built"))),
+    })
+}
+
+/// Call `action` of an internal bridge. Same settings rules and time limit as [`call`].
+pub async fn call_internal(
+    state: &AppState,
+    org_db: &str,
+    key: &str,
+    action: &str,
+    params: &Value,
+) -> Result<Value, SendError> {
+    let bridge = internal_bridge(state, org_db, key, action).await?;
+    // The engine keeps its own, shorter, limit; this one only stops a stuck call.
+    match tokio::time::timeout(Duration::from_secs(660), bridge.call(action, params)).await {
+        Ok(answer) => answer,
+        Err(_) => Err(SendError::transient(format!("`{key}` did not answer in time"))),
+    }
+}
+
+/// Like [`call_internal`], handing `sink` each piece of text as the provider produces it.
+pub async fn call_internal_stream(
+    state: &AppState,
+    org_db: &str,
+    key: &str,
+    action: &str,
+    params: &Value,
+    sink: &dyn aether_communication::TextSink,
+) -> Result<Value, SendError> {
+    let bridge = internal_bridge(state, org_db, key, action).await?;
+    match tokio::time::timeout(Duration::from_secs(660), bridge.stream(action, params, sink)).await {
+        Ok(answer) => answer,
+        Err(_) => Err(SendError::transient(format!("`{key}` did not answer in time"))),
+    }
 }
 
 /// Call `action` of bridge `key` for the organization `org_db`.
@@ -119,6 +182,16 @@ impl BridgeHandle for AppBridges {
     ) -> Result<Value, SendError> {
         call(&self.state, org, bridge, action, &params).await
     }
+
+    async fn call_internal(
+        &self,
+        org: &str,
+        bridge: &str,
+        action: &str,
+        params: Value,
+    ) -> Result<Value, SendError> {
+        call_internal(&self.state, org, bridge, action, &params).await
+    }
 }
 
 #[cfg(test)]
@@ -154,6 +227,18 @@ mod tests {
     }
 
     #[test]
+    fn engines_are_internal_and_never_listed_for_plugins() {
+        for (spec, actions) in internal() {
+            assert!(find(spec.key).is_none(), "{} must not be callable by a plugin", spec.key);
+            assert!(!actions.is_empty());
+            for field in spec.fields() {
+                let looks_secret = ["key", "token", "password"].iter().any(|w| field.name.contains(w));
+                assert_eq!(field.secret, looks_secret, "{}.{}", spec.key, field.name);
+            }
+        }
+    }
+
+    #[test]
     fn the_seeded_settings_match_what_each_bridge_asks_for() {
         let seed: Value =
             serde_json::from_str(include_str!("../../../seeds/settings/bridges.json"))
@@ -174,7 +259,7 @@ mod tests {
             !keys.is_empty(),
             "seeds/settings/bridges.json is missing or empty"
         );
-        for (spec, _) in all() {
+        for (spec, _) in all().into_iter().chain(internal()) {
             for field in spec.fields() {
                 let key = crate::messaging::bridge_setting(spec.key, field.name);
                 let (secret, default) = keys

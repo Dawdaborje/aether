@@ -1,3 +1,10 @@
+---
+title: "Communication: email, SMS and other messages"
+description: "A plugin sends any message with one command, communication::send. It says what type of message it is and what is in it."
+section: architecture
+status: stable
+order: 110
+---
 # Communication: email, SMS and other messages
 
 A plugin sends any message with **one command**, `communication::send`. It says what *type* of

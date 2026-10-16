@@ -472,8 +472,38 @@ async fn save_edit(
         )
         .await;
         applied.push(match result {
-            Ok(_) => {
+            Ok(report) => {
                 crate::plugin_manager::installed::invalidate(&state.cache, organization);
+                for (name, from, to) in &report.upgraded {
+                    crate::plugin_activity::record(
+                        &state,
+                        crate::plugin_activity::Entry {
+                            kind: crate::plugin_activity::kind::UPGRADE,
+                            plugin: name.clone(),
+                            from_version: Some(from.clone()),
+                            to_version: Some(to.clone()),
+                            organization: Some(organization.clone()),
+                            actor: crate::plugin_activity::Actor::from_headers(&state, &headers).await,
+                            source: "desk:model_edit".into(),
+                            ok: true,
+                            error: None,
+                            detail: serde_json::Value::Null,
+                        },
+                    )
+                    .await;
+                }
+                // Seeds are idempotent master data; an upgrade runs them like every other upgrade path.
+                if let Err(error) = crate::plugin_manager::commands::run_lifecycle(
+                    &state,
+                    organization,
+                    std::slice::from_ref(&plugin),
+                    crate::plugin_manager::commands::LifecyclePhase::Upgrade,
+                    "system:model-edit",
+                )
+                .await
+                {
+                    log::warn!("upgrade seeds of `{plugin}` in `{organization}` failed: {error}");
+                }
                 json!({ "organization": organization, "ok": true })
             }
             Err(error) => {

@@ -1062,6 +1062,7 @@ mod tests {
             watches: None,
             event_listeners: None,
             roles: None,
+            ai_tools: None,
             workspace: None,
             kind: None,
             artifact_path: Some(format!("plugins/{name}/{version}/plugin.wasm")),

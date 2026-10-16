@@ -32,6 +32,9 @@ pub enum OrganizationError {
     #[error("organization name cannot be empty")]
     EmptyOrganizationName,
 
+    #[error("enter the organization's email address")]
+    InvalidOrganizationEmail,
+
     #[error("user username, email, and password are required")]
     MissingUserCredentials,
 
@@ -132,17 +135,36 @@ pub enum FirstMember<'a> {
     },
     /// A user that already exists, found by username or email.
     Existing { login: &'a str },
+    /// No member yet: the organization is created empty, with no owner.
+    None,
 }
 
 /// What to create for a new organization.
 pub struct OrganizationRequest<'a> {
     pub name: &'a str,
+    /// The organization's contact address (required): it becomes the email of its default company.
+    pub email: &'a str,
     /// Database name; defaults to a slug of `name`.
     pub db_name: Option<&'a str>,
     pub member: FirstMember<'a>,
     pub description: Option<&'a str>,
     /// Parent organization's database name, if any.
     pub parent_db_name: Option<&'a str>,
+}
+
+/// A plausible address: one `@`, text on both sides, no spaces. Delivery is not checked.
+fn is_valid_email(value: &str) -> bool {
+    let value = value.trim();
+    match value.split_once('@') {
+        Some((local, domain)) => {
+            !local.is_empty()
+                && domain.contains('.')
+                && !domain.starts_with('.')
+                && !domain.ends_with('.')
+                && !value.chars().any(char::is_whitespace)
+        }
+        None => false,
+    }
 }
 
 /// Database names that belong to the kernel and cannot be an organization's.
@@ -159,6 +181,7 @@ pub async fn create_organization(
 ) -> Result<(String, OrgStorage), OrganizationError> {
     let OrganizationRequest {
         name: organization_name,
+        email: organization_email,
         db_name: organization_db_name,
         member,
         description,
@@ -166,6 +189,9 @@ pub async fn create_organization(
     } = *request;
     if organization_name.trim().is_empty() {
         return Err(OrganizationError::EmptyOrganizationName);
+    }
+    if !is_valid_email(organization_email) {
+        return Err(OrganizationError::InvalidOrganizationEmail);
     }
     if let FirstMember::User {
         username,
@@ -213,7 +239,7 @@ pub async fn create_organization(
                 .await?
                 .ok_or_else(|| OrganizationError::UserNotFound(login.to_string()))?,
         ),
-        FirstMember::User { .. } => None,
+        FirstMember::User { .. } | FirstMember::None => None,
     };
 
     let org_storage =
@@ -227,8 +253,9 @@ pub async fn create_organization(
     db.use_ns(namespace).await?;
     db.use_db("core").await?;
 
-    let (user_id, username) = match (member, existing_member) {
-        (FirstMember::Existing { login }, Some(user_id)) => (user_id, login),
+    let first: Option<(String, &str)> = match (member, existing_member) {
+        (FirstMember::None, _) => None,
+        (FirstMember::Existing { login }, Some(user_id)) => Some((user_id, login)),
         (
             FirstMember::User {
                 username,
@@ -264,7 +291,7 @@ pub async fn create_organization(
                         .await?
                         .ok_or(OrganizationError::UserCreationReturnedNoId)?
                 };
-            (id, username)
+            Some((id, username))
         }
         (FirstMember::Existing { login }, None) => {
             return Err(OrganizationError::UserNotFound(login.to_string()));
@@ -277,26 +304,29 @@ pub async fn create_organization(
         .content(NewOrganization {
             name: organization_name.to_string(),
             db_name: db_name.clone(),
-            owner_user_id: user_id.clone(),
+            owner_user_id: first.as_ref().map(|(id, _)| id.clone()),
             description: description.clone(),
             parent_db_name: parent.clone(),
+            email: Some(organization_email.trim().to_string()),
             date_created: now.clone(),
             date_updated: now.clone(),
         })
         .await?;
-    let _: Option<OrganizationUser> = db
-        .upsert::<Option<OrganizationUser>>((
-            "organization_users",
-            format!("{}_{}", db_name, slugify(&user_id)),
-        ))
-        .content(OrganizationUser {
-            organization_id: format!("organizations:{db_name}"),
-            user_id: user_id.clone(),
-            date_created: now.clone(),
-            deleted_at: None,
-            deleted_by: None,
-        })
-        .await?;
+    if let Some((user_id, _)) = &first {
+        let _: Option<OrganizationUser> = db
+            .upsert::<Option<OrganizationUser>>((
+                "organization_users",
+                format!("{}_{}", db_name, slugify(&user_id)),
+            ))
+            .content(OrganizationUser {
+                organization_id: format!("organizations:{db_name}"),
+                user_id: user_id.clone(),
+                date_created: now.clone(),
+                deleted_at: None,
+                deleted_by: None,
+            })
+            .await?;
+    }
     let _: Option<aether_orm::models::core::OrgDatabase> = db
         .upsert::<Option<aether_orm::models::core::OrgDatabase>>(("org_databases", db_name.clone()))
         .content(NewOrgDatabase {
@@ -318,26 +348,27 @@ pub async fn create_organization(
             date_updated: now.clone(),
         })
         .await?;
-    let user_id_for_role = user_id.clone();
-    let _: Option<OrgUser> = db
-        .create::<Option<OrgUser>>(("org_users", slugify(&user_id)))
-        .content(OrgUser {
-            core_user_id: user_id,
-            display_name: Some(username.to_string()),
-            is_active: true,
-            date_created: now.clone(),
-            date_updated: now,
-            deleted_at: None,
-            deleted_by: None,
-        })
-        .await?;
-    // First member owns the organization and is its administrator.
-    crate::roles::ensure_system_roles(db)
-        .await
-        .map_err(|error| OrganizationError::Role(error.to_string()))?;
-    crate::roles::grant_by_id(db, &user_id_for_role, crate::roles::ORG_ADMIN)
-        .await
-        .map_err(|error| OrganizationError::Role(error.to_string()))?;
+    // The first member, when there is one, owns the organization and is its administrator.
+    if let Some((user_id, username)) = first {
+        let _: Option<OrgUser> = db
+            .create::<Option<OrgUser>>(("org_users", slugify(&user_id)))
+            .content(OrgUser {
+                core_user_id: user_id.clone(),
+                display_name: Some(username.to_string()),
+                is_active: true,
+                date_created: now.clone(),
+                date_updated: now,
+                deleted_at: None,
+                deleted_by: None,
+            })
+            .await?;
+        crate::roles::ensure_system_roles(db)
+            .await
+            .map_err(|error| OrganizationError::Role(error.to_string()))?;
+        crate::roles::grant_by_id(db, &user_id, crate::roles::ORG_ADMIN)
+            .await
+            .map_err(|error| OrganizationError::Role(error.to_string()))?;
+    }
 
     Ok((db_name, org_storage))
 }
@@ -733,6 +764,8 @@ pub struct OrganizationProfile {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_db_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_name: Option<String>,
@@ -752,6 +785,8 @@ struct OrgProfileRow {
     name: String,
     db_name: String,
     description: Option<String>,
+    #[serde(default)]
+    email: Option<String>,
     parent_db_name: Option<String>,
     logo_file: Option<String>,
     owner_user_id: Option<String>,
@@ -814,6 +849,8 @@ pub struct OwnershipTransferRow {
 /// Fields a developer may change on an organization's profile.
 pub struct OrganizationUpdate<'a> {
     pub name: Option<&'a str>,
+    /// Replaces the organization's email; it cannot be cleared.
+    pub email: Option<&'a str>,
     pub description: Option<Option<&'a str>>,
     pub parent_db_name: Option<Option<&'a str>>,
 }
@@ -876,6 +913,7 @@ async fn profile_from_row(
         db_name: row.db_name,
         name: row.name,
         description: row.description,
+        email: row.email,
         parent_db_name: row.parent_db_name,
         parent_name,
         owner_user_id: row.owner_user_id,
@@ -895,7 +933,7 @@ pub async fn list_profiles(
     db.use_db("core").await?;
     let mut response = db
         .query(
-            "SELECT name, db_name, description, parent_db_name, logo_file, owner_user_id, \
+            "SELECT name, db_name, description, email, parent_db_name, logo_file, owner_user_id, \
              date_created, date_updated FROM organizations ORDER BY name;",
         )
         .await?
@@ -918,7 +956,7 @@ pub async fn get_profile(
     db.use_db("core").await?;
     let mut response = db
         .query(
-            "SELECT name, db_name, description, parent_db_name, logo_file, owner_user_id, \
+            "SELECT name, db_name, description, email, parent_db_name, logo_file, owner_user_id, \
              date_created, date_updated FROM organizations WHERE db_name = $org LIMIT 1;",
         )
         .bind(("org", db_name.to_string()))
@@ -952,6 +990,18 @@ pub async fn update_profile(
             "UPDATE organizations SET name = $name, date_updated = time::now() WHERE db_name = $org;",
         )
         .bind(("name", name.to_string()))
+        .bind(("org", db_name.to_string()))
+        .await?
+        .check()?;
+    }
+    if let Some(email) = update.email {
+        if !is_valid_email(email) {
+            return Err(OrganizationError::InvalidOrganizationEmail);
+        }
+        db.query(
+            "UPDATE organizations SET email = $email, date_updated = time::now() WHERE db_name = $org;",
+        )
+        .bind(("email", email.trim().to_string()))
         .bind(("org", db_name.to_string()))
         .await?
         .check()?;

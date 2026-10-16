@@ -277,6 +277,15 @@ fn register_commands(engine: &mut Engine, host: &Arc<Host>) {
         h.data("db::search", payload)
     });
     let h = host.clone();
+    db.set_native_fn("upsert", move |model: &str, key: Map, data: Map| {
+        let key = to_json(&Dynamic::from_map(key))?;
+        let data = to_json(&Dynamic::from_map(data))?;
+        h.data(
+            "db::upsert",
+            serde_json::json!({ "model": model, "key": key, "data": data }),
+        )
+    });
+    let h = host.clone();
     db.set_native_fn("create", move |model: &str, data: Map| {
         let data = to_json(&Dynamic::from_map(data))?;
         h.data(
@@ -334,6 +343,50 @@ fn register_commands(engine: &mut Engine, host: &Arc<Host>) {
         h.data("report::export", to_json(&Dynamic::from_map(table))?)
     });
     engine.register_static_module("report", report.into());
+
+    let mut ocr = Module::new();
+    let h = host.clone();
+    ocr.set_native_fn("parse", move |request: Map| {
+        h.data("ocr::parse", to_json(&Dynamic::from_map(request))?)
+    });
+    let h = host.clone();
+    ocr.set_native_fn("submit", move |request: Map| {
+        h.data("ocr::submit", to_json(&Dynamic::from_map(request))?)
+    });
+    let h = host.clone();
+    ocr.set_native_fn("result", move |request: Map| {
+        h.data("ocr::result", to_json(&Dynamic::from_map(request))?)
+    });
+    let h = host.clone();
+    ocr.set_native_fn("status", move || h.data("ocr::status", serde_json::json!({})));
+    engine.register_static_module("ocr", ocr.into());
+
+    let mut ai = Module::new();
+    let h = host.clone();
+    ai.set_native_fn("complete", move |request: Map| {
+        h.data("ai::complete", to_json(&Dynamic::from_map(request))?)
+    });
+    let h = host.clone();
+    ai.set_native_fn("embed", move |request: Map| {
+        h.data("ai::embed", to_json(&Dynamic::from_map(request))?)
+    });
+    for name in ["index", "search", "forget"] {
+        let h = host.clone();
+        ai.set_native_fn(name, move |request: Map| {
+            h.data(match name { "index" => "ai::index", "search" => "ai::search", _ => "ai::forget" }, to_json(&Dynamic::from_map(request))?)
+        });
+    }
+    let h = host.clone();
+    ai.set_native_fn("submit", move |request: Map| {
+        h.data("ai::submit", to_json(&Dynamic::from_map(request))?)
+    });
+    let h = host.clone();
+    ai.set_native_fn("result", move |request: Map| {
+        h.data("ai::result", to_json(&Dynamic::from_map(request))?)
+    });
+    let h = host.clone();
+    ai.set_native_fn("status", move || h.data("ai::status", serde_json::json!({})));
+    engine.register_static_module("ai", ai.into());
 
     let mut cache = Module::new();
     let h = host.clone();
@@ -495,6 +548,10 @@ fn register_commands(engine: &mut Engine, host: &Arc<Host>) {
             "plugins::call",
             serde_json::json!({ "plugin": plugin, "function": function }),
         )
+    });
+    let h = host.clone();
+    plugins.set_native_fn("available", move |plugin: &str| {
+        h.data("plugins::available", serde_json::json!({ "plugin": plugin }))
     });
     engine.register_static_module("plugins", plugins.into());
 
@@ -722,6 +779,11 @@ fn register_commands(engine: &mut Engine, host: &Arc<Host>) {
     let h = host.clone();
     context.set_native_fn("get", move || h.data("context::get", Value::Null));
     engine.register_static_module("context", context.into());
+
+    let mut organization = Module::new();
+    let h = host.clone();
+    organization.set_native_fn("get", move || h.data("organization::get", Value::Null));
+    engine.register_static_module("organization", organization.into());
 }
 
 #[cfg(test)]

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { reportError } from '$lib/errors/report';
 	import { onMount } from 'svelte';
 	import ClockIcon from '@lucide/svelte/icons/clock';
 	import SearchIcon from '@lucide/svelte/icons/search';
@@ -26,13 +27,15 @@
 	let detailOpen = $state(false);
 	let rowWorking = $state<string | null>(null);
 	let rowError = $state<string | null>(null);
+	let selectedKeys = $state<Set<string>>(new Set());
+	let bulkWorking = $state(false);
 
 	async function load() {
 		failed = null;
 		try {
 			tasks = await fetchScheduleTasks(db);
 		} catch (error) {
-			failed = error instanceof Error ? error.message : 'Schedules could not be loaded.';
+			failed = reportError(error, 'Schedules could not be loaded.');
 			tasks = [];
 		}
 	}
@@ -44,7 +47,7 @@
 		return (tasks ?? []).filter((task) => {
 			if (sourceFilter !== 'all' && task.source !== sourceFilter) return false;
 			if (!q) return true;
-			return `${task.plugin} ${task.name} ${task.function} ${task.cron ?? ''} ${task.queue}`
+			return `${task.plugin} ${task.name} ${task.title ?? ''} ${task.description ?? ''} ${task.function} ${task.cron ?? ''} ${task.queue}`
 				.toLowerCase()
 				.includes(q);
 		});
@@ -55,6 +58,34 @@
 
 	function scheduleKey(task: ScheduleTask): string {
 		return `${task.plugin}:${task.name}`;
+	}
+
+	const selectedTasks = $derived((tasks ?? []).filter((task) => selectedKeys.has(scheduleKey(task))));
+	const allFilteredSelected = $derived(
+		filtered.length > 0 && filtered.every((task) => selectedKeys.has(scheduleKey(task)))
+	);
+
+	function selectAllFiltered() {
+		selectedKeys = new Set([...selectedKeys, ...filtered.map(scheduleKey)]);
+	}
+
+	async function bulk(
+		action: (db: string, plugin: string, name: string) => Promise<unknown>,
+		fallback: string
+	) {
+		bulkWorking = true;
+		rowError = null;
+		const failures: string[] = [];
+		for (const task of selectedTasks) {
+			try {
+				await action(db, task.plugin, task.name);
+			} catch (error) {
+				failures.push(`${task.plugin}.${task.name}: ${error instanceof Error ? error.message : fallback}`);
+			}
+		}
+		if (failures.length) rowError = failures.join('\n');
+		await load();
+		bulkWorking = false;
 	}
 
 	function openTask(task: ScheduleTask) {
@@ -78,7 +109,7 @@
 			await stopSchedule(db, task.plugin, task.name);
 			await load();
 		} catch (error) {
-			rowError = error instanceof Error ? error.message : 'Could not stop the schedule.';
+			reportError(error, 'Could not stop the schedule.');
 		} finally {
 			rowWorking = null;
 		}
@@ -92,7 +123,7 @@
 			await restartSchedule(db, task.plugin, task.name);
 			await load();
 		} catch (error) {
-			rowError = error instanceof Error ? error.message : 'Could not restart the schedule.';
+			reportError(error, 'Could not restart the schedule.');
 		} finally {
 			rowWorking = null;
 		}
@@ -106,7 +137,7 @@
 			await runScheduleNow(db, task.plugin, task.name);
 			await load();
 		} catch (error) {
-			rowError = error instanceof Error ? error.message : 'Could not run the schedule.';
+			reportError(error, 'Could not run the schedule.');
 		} finally {
 			rowWorking = null;
 		}
@@ -135,7 +166,36 @@
 	</div>
 
 	{#if rowError}
-		<p class="text-sm text-destructive" role="alert">{rowError}</p>
+		<p class="text-sm whitespace-pre-line text-destructive" role="alert">{rowError}</p>
+	{/if}
+
+	{#if tasks && tasks.length > 0}
+		<div
+			class="flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm"
+			role="status"
+		>
+			<span class="text-muted-foreground">
+				{selectedKeys.size} selected{filtered.length !== tasks.length
+					? ` · ${filtered.length} match the filter`
+					: ''}
+			</span>
+			<Button
+				size="sm"
+				variant="outline"
+				disabled={allFilteredSelected || filtered.length === 0}
+				onclick={selectAllFiltered}
+			>
+				Select all {filtered.length}
+			</Button>
+			{#if selectedKeys.size > 0}
+				<Button size="sm" variant="ghost" onclick={() => (selectedKeys = new Set())}>Clear</Button>
+				<div class="ml-auto flex flex-wrap gap-2">
+					<Button size="sm" variant="outline" disabled={bulkWorking} onclick={() => bulk(stopSchedule, 'Could not stop.')}>Stop</Button>
+					<Button size="sm" variant="outline" disabled={bulkWorking} onclick={() => bulk(restartSchedule, 'Could not restart.')}>Restart</Button>
+					<Button size="sm" disabled={bulkWorking} onclick={() => bulk(runScheduleNow, 'Could not run.')}>Run now</Button>
+				</div>
+			{/if}
+		</div>
 	{/if}
 
 	{#if tasks === null}
@@ -162,6 +222,8 @@
 				rows={cronTasks}
 				emptyLabel="No cron schedules match."
 				{rowWorking}
+				{selectedKeys}
+				onSelect={(keys) => (selectedKeys = keys)}
 				onOpen={openTask}
 				{onStop}
 				{onRestart}
@@ -176,6 +238,8 @@
 				rows={intervalTasks}
 				emptyLabel="No interval schedules match."
 				{rowWorking}
+				{selectedKeys}
+				onSelect={(keys) => (selectedKeys = keys)}
 				onOpen={openTask}
 				{onStop}
 				{onRestart}

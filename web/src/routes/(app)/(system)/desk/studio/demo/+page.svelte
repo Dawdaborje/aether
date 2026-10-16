@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { reportError } from '$lib/errors/report';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { onMount } from 'svelte';
@@ -69,7 +70,7 @@
 				selectedPlugin = list[0]?.name ?? null;
 			} catch (error) {
 				if (cancelled) return;
-				loadError = error instanceof Error ? error.message : 'Could not load demo catalog';
+				loadError = reportError(error, 'Could not load demo catalog');
 				plugins = [];
 			}
 		})();
@@ -125,7 +126,7 @@
 				count: n
 			});
 		} catch (error) {
-			runError = error instanceof Error ? error.message : 'Generation failed';
+			reportError(error, 'Generation failed');
 		} finally {
 			running = false;
 		}

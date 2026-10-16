@@ -1,13 +1,19 @@
+---
+title: "Record and field rules"
+description: "Who may see and change which records and fields is data a plugin ships, in rules/<model>.json (one file per model, loaded and checked with the plugin like models/)."
+section: architecture
+status: stable
+order: 370
+---
 # Record and field rules
 
 Who may see and change which records and fields is data a plugin ships, in `rules/<model>.json`
 (one file per model, loaded and checked with the plugin like `models/`). The kernel applies it to
 every database command, so a plugin cannot forget a check and a refused write changes nothing.
 
-Designed after Odoo 19's merged `ir.access` (permissions OR, restrictions AND, state-dependent
-domains) and Frappe's permlevel and approver sharing, with one definition serving both lists
-(a filter) and single records (a check in the write's own transaction). ERPNext keeps those two as
-separate functions per rule and has to keep them in sync.
+Permissions combine with OR and restrictions with AND, and a rule can depend on a record's state.
+One definition serves both lists (a filter) and single records (a check in the write's own
+transaction), so the two never drift apart.
 
 ```json
 {

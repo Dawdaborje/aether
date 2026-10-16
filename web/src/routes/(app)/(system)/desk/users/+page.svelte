@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { reportError } from '$lib/errors/report';
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
@@ -15,13 +16,42 @@
 	import DataTableBadgeCell from '$lib/components/ui/data-table/data-table-badge-cell.svelte';
 	import { Empty } from '$lib/components/ui/empty';
 	import UsersIcon from '@lucide/svelte/icons/users';
-	import { fetchPlatformUsers, type PlatformUser } from '$lib/org/api';
+	import { createPlatformUser, fetchPlatformUsers, type PlatformUser } from '$lib/org/api';
 	import UsersOrgsCell from './UsersOrgsCell.svelte';
 
 	let users = $state<PlatformUser[] | null>(null);
 	let failed = $state<string | null>(null);
 	let query = $state('');
 	let rowSelection = $state<RowSelectionState>({});
+
+	let creating = $state(false);
+	let saving = $state(false);
+	let formError = $state<string | null>(null);
+	let newUsername = $state('');
+	let newEmail = $state('');
+	let newPassword = $state('');
+
+	async function submitNewUser(event: SubmitEvent) {
+		event.preventDefault();
+		formError = null;
+		saving = true;
+		try {
+			users = await createPlatformUser({
+				username: newUsername.trim(),
+				email: newEmail.trim(),
+				password: newPassword
+			});
+			newUsername = '';
+			newEmail = '';
+			newPassword = '';
+			creating = false;
+			failed = null;
+		} catch (error) {
+			reportError(error, 'User could not be created.');
+		} finally {
+			saving = false;
+		}
+	}
 
 	const visible = $derived(
 		(users ?? []).filter((user) => {
@@ -126,7 +156,7 @@
 		try {
 			users = await fetchPlatformUsers();
 		} catch (error) {
-			failed = error instanceof Error ? error.message : 'Users could not be loaded.';
+			failed = reportError(error, 'Users could not be loaded.');
 			users = [];
 		}
 	});
@@ -143,23 +173,84 @@
 				passwords.
 			</p>
 		</div>
-		<label class="relative block w-full max-w-xs">
-			<input
-				type="search"
-				placeholder="Filter users"
-				aria-label="Filter users"
-				class="h-9 w-full rounded-sm border border-input bg-card px-3 text-sm"
-				bind:value={query}
-			/>
-		</label>
+		<div class="flex w-full max-w-md items-center gap-2">
+			<label class="relative block w-full">
+				<input
+					type="search"
+					placeholder="Filter users"
+					aria-label="Filter users"
+					class="h-9 w-full rounded-sm border border-input bg-card px-3 text-sm"
+					bind:value={query}
+				/>
+			</label>
+			<button
+				type="button"
+				class="h-9 shrink-0 rounded-sm bg-primary px-3 text-sm font-medium text-primary-foreground"
+				onclick={() => (creating = !creating)}
+			>
+				{creating ? 'Cancel' : 'New user'}
+			</button>
+		</div>
 	</header>
+
+	{#if creating}
+		<form
+			class="grid gap-3 rounded-sm border border-input bg-card p-4 sm:grid-cols-3"
+			onsubmit={submitNewUser}
+		>
+			<label class="block text-sm">
+				<span class="mb-1 block text-muted-foreground">Username</span>
+				<input
+					class="h-9 w-full rounded-sm border border-input bg-background px-3 text-sm"
+					required
+					minlength="3"
+					autocomplete="off"
+					bind:value={newUsername}
+				/>
+			</label>
+			<label class="block text-sm">
+				<span class="mb-1 block text-muted-foreground">Email</span>
+				<input
+					type="email"
+					class="h-9 w-full rounded-sm border border-input bg-background px-3 text-sm"
+					required
+					autocomplete="off"
+					bind:value={newEmail}
+				/>
+			</label>
+			<label class="block text-sm">
+				<span class="mb-1 block text-muted-foreground">Password (8–128 characters)</span>
+				<input
+					type="password"
+					class="h-9 w-full rounded-sm border border-input bg-background px-3 text-sm"
+					required
+					minlength="8"
+					maxlength="128"
+					autocomplete="new-password"
+					bind:value={newPassword}
+				/>
+			</label>
+			<div class="flex items-center gap-3 sm:col-span-3">
+				<button
+					type="submit"
+					disabled={saving}
+					class="h-9 rounded-sm bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-60"
+				>
+					{saving ? 'Creating…' : 'Create user'}
+				</button>
+				{#if formError}
+					<p class="text-sm text-destructive" role="alert">{formError}</p>
+				{/if}
+			</div>
+		</form>
+	{/if}
 
 	{#if users === null}
 		<p class="text-sm text-muted-foreground">Loading users…</p>
 	{:else if failed}
 		<p class="text-sm text-destructive" role="alert">{failed}</p>
 	{:else if users.length === 0}
-		<Empty icon={UsersIcon} title="No users" description="Create a user from an organization or the CLI." />
+		<Empty icon={UsersIcon} title="No users" description="Use New user above, or add one from an organization." />
 	{:else if visible.length === 0}
 		<p class="text-sm text-muted-foreground">Nothing matches “{query.trim()}”.</p>
 	{:else}

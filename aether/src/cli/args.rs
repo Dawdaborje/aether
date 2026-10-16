@@ -40,6 +40,14 @@ pub struct Args {
     /// Bind address for the HTTP server (e.g. 0.0.0.0:7890)
     pub serve: Option<String>,
 
+    #[arg(long, value_name = "ADDR", default_missing_value = "127.0.0.1:7899", num_args = 0..=1, conflicts_with = "serve")]
+    /// Serve the documentation website on its own (default 127.0.0.1:7899). Needs no config file and no database: the pages are compiled into this binary
+    pub serve_docs: Option<String>,
+
+    #[arg(long, action = clap::ArgAction::SetTrue, conflicts_with_all = ["serve", "serve_docs"])]
+    /// Run the Model Context Protocol server on stdin/stdout: documentation, plugin scaffolding and plugin validation for LLM clients. Needs no config file and no database. Logs go to stderr
+    pub mcp: bool,
+
     #[arg(short='o', long, default_missing_value = "", num_args = 0..=1)]
     /// Run the job scheduler on its own, with its control API on this address (default: `[scheduler] bind`, 127.0.0.1:7895). The HTTP server finds it by itself. Needs the same database and `app_dir` as the HTTP server.
     pub start_scheduler: Option<String>,
@@ -248,6 +256,10 @@ pub struct Args {
     #[arg(long, value_name = "NAME")]
     /// Create an organization, its first user, and their membership
     pub create_org: Option<String>,
+
+    #[arg(long, value_name = "EMAIL")]
+    /// The new organization's contact email (`--create-org`); defaults to `--email`
+    pub org_email: Option<String>,
 
     #[arg(long)]
     /// Database name for the new organization; defaults to a slug from its name

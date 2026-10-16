@@ -4,6 +4,7 @@ import { apiFetch } from '$lib/api/client';
 export type NewMember =
 	| { mode: 'new'; username: string; email: string; password: string }
 	| { mode: 'existing'; login: string };
+/** `null` creates the organization with no member yet. */
 
 export interface CreatedOrganization {
 	organization: { name: string; db_name: string };
@@ -26,20 +27,23 @@ export function identifierFor(name: string): string {
 /** Create an organization (developers only). Throws an Error whose message is for the user. */
 export async function createOrganization(input: {
 	name: string;
+	/** The organization's contact address (required). */
+	email: string;
 	identifier: string;
 	description?: string;
 	parent?: string;
-	member: NewMember;
+	member: NewMember | null;
 }): Promise<CreatedOrganization> {
 	const res = await apiFetch('/api/ui/organizations', {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({
 			name: input.name,
+			email: input.email.trim(),
 			identifier: input.identifier || undefined,
 			description: input.description?.trim() || undefined,
 			parent: input.parent?.trim() || undefined,
-			member: input.member
+			member: input.member ?? undefined
 		})
 	});
 	if (!res.ok) {

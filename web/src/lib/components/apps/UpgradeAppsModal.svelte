@@ -9,6 +9,7 @@
 		type InstallOutcome
 	} from '$lib/apps/catalogApi';
 	import { groupCatalogByName } from '$lib/apps/catalogGroup';
+	import OrgPicker from '$lib/components/apps/OrgPicker.svelte';
 	import { orgStore } from '$lib/org/orgStore.svelte';
 
 	let { open = $bindable(false) }: { open?: boolean } = $props();
@@ -24,6 +25,8 @@
 	let loadError = $state<string | null>(null);
 	/** Chosen `org|name@version` keys. */
 	let chosen = $state<string[]>([]);
+	/** Organizations in scope for this upgrade run. */
+	let scope = $state<string[]>([]);
 	let working = $state(false);
 	let results = $state<InstallOutcome[] | null>(null);
 	let failed = $state<string | null>(null);
@@ -58,6 +61,17 @@
 			.sort((a, b) => orgName(a.org).localeCompare(orgName(b.org)));
 	});
 
+	const scoped = $derived(byOrg.filter(({ org }) => scope.includes(org)));
+	const scopedChosen = $derived(
+		scoped.reduce(
+			(n, { org, plugins }) =>
+				n + plugins.filter((plugin) => chosen.includes(keyOf(org, plugin))).length,
+			0
+		)
+	);
+	const upgradeOrgs = $derived(byOrg.map(({ org }) => ({ db_name: org, name: orgName(org) })));
+	const SECTION_CAP = 50;
+
 	async function load() {
 		catalog = null;
 		loadError = null;
@@ -68,6 +82,7 @@
 			catalog = [];
 		}
 		chosen = byOrg.flatMap(({ org, plugins }) => plugins.map((plugin) => keyOf(org, plugin)));
+		scope = byOrg.map(({ org }) => org);
 	}
 
 	$effect(() => {
@@ -91,7 +106,7 @@
 		failed = null;
 		try {
 			const outcomes: InstallOutcome[] = [];
-			for (const { org, plugins } of byOrg) {
+			for (const { org, plugins } of scoped) {
 				if (only && org !== only) continue;
 				const picks = plugins
 					.filter((plugin) => chosen.includes(keyOf(org, plugin)))
@@ -111,7 +126,9 @@
 </script>
 
 <Dialog.Root bind:open>
-	<Dialog.Content class="flex max-h-[min(90vh,48rem)] w-[min(44rem,calc(100%-2rem))] flex-col gap-4">
+	<Dialog.Content
+		class="flex h-[min(90vh,52rem)] w-[min(96rem,calc(100%-2rem))] max-w-[min(96rem,calc(100%-2rem))] flex-col gap-4 overflow-hidden sm:max-w-[min(96rem,calc(100%-2rem))]"
+	>
 		<Dialog.Header>
 			<Dialog.Title>Upgrade modules</Dialog.Title>
 			<Dialog.Description>
@@ -147,8 +164,18 @@
 				<Button onclick={() => (open = false)}>Close</Button>
 			</Dialog.Footer>
 		{:else}
-			<div class="min-h-0 flex-1 space-y-4 overflow-auto">
-				{#each byOrg as { org, plugins } (org)}
+			<div class="grid min-h-0 flex-1 gap-6 md:grid-cols-[16rem_minmax(0,1fr)]">
+			<OrgPicker
+				orgs={upgradeOrgs}
+				bind:selected={scope}
+				heading="Organizations to upgrade"
+				emptyText="No organization has upgrades."
+			/>
+			<div class="min-h-0 space-y-4 overflow-auto">
+				{#if scoped.length === 0}
+					<p class="text-sm text-muted-foreground">Select at least one organization.</p>
+				{/if}
+				{#each scoped.slice(0, SECTION_CAP) as { org, plugins } (org)}
 					{@const picked = plugins.filter((plugin) => chosen.includes(keyOf(org, plugin))).length}
 					<section class="rounded-md border border-border">
 						<header class="flex items-center justify-between gap-2 border-b border-border p-3">
@@ -190,14 +217,21 @@
 						</ul>
 					</section>
 				{/each}
+				{#if scoped.length > SECTION_CAP}
+					<p class="text-xs text-muted-foreground">
+						Showing {SECTION_CAP} of {scoped.length} organizations; “Upgrade all selected” still
+						applies to all of them.
+					</p>
+				{/if}
+			</div>
 			</div>
 			{#if failed}
 				<p class="text-sm text-destructive" role="alert">{failed}</p>
 			{/if}
 			<Dialog.Footer>
 				<Button variant="outline" onclick={() => (open = false)}>Cancel</Button>
-				<Button disabled={working || chosen.length === 0} onclick={() => upgrade()}>
-					{working ? 'Upgrading…' : `Upgrade all selected (${chosen.length})`}
+				<Button disabled={working || scopedChosen === 0} onclick={() => upgrade()}>
+					{working ? 'Upgrading…' : `Upgrade all selected (${scopedChosen})`}
 				</Button>
 			</Dialog.Footer>
 		{/if}

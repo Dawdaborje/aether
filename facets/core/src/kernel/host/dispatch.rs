@@ -41,11 +41,13 @@ pub async fn kernel_command(
         "db::aggregate" => db::db_aggregate(ctx, &payload).await,
         "report::query" => super::report::report_query(ctx, &payload).await,
         "report::export" => super::report::report_export(ctx, &payload).await,
+        "report::sources" => super::report::report_sources(ctx, &payload).await,
         "db::search" => db::db_search(ctx, &payload).await,
         "db::create" => db::db_create(ctx, &payload).await,
         "db::update" => db::db_update(ctx, &payload).await,
         "db::delete" => db::db_delete(ctx, &payload).await,
         "db::increment" => db::db_increment(ctx, &payload).await,
+        "db::upsert" => db::db_upsert(ctx, &payload).await,
         "db::mutate" => {
             // Generic mutate entry: expects `{ "op": "create"|"update"|"delete", ... }`
             let op = payload
@@ -168,6 +170,36 @@ pub async fn kernel_command(
             "actor": { "kind": ctx.audit.actor.kind(), "id": ctx.audit.actor.id() },
             }))
         }
+        // The organization this call runs in: its name and its database name. Needs no capability,
+        // like `context::get`; a plugin may already learn the database name from there.
+        "organization::get" => {
+            use surrealdb::types::SurrealValue;
+            #[derive(serde::Deserialize, SurrealValue)]
+            struct Row {
+                name: String,
+                #[serde(default)]
+                email: Option<String>,
+            }
+            let row = match ctx.services.as_ref().and_then(|services| services.core.clone()) {
+                Some(core) => core
+                    .query("SELECT name, email FROM organizations WHERE db_name = $db LIMIT 1;")
+                    .bind(("db", ctx.database.clone()))
+                    .await
+                    .ok()
+                    .and_then(|response| response.check().ok())
+                    .and_then(|mut response| response.take::<Vec<Row>>(0).ok())
+                    .and_then(|rows| rows.into_iter().next()),
+                None => None,
+            };
+            let (name, email) = match row {
+                Some(row) => (row.name, row.email),
+                None => (ctx.database.clone(), None),
+            };
+            Ok(serde_json::json!({
+                "ok": true,
+                "data": { "db_name": ctx.database, "name": name, "email": email },
+            }))
+        }
         "notify::send" => {
             ctx.require_cap(command)?;
             notify_send(ctx, &payload).await
@@ -194,7 +226,20 @@ pub async fn kernel_command(
         }
         "http::request" => http::http_request(ctx, &payload).await,
         "plugins::call" => plugin_call::plugins_call(ctx, &payload).await,
+        "plugins::available" => plugin_call::plugins_available(ctx, &payload).await,
         "bridge::call" => bridge_call::bridge_call(ctx, &payload).await,
+        "ocr::parse" => super::ocr::ocr_parse(ctx, &payload).await,
+        "ocr::status" => super::ocr::ocr_status(ctx, &payload).await,
+        "ocr::submit" => super::ocr::ocr_submit(ctx, &payload).await,
+        "ocr::result" => super::ocr::ocr_result(ctx, &payload).await,
+        "ai::complete" => super::ai::ai_complete(ctx, &payload).await,
+        "ai::embed" => super::ai::ai_embed(ctx, &payload).await,
+        "ai::index" => super::ai::ai_index(ctx, &payload).await,
+        "ai::search" => super::ai::ai_search(ctx, &payload).await,
+        "ai::forget" => super::ai::ai_forget(ctx, &payload).await,
+        "ai::status" => super::ai::ai_status(ctx, &payload).await,
+        "ai::submit" => super::ai::ai_submit(ctx, &payload).await,
+        "ai::result" => super::ai::ai_result(ctx, &payload).await,
         "scheduler::enqueue" => scheduling::enqueue(ctx, &payload).await,
         "scheduler::job" => scheduling::job(ctx, &payload).await,
         "scheduler::cancel_job" => scheduling::cancel_job(ctx, &payload).await,
@@ -400,6 +445,7 @@ mod tests {
             "db::update",
             "db::delete",
             "db::increment",
+            "db::upsert",
             "db::mutate",
             "db::transaction",
             "cache::get",
@@ -428,7 +474,20 @@ mod tests {
             "events::unsubscribe",
             "http::request",
             "plugins::call",
+            "plugins::available",
             "bridge::call",
+            "ocr::parse",
+            "ocr::status",
+            "ocr::submit",
+            "ocr::result",
+            "ai::complete",
+            "ai::embed",
+            "ai::index",
+            "ai::search",
+            "ai::forget",
+            "ai::status",
+            "ai::submit",
+            "ai::result",
             "scheduler::register",
             "scheduler::cancel",
             "scheduler::enqueue",

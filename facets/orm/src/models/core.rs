@@ -42,6 +42,10 @@ pub struct Organization {
     /// Filename under `app_dir/orgs/<db>/` for the logo (`logo.png`, …).
     #[serde(default)]
     pub logo_file: Option<String>,
+    /// The organization's contact address. Required when an organization is created; older
+    /// organizations may not have one until an administrator sets it.
+    #[serde(default)]
+    pub email: Option<String>,
     pub date_created: Datetime,
     pub date_updated: Datetime,
 }
@@ -50,11 +54,14 @@ pub struct Organization {
 pub struct NewOrganization {
     pub name: String,
     pub db_name: String,
-    pub owner_user_id: String,
+    #[serde(default)]
+    pub owner_user_id: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]
     pub parent_db_name: Option<String>,
+    #[serde(default)]
+    pub email: Option<String>,
     pub date_created: Datetime,
     pub date_updated: Datetime,
 }

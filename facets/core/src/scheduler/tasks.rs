@@ -57,6 +57,12 @@ impl CatchUp {
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct TaskDef {
     pub name: String,
+    /// A readable label for lists; the `name` is the key.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// One or two sentences on what the task does.
+    #[serde(default)]
+    pub description: Option<String>,
     pub function: String,
     #[serde(default)]
     pub cron: Option<String>,
@@ -182,12 +188,12 @@ pub async fn upsert(
         .as_ref()
         .is_none_or(|row| !same_recurrence(row, &recurrence));
     let surql = if existing.is_some() {
-        "UPDATE scheduled_tasks SET function_name = $function, cron = $cron, every_secs = $every_secs, timezone = $timezone, \
+        "UPDATE scheduled_tasks SET function_name = $function, title = $title, description = $description, cron = $cron, every_secs = $every_secs, timezone = $timezone, \
          payload = $payload, queue = $queue, max_attempts = $max_attempts, catch_up = $catch_up, source = $source, enabled = true, \
          next_run = IF $reschedule { <datetime> $next } ELSE { next_run } \
          WHERE plugin = $plugin AND name = $name;"
     } else {
-        "CREATE scheduled_tasks SET plugin = $plugin, name = $name, function_name = $function, cron = $cron, every_secs = $every_secs, \
+        "CREATE scheduled_tasks SET plugin = $plugin, name = $name, function_name = $function, title = $title, description = $description, cron = $cron, every_secs = $every_secs, \
          timezone = $timezone, payload = $payload, queue = $queue, max_attempts = $max_attempts, catch_up = $catch_up, \
          source = $source, enabled = true, next_run = <datetime> $next;"
     };
@@ -195,6 +201,8 @@ pub async fn upsert(
         .bind(("plugin", plugin.to_string()))
         .bind(("name", def.name.clone()))
         .bind(("function", def.function.clone()))
+        .bind(("title", def.title.clone().filter(|t| !t.trim().is_empty())))
+        .bind(("description", def.description.clone().filter(|d| !d.trim().is_empty())))
         .bind(("cron", cron))
         .bind(("every_secs", every_secs))
         .bind(("timezone", timezone))
@@ -518,6 +526,8 @@ mod tests {
     fn def() -> TaskDef {
         TaskDef {
             name: "nightly".into(),
+            title: None,
+            description: None,
             function: "run".into(),
             cron: Some("0 2 * * *".into()),
             every: None,

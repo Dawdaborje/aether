@@ -2,6 +2,7 @@
 	import type { PageNode } from '$lib/dsl/types';
 	import { Button } from '$lib/components/ui/button';
 	import { InboxIcon } from '@lucide/svelte';
+	import PageRenderer from './PageRenderer.svelte';
 
 	let { node }: { node: PageNode } = $props();
 </script>
@@ -18,5 +19,12 @@
 	</div>
 	{#if node.actionLabel}
 		<Button size="sm">{String(node.actionLabel)}</Button>
+	{/if}
+	{#if (node.children ?? []).length > 0}
+		<div class="flex flex-wrap items-center justify-center gap-2">
+			{#each node.children ?? [] as child, i (child.name ?? `${child.type}-${i}`)}
+				<PageRenderer node={child} />
+			{/each}
+		</div>
 	{/if}
 </div>

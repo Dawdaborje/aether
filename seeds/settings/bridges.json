@@ -46,6 +46,171 @@
           "description": "An email address or website that identifies you to the map server, as its usage policy asks."
         }
       ]
+    },
+    {
+      "id": "bridge_liteparse",
+      "label": "LiteParse",
+      "color": "amber",
+      "icon": "scan-text",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "bridge_liteparse_binary_path",
+          "label": "LiteParse program",
+          "s_key": "bridge.liteparse.binary_path",
+          "s_value": "liteparse",
+          "description": "The command that runs LiteParse. Some systems have another program called lit: use the full path to be sure."
+        },
+        {
+          "id": "bridge_liteparse_default_language",
+          "label": "LiteParse OCR language",
+          "s_key": "bridge.liteparse.default_language",
+          "s_value": "eng",
+          "description": "Tesseract language code, such as eng or eng+fra."
+        },
+        {
+          "id": "bridge_liteparse_tessdata_path",
+          "label": "LiteParse language data folder",
+          "s_key": "bridge.liteparse.tessdata_path",
+          "s_value": "",
+          "description": "Folder with Tesseract language files, for offline use."
+        },
+        {
+          "id": "bridge_liteparse_ocr_server_url",
+          "label": "LiteParse HTTP OCR server",
+          "s_key": "bridge.liteparse.ocr_server_url",
+          "s_value": "",
+          "description": "Use an EasyOCR or PaddleOCR server instead of the built-in Tesseract."
+        },
+        {
+          "id": "bridge_liteparse_ocr_server_token",
+          "label": "LiteParse OCR server token",
+          "s_key": "bridge.liteparse.ocr_server_token",
+          "s_value": "",
+          "description": "Sent as a bearer token to the HTTP OCR server.",
+          "secret": true
+        },
+        {
+          "id": "bridge_liteparse_dpi",
+          "label": "LiteParse OCR resolution (DPI)",
+          "s_key": "bridge.liteparse.dpi",
+          "s_value": "150",
+          "description": "72 to 400. Higher reads small print better and is slower."
+        },
+        {
+          "id": "bridge_liteparse_max_pages",
+          "label": "LiteParse most pages per file",
+          "s_key": "bridge.liteparse.max_pages",
+          "s_value": "100",
+          "description": "This engine's own limit; the kernel's ocr.max_pages can only lower it."
+        },
+        {
+          "id": "bridge_liteparse_timeout_secs",
+          "label": "LiteParse time allowed per file (seconds)",
+          "s_key": "bridge.liteparse.timeout_secs",
+          "s_value": "60",
+          "description": "5 to 600. The process is stopped, with anything it started, when this passes."
+        }
+      ]
+    },
+    {
+      "id": "bridge_ollama",
+      "label": "Ollama",
+      "color": "violet",
+      "icon": "bot",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "bridge_ollama_base_url",
+          "label": "Ollama address",
+          "s_key": "bridge.ollama.base_url",
+          "s_value": "http://localhost:11434",
+          "description": "Where Ollama runs. Requests never leave that network."
+        },
+        {
+          "id": "bridge_ollama_default_model",
+          "label": "Ollama default model",
+          "s_key": "bridge.ollama.default_model",
+          "s_value": "",
+          "description": "Used when no model is named here or in the AI settings, such as llama3.2."
+        },
+        {
+          "id": "bridge_ollama_default_embed_model",
+          "label": "Ollama embedding model",
+          "s_key": "bridge.ollama.default_embed_model",
+          "s_value": "",
+          "description": "Used for embeddings when none is named, such as nomic-embed-text."
+        }
+      ]
+    },
+    {
+      "id": "bridge_openai_compatible",
+      "label": "OpenAI-compatible",
+      "color": "violet",
+      "icon": "bot",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "bridge_openai_compatible_api_key",
+          "label": "OpenAI-compatible API key",
+          "s_key": "bridge.openai_compatible.api_key",
+          "s_value": "",
+          "description": "The key of OpenAI, OpenRouter, Groq or your own server; empty for a local server that needs none. Stored encrypted; it is never shown again.",
+          "secret": true
+        },
+        {
+          "id": "bridge_openai_compatible_base_url",
+          "label": "OpenAI-compatible API address",
+          "s_key": "bridge.openai_compatible.base_url",
+          "s_value": "https://api.openai.com/v1",
+          "description": "The API root with its version. Change it to use vLLM, LM Studio, OpenRouter and the like."
+        },
+        {
+          "id": "bridge_openai_compatible_default_model",
+          "label": "OpenAI-compatible default model",
+          "s_key": "bridge.openai_compatible.default_model",
+          "s_value": "",
+          "description": "Used when no model is named here or in the AI settings."
+        },
+        {
+          "id": "bridge_openai_compatible_default_embed_model",
+          "label": "OpenAI-compatible embedding model",
+          "s_key": "bridge.openai_compatible.default_embed_model",
+          "s_value": "",
+          "description": "Used for embeddings when none is named, such as text-embedding-3-small."
+        }
+      ]
+    },
+    {
+      "id": "bridge_anthropic",
+      "label": "Anthropic",
+      "color": "violet",
+      "icon": "bot",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "bridge_anthropic_api_key",
+          "label": "Anthropic API key",
+          "s_key": "bridge.anthropic.api_key",
+          "s_value": "",
+          "description": "From the Anthropic console. Stored encrypted; it is never shown again.",
+          "secret": true
+        },
+        {
+          "id": "bridge_anthropic_base_url",
+          "label": "Anthropic API address",
+          "s_key": "bridge.anthropic.base_url",
+          "s_value": "https://api.anthropic.com",
+          "description": "Leave as it is unless you go through a gateway."
+        },
+        {
+          "id": "bridge_anthropic_default_model",
+          "label": "Anthropic default model",
+          "s_key": "bridge.anthropic.default_model",
+          "s_value": "",
+          "description": "Used when no model is named here or in the AI settings."
+        }
+      ]
     }
   ]
 }

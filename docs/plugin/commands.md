@@ -1,3 +1,10 @@
+---
+title: "Kernel commands"
+description: "A plugin has no database, file system or network of its own. Everything it does outside its own code is a kernel command: a named request such as db::create that the kernel checks and then carries…"
+section: plugin
+status: stable
+order: 30
+---
 # Kernel commands
 
 A plugin has no database, file system or network of its own. Everything it does outside its own
@@ -25,13 +32,18 @@ refusal is an error with a message (a script can `try`/`catch` it).
 | `db::get`, `db::find`, `db::query` | `db::query` | `db::get`, `db::find` | done |
 | `report::query` | `report::query` | `report::query` | done: grouped report, see [Queries](../architecture/queries.md) |
 | `report::export` | `report::export` | `report::export` | done: Excel or PDF of rows the plugin already has |
-| `db::create`, `db::update`, `db::delete`, `db::increment` | `db::mutate` | same names | done |
+| `report::sources` | `report::query` | `report::sources` | done: models and visible fields a report may read |
+| `ocr::parse`, `ocr::status` | `ocr::parse` | `ocr::parse`, `ocr::status` | done: text out of a stored PDF, Office file or image; every limit is a setting, see [Document parsing](../architecture/ocr.md) |
+| `ai::complete`, `ai::submit`, `ai::result`, `ai::status` | `ai::complete` | `ai::complete`, `ai::submit`, `ai::result`, `ai::status` | done: ask a language model through the organization's provider; off until enabled, with token budgets, see [AI](../architecture/ai.md) |
+| `ai::embed`, `ai::index`, `ai::search`, `ai::forget` | `ai::embed` | same names | done: texts to vectors, and search your own indexed text by meaning (not every provider) |
+| `db::create`, `db::update`, `db::upsert`, `db::delete`, `db::increment` | `db::mutate` (`upsert` also `db::query`) | same names | done |
 | `db::mutate` | `db::mutate` | use `db::create/update/delete` | done |
 | `db::transaction` | `db::transaction` (+ `db::mutate`) | `db::transaction` | done |
 | `cache::get`, `cache::set`, `cache::invalidate`, `cache::clear` | same name | `cache::get/set/invalidate/invalidate_prefix/clear` | done |
 | `storage::read`, `storage::write`, `storage::delete`, `storage::list` | same name | `storage::read/read_base64/write/write_base64/delete/list` | done |
 | `http::request` | `http::request` (+ `http_hosts`) | `http::request/get/post` | done |
-| `plugins::call` | `plugins::call` (+ `dependencies`) | `plugins::invoke` | done |
+| `plugins::call` | `plugins::call` (+ `dependencies` or `optional_dependencies`) | `plugins::invoke` | done |
+| `plugins::available` | `plugins::call` | `plugins::available` | done |
 | `notify::send` | `notify::send`, `notify::public` | `notify::send` | done |
 | `events::emit` | `events::emit` | `events::emit` | done |
 | `context::get` | none | `context::get` | done |
@@ -155,6 +167,15 @@ let rate = plugins::invoke("currency", "convert", #{ amount: 10, to: "EUR" });
   grants. Nothing is lent in either direction: calling `billing` does not give the caller access
   to billing's models, and an anonymous visitor still reaches only the target's `public_functions`.
 - It must be installed and enabled in the organization, like any call.
+- **Optional dependencies:** a plugin that works with or without another lists it under
+  `optional_dependencies` (not `dependencies`). It is not installed with the plugin and never blocks
+  it; `plugins::call` and the read-only `plugin.model` access work once it is installed, and
+  `plugins::available("name")` (Rhai, Lua `plugins.available`, Rust `plugins::available`) answers whether
+  it is installed and enabled in this organization. Ask first; calling an absent one fails like any
+  call to an uninstalled plugin.
+- `optional_dependencies = ["*"]` stands for every plugin installed in the organization, for
+  **reading models only** (reports; `plugins::call` still needs real names). A model is attached only
+  when it has `rules/`, and the caller's rules and hidden fields apply as for any dependency.
 - Calls nest at most 4 deep and a function cannot be called while it is already running further up
   the chain, so plugins cannot loop. Waiting for a free execution slot is bounded (10 s), after
   which the call fails with "busy".
@@ -222,3 +243,23 @@ adds a listener while running (`<plugin>.<event>`, the emitter being a dependenc
 | Command | What is missing |
 |---|---|
 | Mailgun, Postmark, Bravo, WhatsApp, Stripe, Flutterwave, and the document, storage and identity bridges | Their crates are still empty. The kernel routes email to SMTP and Resend, SMS to Twilio, Termii and Africa's Talking, and `bridge::call` to Paystack and OpenStreetMap. |
+
+## Proposed commands (not built)
+
+Designed in [the gaps roadmap](../architecture/gaps_roadmap.md). None of these exist yet; do not call them.
+
+| Command | Capability | Design |
+|---|---|---|
+| `db::get` / `db::find` with `as_of`, `history::list`, `diff`, `restore`, `redact` | `db::query`, `history::read`, `history::restore` | [History](../architecture/history.md) |
+| `webhooks::subscribe`, `unsubscribe`, `list`, `deliveries` | `webhooks::manage` | [API and webhooks](../architecture/api_and_webhooks.md) |
+| `import::start`, `status`, `result`, `undo`, `templates`; `export::run` | `import::run`, `export::run` | [Import and export](../architecture/import_export.md) |
+| `mail::routes`, `reply`, `unmatched`, `assign` | `mail::manage`, `mail::send` | [Inbound mail](../architecture/inbound_mail.md) |
+| `auth::require_recent_mfa`, `auth::mfa_state` | `auth::step_up`, `auth::read` | [Auth hardening](../architecture/auth_hardening.md) |
+| `encryption::status`, `rotate`, `destroy_key` | `encryption::read`, `encryption::manage` | [Field encryption](../architecture/field_encryption.md) |
+| `sharing::share`, `revoke`, `list`, `link` | `sharing::manage` | [Sharing](../architecture/sharing.md) |
+| `automation::list`, `runs`, `run`, `simulate`, `enable`, `disable`; `approval::pending`, `answer`, `delegate` | `automation::*`, `approval::answer` | [Automation](../architecture/automation.md) |
+| `verify::matrix` | `verify::read` | [Verification](../architecture/verification.md) |
+| `print::render`, `batch`, `templates` | `print::render`, `print::read` | [Print](../architecture/print.md) |
+| `report::save`, `delete`, `list`, `run`, `snapshot` | `report::save`, `report::query` | [Views and reports](../architecture/views_reports.md) |
+| `overlay::get`, `apply`, `revert`; `hook::save`, `enable`, `runs` | `overlay::*`, `hook::manage` | [Customization](../architecture/customization.md) |
+| `federation::links`, `send`, `inbox`, `answer` | `federation::*` | [Federation](../architecture/federation.md) |

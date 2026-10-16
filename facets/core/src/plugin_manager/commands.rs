@@ -230,7 +230,7 @@ fn convert(spec: &CommandArgDef, text: &str) -> Result<Value, CommandError> {
 }
 
 /// When a plugin was installed or upgraded: run each of its commands marked
-/// `on_install` / `on_upgrade` (master data, like Odoo `data` / Frappe fixtures).
+/// `on_install` / `on_upgrade` (master data).
 ///
 /// `plugins` is the list of plugin names in dependency order (install/upgrade
 /// already sorted that way). Failures are collected and returned; earlier seeds

@@ -1,3 +1,10 @@
+---
+title: "Media storage"
+description: "Uploaded files go to one media backend, chosen by the operator in aether.toml under [media]. Plugins never pick or configure a backend; they ask the kernel to store and fetch files."
+section: architecture
+status: stable
+order: 270
+---
 # Media storage
 
 Uploaded files go to one **media backend**, chosen by the operator in

@@ -27,3 +27,19 @@ export function categoryLabel(workspace: string | null | undefined): string {
 		})
 		.join(' ');
 }
+
+/** Lucide icons for well-known workspaces, shown when a group has no logo of its own. */
+const CATEGORY_ICONS: Record<string, string> = {
+	hrms: 'users',
+	hr: 'users',
+	erp: 'boxes',
+	crm: 'handshake',
+	accounting: 'banknote',
+	base: 'package'
+};
+
+/** The icon for a group with no logo: its workspace's own, else a plain folder. */
+export function categoryIcon(workspace: string | null | undefined): string {
+	const key = (workspace ?? '').trim().toLowerCase();
+	return CATEGORY_ICONS[key] ?? 'folder';
+}

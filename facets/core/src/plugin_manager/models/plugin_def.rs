@@ -69,6 +69,12 @@ pub struct PluginDefinition {
     /// Plugin names this addon depends on (mirrored to `plugin_depends_on`).
     #[serde(default)]
     pub dependencies: Vec<String>,
+    /// Plugins this addon uses when they are installed in the organization, and works without
+    /// otherwise. They may be called with `plugins::call` and their models read as
+    /// dependencies' are; ask `plugins::available` first. They are not installed with this
+    /// plugin and never block it.
+    #[serde(default)]
+    pub optional_dependencies: Vec<String>,
     #[serde(default)]
     pub capabilities: Vec<String>,
     #[serde(default)]
@@ -133,6 +139,7 @@ impl Default for PluginDefinition {
             website: None,
             categories: Vec::new(),
             dependencies: Vec::new(),
+            optional_dependencies: Vec::new(),
             capabilities: Vec::new(),
             access_models: Vec::new(),
             public_functions: Vec::new(),
@@ -394,8 +401,8 @@ pub struct PluginI18nDef {
 ///
 /// Workspace membership places the tile in a folder with siblings. Thin modules
 /// (one sidebar menu or fewer) are folded into the workspace host tile unless
-/// `standalone = true` (Frappe: small modules live in the host sidebar; big ones
-/// keep a desktop icon).
+/// `standalone = true` (small modules live in the host sidebar; big ones
+/// keep their own tile).
 ///
 /// ```toml
 /// [app]
@@ -469,6 +476,65 @@ pub struct PluginManifest {
     /// Roles the plugin offers (`[[roles]]`); see [`PluginRoleDef`].
     #[serde(default)]
     pub roles: Vec<PluginRoleDef>,
+    /// Functions the AI assistant may call (`[[ai_tool]]`); see [`PluginAiToolDef`].
+    #[serde(default)]
+    pub ai_tool: Vec<PluginAiToolDef>,
+}
+
+/// A function of the plugin the AI assistant may ask for, to answer a question with the person's own data.
+///
+/// ```toml
+/// [[ai_tool]]
+/// name = "leave_balance"
+/// description = "How many days of each leave type the person has left"
+/// function = "assistant_leave_balance"
+/// schema = { type = "object", properties = { year = { type = "integer" } } }
+/// writes = false
+/// ```
+///
+/// The kernel runs the function **as the person who is chatting**, so roles and record rules apply as in
+/// the rest of the app. A tool with `writes = true` is never run by the assistant: the person is shown
+/// the proposed call and confirms it. What a tool returns is shown to the model as data, never as instructions.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct PluginAiToolDef {
+    pub name: String,
+    pub description: String,
+    pub function: String,
+    /// JSON Schema of the arguments, an object schema. Left out, the tool takes none.
+    #[serde(default = "no_arguments")]
+    pub schema: serde_json::Value,
+    #[serde(default)]
+    pub writes: bool,
+}
+
+fn no_arguments() -> serde_json::Value {
+    serde_json::json!({ "type": "object", "properties": {} })
+}
+
+impl PluginAiToolDef {
+    pub fn validate(&self, plugin: &str) -> Result<(), String> {
+        if !plain_name(&self.name, |c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
+            return Err(format!("the name `{}` is lowercase letters, digits and `_`, at most 64 characters", self.name));
+        }
+        // The model sees `<plugin>__<tool>`, and providers allow 64 characters.
+        if aether_ai::tool_name(plugin, &self.name).len() > 64 {
+            return Err(format!("`{}` is too long: `{plugin}__{}` must be at most 64 characters", self.name, self.name));
+        }
+        let described = self.description.trim();
+        if described.is_empty() || described.len() > 500 {
+            return Err(format!("`{}` needs a description of at most 500 characters: it is what the model reads", self.name));
+        }
+        if !plain_name(&self.function, |c| c.is_ascii_alphanumeric() || c == '_') {
+            return Err(format!("`{}`: `function` names one of the plugin's functions", self.name));
+        }
+        if self.schema.get("type").and_then(serde_json::Value::as_str) != Some("object") {
+            return Err(format!("`{}`: `schema` is a JSON Schema with `type = \"object\"`", self.name));
+        }
+        if self.schema.to_string().len() > 8 * 1024 {
+            return Err(format!("`{}`: `schema` is over 8 KB", self.name));
+        }
+        Ok(())
+    }
 }
 
 /// What can happen to a watched file.
@@ -623,7 +689,7 @@ impl CommandArgDef {
 /// help = "Fetch the exchange rates for a day"
 /// args = [{ name = "date", help = "YYYY-MM-DD, default today" }]
 ///
-/// # Master data (Odoo `data` / Frappe fixtures): the kernel runs these after
+/// # Master data: the kernel runs these after
 /// # install / upgrade into an organization. Prefer idempotent seed functions.
 /// [[command]]
 /// name = "seed"
@@ -817,6 +883,9 @@ pub enum ManifestError {
     #[error("`[[roles]]`: {0}")]
     Role(String),
 
+    #[error("`[[ai_tool]]`: {0}")]
+    AiTool(String),
+
     #[error(
         "`[[models]]` is no longer supported: define each model in `models/<name>.json` \
          (`aether --sync-models` assigns the ids)"
@@ -896,6 +965,13 @@ impl PluginManifest {
                 )));
             }
         }
+        let mut tools = std::collections::HashSet::new();
+        for tool in &manifest.ai_tool {
+            tool.validate(&manifest.plugin.name).map_err(ManifestError::AiTool)?;
+            if !tools.insert(tool.name.clone()) {
+                return Err(ManifestError::AiTool(format!("two tools are named `{}`", tool.name)));
+            }
+        }
         if let Some(unknown) = manifest
             .plugin
             .bridges
@@ -950,6 +1026,32 @@ mod command_tests {
         assert_eq!(command.args[0].kind(), "string");
         assert_eq!(command.args[1].kind(), "int");
         assert!(command.args[2].required);
+        Ok(())
+    }
+
+    #[test]
+    fn ai_tools_are_read_with_defaults_and_checked() -> Result<(), ManifestError> {
+        let manifest = parse(
+            "[[ai_tool]]\nname = \"balance\"\ndescription = \"Days left\"\nfunction = \"f\"\n\
+             schema = { type = \"object\", properties = { year = { type = \"integer\" } } }\n\
+             [[ai_tool]]\nname = \"apply\"\ndescription = \"Ask\"\nfunction = \"g\"\nwrites = true\n",
+        )?;
+        assert!(!manifest.ai_tool[0].writes && manifest.ai_tool[1].writes);
+        assert_eq!(manifest.ai_tool[0].schema["properties"]["year"]["type"], "integer");
+        // Left out, a tool takes no arguments.
+        assert_eq!(manifest.ai_tool[1].schema, serde_json::json!({ "type": "object", "properties": {} }));
+        for (label, text) in [
+            ("name", "[[ai_tool]]\nname = \"Bad Name\"\ndescription = \"d\"\nfunction = \"f\"\n"),
+            ("description", "[[ai_tool]]\nname = \"t\"\ndescription = \" \"\nfunction = \"f\"\n"),
+            ("function", "[[ai_tool]]\nname = \"t\"\ndescription = \"d\"\nfunction = \"a-b\"\n"),
+            ("schema", "[[ai_tool]]\nname = \"t\"\ndescription = \"d\"\nfunction = \"f\"\nschema = { type = \"string\" }\n"),
+            (
+                "twice",
+                "[[ai_tool]]\nname = \"t\"\ndescription = \"d\"\nfunction = \"f\"\n[[ai_tool]]\nname = \"t\"\ndescription = \"d\"\nfunction = \"g\"\n",
+            ),
+        ] {
+            assert!(matches!(parse(text), Err(ManifestError::AiTool(_))), "{label}");
+        }
         Ok(())
     }
 

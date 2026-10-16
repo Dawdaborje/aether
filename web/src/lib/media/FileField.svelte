@@ -3,6 +3,8 @@
 	import FileIcon from '@lucide/svelte/icons/file-text';
 	import PaperclipIcon from '@lucide/svelte/icons/paperclip';
 	import XIcon from '@lucide/svelte/icons/x';
+	import EyeIcon from '@lucide/svelte/icons/eye';
+	import DocumentViewer from './DocumentViewer.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { downloadMedia, filesOf, formatSize, uploadMedia, type MediaFile } from './api';
 
@@ -23,6 +25,8 @@
 	let error = $state<string | null>(null);
 	let dragging = $state(false);
 	let input = $state<HTMLInputElement | null>(null);
+	let viewing = $state<MediaFile | null>(null);
+	let viewerOpen = $state(false);
 
 	const files = $derived(filesOf(value));
 	/** Text from before the field held files (a list of storage keys, say): shown as it is. */
@@ -70,6 +74,18 @@
 					<FileIcon class="size-4 shrink-0 text-muted-foreground" />
 					<span class="min-w-0 flex-1 truncate">{file.name}</span>
 					<span class="shrink-0 text-xs text-muted-foreground">{formatSize(file.size)}</span>
+					<Button
+						type="button"
+						variant="ghost"
+						size="icon-xs"
+						aria-label="View {file.name}"
+						onclick={() => {
+							viewing = file;
+							viewerOpen = true;
+						}}
+					>
+						<EyeIcon />
+					</Button>
 					<Button
 						type="button"
 						variant="ghost"
@@ -140,3 +156,5 @@
 		<p class="text-xs text-destructive" role="alert">{error}</p>
 	{/if}
 </div>
+
+<DocumentViewer file={viewing} bind:open={viewerOpen} />

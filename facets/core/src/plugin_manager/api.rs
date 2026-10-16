@@ -52,6 +52,18 @@ async fn warm_installed_plugin(
         }))
 }
 
+/// The plugins a plugin may call and read: its dependencies, then the optional ones.
+fn all_dependencies(manifest: &crate::plugin_manager::models::plugin_def::PluginManifest) -> Vec<String> {
+    let plugin = &manifest.plugin;
+    let mut all = plugin.dependencies.clone();
+    for name in &plugin.optional_dependencies {
+        if !all.contains(name) {
+            all.push(name.clone());
+        }
+    }
+    all
+}
+
 /// Read-only grants for every model of each installed dependency, keyed `plugin.model`.
 async fn attach_dependency_reads(
     state: &AppState,
@@ -62,7 +74,22 @@ async fn attach_dependency_reads(
     models: &mut std::collections::HashMap<String, crate::kernel::ModelGrant>,
 ) -> Result<(), CallError> {
     let read = ["read".to_string()];
-    for dependency in dependencies {
+    // `"*"` stands for every plugin installed in the organization (a reporting plugin's way of
+    // reading whatever the user chooses). Those models are attached only when they have record
+    // rules, so a model nobody wrote rules for is never opened up by a wildcard.
+    let wildcard = dependencies.iter().any(|name| name == "*");
+    let mut names: Vec<String> = dependencies.iter().filter(|name| *name != "*").cloned().collect();
+    if wildcard
+        && let Ok(rows) = installed::list_cached(&state.cache, org_db, org).await
+    {
+        for row in rows {
+            if row.is_enabled && !names.contains(&row.plugin_name) {
+                names.push(row.plugin_name);
+            }
+        }
+    }
+    for dependency in &names {
+        let listed = dependencies.contains(dependency);
         let Some(installed) = warm_installed_plugin(state, org, org_db, dependency).await? else {
             continue;
         };
@@ -81,12 +108,16 @@ async fn attach_dependency_reads(
             }
         };
         for (name, schema) in &loaded.schemas {
+            if !listed && !loaded.rules.contains_key(name) {
+                continue;
+            }
             let key = format!("{dependency}.{name}");
             let mut grant =
                 crate::kernel::ModelGrant::from_access(&key, &read, Some(schema.table.as_str()));
             grant.can_write = false;
             grant.schema = Some(schema.clone());
             grant.rules = loaded.rules.get(name).cloned();
+            grant.direct = !listed;
             models.insert(key, grant);
         }
     }
@@ -142,6 +173,34 @@ pub async fn invoke_plugin(
         payload,
     };
     with_retry_after(invoke(state, peer, call, headers, uri, jar).await)
+}
+
+/// Run `plugin.function` as the person `identity` stands for, through the same checks as a call over HTTP
+/// (installed, enabled, the plugin's capabilities and the person's roles and record rules), and record it in
+/// the plugin call audit. For the kernel's AI assistant, which acts on a person's behalf: `Err` carries the
+/// status and the message that is safe to show.
+pub async fn run_as_caller(
+    state: &AppState,
+    identity: &mut Identity,
+    plugin: &str,
+    function: &str,
+    payload: Value,
+) -> Result<Value, (u16, String)> {
+    let trail = vec![format!("{plugin}.{function}")];
+    let result = run_call(state, identity, plugin, function, payload, trail, 0).await;
+    let status = match &result {
+        Ok(_) => StatusCode::OK,
+        Err(error) => error.status,
+    };
+    match state.org(&identity.org_db).await {
+        Ok(org) => {
+            if let Err(error) = record_plugin_call(&org, &identity.audit, plugin, function, status.as_u16()).await {
+                log::error!("assistant plugin call audit failed: {error}");
+            }
+        }
+        Err(error) => log::error!("assistant plugin call audit failed: {error}"),
+    }
+    result.map_err(|error| (error.status.as_u16(), error.message))
 }
 
 /// What a request asks a plugin to do.
@@ -390,7 +449,7 @@ async fn run_call(
         &core,
         &org,
         &identity.org_db,
-        &manifest.plugin.dependencies,
+        &all_dependencies(manifest),
         &mut models,
     )
     .await
@@ -418,7 +477,7 @@ async fn run_call(
     .with_bridges(manifest.plugin.bridges.clone())
     .with_http_hosts(manifest.plugin.http_hosts.clone())
     .with_plugin_calls(
-        manifest.plugin.dependencies.clone(),
+        all_dependencies(manifest),
         trail,
         std::sync::Arc::new(NestedCalls {
             state: state.clone(),
@@ -454,25 +513,114 @@ async fn run_call(
         }
     };
 
-    state
+    // The built-in record actions (delete, archive) are the kernel's own; they run with this
+    // plugin's grants and the model's rules, and are never available to visitors (a visitor may
+    // only call functions the plugin lists as public).
+    if !anonymous
+        && let Some(result) =
+            crate::plugin_manager::record_actions::run(&host, function, &payload).await
+    {
+        return result.map_err(|message| CallError::new(StatusCode::UNPROCESSABLE_ENTITY, message));
+    }
+
+    match state
         .plugin_runtime
         .invoke(loaded, function, payload, host)
         .await
-        .map_err(|error| {
+    {
+        Ok(value) => Ok(value),
+        Err(error) => {
             log::error!("plugin invocation `{plugin_name}.{function}` failed: {error}");
             if let Some(message) = error.user_message() {
-                // The plugin said, on purpose, what went wrong.
-                return CallError::new(StatusCode::UNPROCESSABLE_ENTITY, message);
+                // The plugin said, on purpose, what went wrong. A role it names by key
+                // (`hr_documents.documents_admin`) is shown by its label.
+                let message = name_roles_in(&org, &message.to_string()).await;
+                return Err(CallError::new(StatusCode::UNPROCESSABLE_ENTITY, message));
             }
-            match error {
+            Err(match error {
                 super::runtime::PluginRuntimeError::Busy => CallError::new(
                     StatusCode::SERVICE_UNAVAILABLE,
                     "plugin is busy, retry shortly",
                 ),
                 _ => CallError::new(StatusCode::BAD_GATEWAY, "plugin invocation failed")
                     .with_detail(error.to_string()),
+            })
+        }
+    }
+}
+
+/// Replace a role key written between backticks (`` `plugin.role` ``) by the role's label, so a
+/// message says "Documents administrator" and not `hr_documents.documents_admin`. Anything that is
+/// not a known role is left as it was.
+async fn name_roles_in(org: &crate::state::Db, message: &str) -> String {
+    if !message.contains('`') {
+        return message.to_string();
+    }
+    let mut out = String::with_capacity(message.len());
+    let mut rest = message;
+    while let Some(start) = rest.find('`') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('`') else {
+            out.push_str(&rest[start..]);
+            rest = "";
+            break;
+        };
+        let token = &after[..end];
+        let looks_like_role = token.contains('.')
+            && token
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.');
+        let label = if looks_like_role {
+            match org
+                .query("SELECT VALUE label FROM roles WHERE name = $name LIMIT 1;")
+                .bind(("name", token.to_string()))
+                .await
+                .and_then(|response| response.check())
+            {
+                Ok(mut response) => response
+                    .take::<Vec<Option<String>>>(0)
+                    .ok()
+                    .and_then(|labels| labels.into_iter().next().flatten())
+                    .filter(|label| !label.trim().is_empty()),
+                Err(_) => None,
             }
-        })
+        } else {
+            None
+        };
+        match label {
+            Some(label) => {
+                out.push('\u{201c}');
+                out.push_str(&label);
+                out.push('\u{201d}');
+            }
+            None => {
+                out.push('`');
+                out.push_str(token);
+                out.push('`');
+            }
+        }
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Run `plugin.function` for the person behind `identity`, through the same checks as a call over
+/// HTTP, and return its answer. Used by the kernel to ask a plugin a question about the caller
+/// (for example whether a menu entry applies to them). The call is not recorded as a request of
+/// its own; the failure, if any, is the message to log.
+pub(crate) async fn call_as_identity(
+    state: &AppState,
+    identity: &Identity,
+    plugin: &str,
+    function: &str,
+    payload: Value,
+) -> Result<Value, String> {
+    let mut identity = identity.clone();
+    run_call(state, &mut identity, plugin, function, payload, Vec::new(), 0)
+        .await
+        .map_err(|error| error.message)
 }
 
 /// `plugins::call`: runs another plugin's function as the same actor as the request, through
@@ -535,6 +683,16 @@ impl crate::kernel::PluginCaller for NestedCalls {
             }
         }
         result.map_err(|error| crate::kernel::HostError::Message(error.message))
+    }
+
+    async fn available(&self, plugin: &str) -> bool {
+        let Ok(org) = self.state.org(&self.identity.org_db).await else {
+            return false;
+        };
+        matches!(
+            warm_installed_plugin(&self.state, &org, &self.identity.org_db, plugin).await,
+            Ok(Some(installed)) if installed.is_enabled
+        )
     }
 }
 

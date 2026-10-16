@@ -1,6 +1,7 @@
 import { apiFetch } from '$lib/api/client';
 import type { AppCategory, AppTileData } from '$lib/components/apps/types';
 import { orgStore } from '$lib/org/orgStore.svelte';
+import { classifyStatus, pageError } from '$lib/pages/pageContext.svelte';
 
 /** Why there is nothing to show, when the list could not be loaded. */
 export type AppsProblem = 'organization' | 'none-exist' | 'failed';
@@ -38,6 +39,13 @@ class AppsStore {
 			this.problem = orgStore.organizations.length === 0 ? 'none-exist' : 'organization';
 		} else {
 			this.problem = 'failed';
+			pageError.current = {
+				kind: classifyStatus(res.status),
+				status: res.status,
+				message: `The apps could not be loaded (${res.status}).`,
+				plugin: 'aether',
+				fn: ''
+			};
 		}
 		this.apps = [];
 		this.categories = [];

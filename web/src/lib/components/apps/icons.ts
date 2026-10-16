@@ -63,6 +63,31 @@ import UsersIcon from '@lucide/svelte/icons/users';
 import UsersRoundIcon from '@lucide/svelte/icons/users-round';
 import WarehouseIcon from '@lucide/svelte/icons/warehouse';
 import WrenchIcon from '@lucide/svelte/icons/wrench';
+import BadgeDollarSignIcon from '@lucide/svelte/icons/badge-dollar-sign';
+import CalendarRangeIcon from '@lucide/svelte/icons/calendar-range';
+import CarIcon from '@lucide/svelte/icons/car';
+import CheckCheckIcon from '@lucide/svelte/icons/check-check';
+import ClipboardCheckIcon from '@lucide/svelte/icons/clipboard-check';
+import FileCheckIcon from '@lucide/svelte/icons/file-check';
+import FolderKanbanIcon from '@lucide/svelte/icons/folder-kanban';
+import FolderTreeIcon from '@lucide/svelte/icons/folder-tree';
+import HouseIcon from '@lucide/svelte/icons/house';
+import InboxIcon from '@lucide/svelte/icons/inbox';
+import KeyIcon from '@lucide/svelte/icons/key';
+import ListIcon from '@lucide/svelte/icons/list';
+import NetworkIcon from '@lucide/svelte/icons/network';
+import PercentIcon from '@lucide/svelte/icons/percent';
+import PuzzleIcon from '@lucide/svelte/icons/puzzle';
+import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
+import RepeatIcon from '@lucide/svelte/icons/repeat';
+import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
+import ShieldCheckIcon from '@lucide/svelte/icons/shield-check';
+import SlidersHorizontalIcon from '@lucide/svelte/icons/sliders-horizontal';
+import TimerIcon from '@lucide/svelte/icons/timer';
+import TrendingDownIcon from '@lucide/svelte/icons/trending-down';
+import UserCheckIcon from '@lucide/svelte/icons/user-check';
+import UserXIcon from '@lucide/svelte/icons/user-x';
+import WalletIcon from '@lucide/svelte/icons/wallet';
 
 /**
  * Icons an app or page can name (`[app] icon` and `<page icon>`). The set is
@@ -134,10 +159,40 @@ export const appIcons: Record<string, Component<{ class?: string }>> = {
 	users: UsersIcon,
 	'users-round': UsersRoundIcon,
 	warehouse: WarehouseIcon,
-	wrench: WrenchIcon
+	wrench: WrenchIcon,
+	'badge-dollar-sign': BadgeDollarSignIcon,
+	'calendar-range': CalendarRangeIcon,
+	car: CarIcon,
+	'check-check': CheckCheckIcon,
+	'clipboard-check': ClipboardCheckIcon,
+	'file-check': FileCheckIcon,
+	'folder-kanban': FolderKanbanIcon,
+	'folder-tree': FolderTreeIcon,
+	house: HouseIcon,
+	inbox: InboxIcon,
+	key: KeyIcon,
+	list: ListIcon,
+	network: NetworkIcon,
+	percent: PercentIcon,
+	puzzle: PuzzleIcon,
+	'refresh-cw': RefreshCwIcon,
+	repeat: RepeatIcon,
+	'rotate-ccw': RotateCcwIcon,
+	'shield-check': ShieldCheckIcon,
+	'sliders-horizontal': SlidersHorizontalIcon,
+	timer: TimerIcon,
+	'trending-down': TrendingDownIcon,
+	'user-check': UserCheckIcon,
+	'user-x': UserXIcon,
+	wallet: WalletIcon,
+	home: HouseIcon,
+	sliders: SlidersHorizontalIcon,
+	'x-circle': CircleXIcon
 };
 
 /** The icon for `name`, or undefined when the app names one we do not ship. */
-export function appIcon(name: string | null | undefined): Component<{ class?: string }> | undefined {
+export function appIcon(
+	name: string | null | undefined
+): Component<{ class?: string }> | undefined {
 	return name ? appIcons[name] : undefined;
 }

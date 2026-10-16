@@ -4,6 +4,8 @@ export interface OrganizationProfile {
 	db_name: string;
 	name: string;
 	description?: string | null;
+	/** The organization's contact address; older organizations may not have one yet. */
+	email?: string | null;
 	parent_db_name?: string | null;
 	parent_name?: string | null;
 	logo_url?: string | null;
@@ -52,6 +54,12 @@ export interface OrgRole {
 	description?: string | null;
 	is_system: boolean;
 	holders: OrgRoleHolder[];
+	/** The plugin the role belongs to (the part of its name before the dot), when it has one. */
+	plugin?: string | null;
+	plugin_label?: string | null;
+	/** The workspace of that plugin (for example `hrms`, `erp`). */
+	workspace?: string | null;
+	workspace_label?: string | null;
 }
 
 export interface PlatformUser {
@@ -99,7 +107,7 @@ export async function fetchOrganization(db: string): Promise<OrganizationProfile
 
 export async function updateOrganization(
 	db: string,
-	input: { name?: string; description?: string; parent?: string; set?: string[] }
+	input: { name?: string; email?: string; description?: string; parent?: string; set?: string[] }
 ): Promise<OrganizationProfile> {
 	const res = await apiFetch(`/api/ui/organizations/${encodeURIComponent(db)}`, {
 		method: 'PATCH',
@@ -359,6 +367,23 @@ export async function fetchPlatformUsers(): Promise<PlatformUser[]> {
 	return body.users ?? [];
 }
 
+export async function createPlatformUser(input: {
+	username: string;
+	email: string;
+	password: string;
+}): Promise<PlatformUser[]> {
+	const res = await apiFetch('/api/ui/users', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(input)
+	});
+	if (!res.ok) {
+		throw new Error(await readError(res, `User could not be created (${res.status}).`));
+	}
+	const body = (await res.json()) as { users: PlatformUser[] };
+	return body.users ?? [];
+}
+
 export async function fetchOwnershipTransfers(db: string): Promise<OwnershipTransfer[]> {
 	const res = await apiFetch(
 		`/api/ui/organizations/${encodeURIComponent(db)}/ownership-transfers`
@@ -368,4 +393,41 @@ export async function fetchOwnershipTransfers(db: string): Promise<OwnershipTran
 	}
 	const body = (await res.json()) as { transfers: OwnershipTransfer[] };
 	return body.transfers ?? [];
+}
+
+/** One event of the plugin activity log. */
+export interface PluginActivityEvent {
+	at: string | null;
+	/** `catalog_load`, `install` or `upgrade`. */
+	kind: string;
+	plugin: string;
+	from_version?: string | null;
+	to_version?: string | null;
+	/** The organization's database name; empty for a catalog load (it applies to all of them). */
+	organization?: string | null;
+	actor_kind?: string | null;
+	actor_name?: string | null;
+	/** Where it was done from: `desk:reload`, `desk:install`, `cli:upgrade`, `watch`, … */
+	source?: string | null;
+	ok?: boolean | null;
+	error?: string | null;
+}
+
+/** The plugin activity log of an organization, newest first: its installs and upgrades and every catalog load. */
+export async function fetchPluginActivity(
+	db: string,
+	options: { limit?: number; offset?: number } = {}
+): Promise<PluginActivityEvent[]> {
+	const params = new URLSearchParams();
+	if (options.limit) params.set('limit', String(options.limit));
+	if (options.offset) params.set('offset', String(options.offset));
+	const query = params.toString();
+	const res = await apiFetch(
+		`/api/ui/organizations/${encodeURIComponent(db)}/plugin-activity${query ? `?${query}` : ''}`
+	);
+	if (!res.ok) {
+		throw new Error(await readError(res, `The activity could not be loaded (${res.status}).`));
+	}
+	const body = (await res.json()) as { events?: PluginActivityEvent[] };
+	return body.events ?? [];
 }

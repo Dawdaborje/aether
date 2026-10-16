@@ -1,3 +1,10 @@
+---
+title: "Mantle"
+description: "Mantle is Aether’s adaptive working-set layer around the kernel: byte-weighted retention, ghost keys, labeled entries, durable per-org heat, and a kernel-owned warm set for data that barely changes…"
+section: architecture
+status: stable
+order: 260
+---
 # Mantle
 
 Mantle is Aether’s adaptive working-set layer around the kernel: byte-weighted

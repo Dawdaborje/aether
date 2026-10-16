@@ -15,6 +15,7 @@ pub mod model_edit;
 pub mod models;
 pub mod page_patch;
 pub mod pages;
+pub mod record_actions;
 pub mod revisions;
 pub mod runtime;
 pub mod script;

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { reportError } from '$lib/errors/report';
 	import { onMount } from 'svelte';
 	import BuildingIcon from '@lucide/svelte/icons/building-2';
 	import SearchIcon from '@lucide/svelte/icons/search';
@@ -39,7 +40,7 @@
 			organizations = await fetchOrganizations();
 			await orgStore.load();
 		} catch (error) {
-			failed = error instanceof Error ? error.message : 'Organizations could not be loaded.';
+			failed = reportError(error, 'Organizations could not be loaded.');
 			organizations = [];
 		}
 	}

@@ -208,6 +208,38 @@ pub fn parse_roles_list(raw: &str) -> Vec<String> {
         .collect()
 }
 
+/// Like [`allows`], but a page or app that names no roles is not open to every member.
+///
+/// It then needs at least one role of its own plugin (a role named `<plugin>.…`, as offered by the
+/// plugin's `[[roles]]`). A plugin that offers no roles (shared master data such as parties or
+/// units) has nothing of its own to gate on, so it is open to anyone holding at least one role;
+/// a member with no roles at all sees nothing.
+/// `org_roles` is every role defined in the organization.
+pub fn allows_in_plugin(
+    user_roles: &[String],
+    required: &[String],
+    plugin: &str,
+    org_roles: &[String],
+) -> bool {
+    if !required.is_empty() {
+        return allows(user_roles, required);
+    }
+    let prefix = format!("{plugin}.");
+    let offered: Vec<&String> = org_roles.iter().filter(|r| r.starts_with(&prefix)).collect();
+    if offered.is_empty() {
+        return !user_roles.is_empty();
+    }
+    user_roles.iter().any(|role| role == ORG_ADMIN)
+        || user_roles.iter().any(|role| offered.contains(&role))
+}
+
+/// The names of every role defined in the organization `db` is on.
+pub async fn all_names(db: &Surreal<Client>) -> Result<Vec<String>, surrealdb::Error> {
+    let mut response = db.query("SELECT VALUE name FROM roles;").await?.check()?;
+    let names: Vec<String> = response.take(0)?;
+    Ok(names)
+}
+
 /// True when the page/app has no required roles, the caller is `org_admin`, or
 /// they hold at least one of the required roles.
 pub fn allows(user_roles: &[String], required: &[String]) -> bool {
@@ -231,6 +263,24 @@ mod tests {
         assert_eq!(qualify_role("hr", "hr_user"), "hr.hr_user");
         assert_eq!(qualify_role("hr", "hr.hr_manager"), "hr.hr_manager");
         assert_eq!(qualify_role("hr", ORG_ADMIN), ORG_ADMIN);
+    }
+
+    #[test]
+    fn unroled_page_needs_a_role_of_its_plugin() {
+        let org = vec!["erp_inventory.stock_reader".to_string(), "hr.hr_user".to_string()];
+        let none: Vec<String> = vec![];
+        // The plugin offers roles and the user has none of them: hidden.
+        assert!(!allows_in_plugin(&none, &[], "erp_inventory", &org));
+        assert!(!allows_in_plugin(&["hr.hr_user".to_string()], &[], "erp_inventory", &org));
+        // Holding one of the plugin's roles opens it.
+        assert!(allows_in_plugin(&["erp_inventory.stock_reader".to_string()], &[], "erp_inventory", &org));
+        // org_admin holds every role.
+        assert!(allows_in_plugin(&[ORG_ADMIN.to_string()], &[], "erp_inventory", &org));
+        // A plugin with no roles of its own is open to anyone who holds some role, but not to a member with none.
+        assert!(allows_in_plugin(&["hr.hr_user".to_string()], &[], "party", &org));
+        assert!(!allows_in_plugin(&none, &[], "party", &org));
+        // Declared roles still decide, as before.
+        assert!(!allows_in_plugin(&none, &["hr.hr_user".to_string()], "hr", &org));
     }
 
     #[test]

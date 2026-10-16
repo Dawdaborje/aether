@@ -43,7 +43,7 @@ describe('buildHomeEntries', () => {
 		}
 	});
 
-	it('prefers workspace logo and falls back to member icons', () => {
+	it('uses the workspace logo, else its own icon, never a member app logo', () => {
 		const withLogo: AppCategory[] = [
 			{
 				id: 'hrms',
@@ -80,9 +80,7 @@ describe('buildHomeEntries', () => {
 		const noWorkspaceLogo = buildHomeEntries(apps, [
 			{ id: 'hrms', label: 'HRMS', launcher: 'folder' }
 		]);
-		expect(noWorkspaceLogo[0]?.kind === 'folder' && noWorkspaceLogo[0].logo_url).toBe(
-			'/api/ui/plugins/hr/logo'
-		);
+		expect(noWorkspaceLogo[0]?.kind === 'folder' && noWorkspaceLogo[0].logo_url).toBeNull();
 		expect(noWorkspaceLogo[0]?.kind === 'folder' && noWorkspaceLogo[0].icon).toBe('users');
 	});
 
@@ -119,7 +117,7 @@ describe('buildHomeEntries', () => {
 		]);
 	});
 
-	it('collapses a one-app folder to a single tile', () => {
+	it('keeps a one-app folder as a folder', () => {
 		const apps = [
 			app({
 				plugin: 'hr_leave',
@@ -130,6 +128,8 @@ describe('buildHomeEntries', () => {
 			})
 		];
 		const entries = buildHomeEntries(apps, categories);
-		expect(entries).toEqual([{ kind: 'app', app: apps[0] }]);
+		expect(entries).toHaveLength(1);
+		expect(entries[0]?.kind).toBe('folder');
+		expect(entries[0]?.kind === 'folder' && entries[0].apps).toEqual(apps);
 	});
 });

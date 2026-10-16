@@ -1,3 +1,10 @@
+---
+title: "Organizations, switching, and the Apps launcher"
+description: "A user can belong to more than one organization. Which one a request is for depends on [tenancy] org_resolution:"
+section: architecture
+status: stable
+order: 310
+---
 # Organizations, switching, and the Apps launcher
 
 ## A user in several organizations
@@ -49,7 +56,7 @@ After a choice the app reloads the theme and the current page.
 ## The Apps launcher
 
 The home screen for every member is the **Apps** page (`/apps`), a grid of tiles,
-one per installed app (like Frappe's desk home). An app is an installed plugin that
+one per installed app. An app is an installed plugin that
 declares `[app]`:
 
 ```toml

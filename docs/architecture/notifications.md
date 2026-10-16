@@ -1,3 +1,10 @@
+---
+title: "Notifications"
+description: "Notifications are driven by the kernel and delivered with server-sent events (SSE): one-way, over plain HTTP, one connection per browser tab."
+section: architecture
+status: stable
+order: 290
+---
 # Notifications
 
 Notifications are driven by the kernel and delivered with server-sent events (SSE):

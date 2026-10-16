@@ -1,3 +1,10 @@
+---
+title: "Logging"
+description: "Aether logs through the log crate; choose the level with --log (error, warn, info, debug, trace; the default is debug)."
+section: architecture
+status: stable
+order: 240
+---
 # Logging
 
 Aether logs through the `log` crate; choose the level with `--log` (`error`,

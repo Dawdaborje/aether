@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { reportError } from '$lib/errors/report';
 	import { onMount } from 'svelte';
 	import HistoryIcon from '@lucide/svelte/icons/history';
 	import { Empty } from '$lib/components/ui/empty';
@@ -15,7 +16,7 @@
 		try {
 			transfers = await fetchOwnershipTransfers(params.db);
 		} catch (error) {
-			failed = error instanceof Error ? error.message : 'Ownership history could not be loaded.';
+			failed = reportError(error, 'Ownership history could not be loaded.');
 			transfers = [];
 		}
 	});

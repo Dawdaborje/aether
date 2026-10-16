@@ -1,3 +1,10 @@
+---
+title: "SDKs"
+description: "Plugin authors do not touch Extism or the kernel's JSON protocol: each language gets an SDK that turns the kernel's commands into ordinary functions."
+section: guide
+status: stable
+order: 50
+---
 ## SDKs
 
 Plugin authors do not touch Extism or the kernel's JSON protocol: each language gets an SDK that
@@ -13,8 +20,8 @@ What the kernel offers a plugin today, and so what an SDK wraps:
 
 | Area | Commands | Capability |
 |---|---|---|
-| Data | `db::get`, `db::find`, `db::create`, `db::update`, `db::delete`, `db::increment` | `db::query`, `db::mutate` |
-| Reports | `report::query`, `report::export` | `report::query`, `report::export` |
+| Data | `db::get`, `db::find`, `db::create`, `db::update`, `db::upsert`, `db::delete`, `db::increment` | `db::query`, `db::mutate` |
+| Reports | `report::query`, `report::sources`, `report::export` | `report::query`, `report::export` |
 | Data (atomic) | `db::transaction` | `db::transaction`, `db::mutate` |
 | Cache | `cache::get`, `cache::set`, `cache::invalidate`, `cache::clear` | same names |
 | Files | `storage::read`, `storage::write`, `storage::delete`, `storage::list` | same names |

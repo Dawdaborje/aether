@@ -742,8 +742,9 @@ async fn resolve(state: &AppState, identity: &mut Identity, route: &str) -> Resu
         return Err(Refusal::for_page(status, message, &found.page));
     };
 
+    // A page that names no roles needs a role of its own plugin (when the plugin offers any).
     let required = found.page.required_roles.as_deref().unwrap_or(&[]);
-    if !required.is_empty() {
+    {
         let is_developer = identity
             .session
             .as_ref()
@@ -758,7 +759,19 @@ async fn resolve(state: &AppState, identity: &mut Identity, route: &str) -> Resu
                 crate::roles::roles_of_cached(&state.cache, &identity.org_db, &org_db, user_id)
                     .await
                     .map_err(|error| internal("page roles", error))?;
-            if !crate::roles::allows(&user_roles, required) {
+            let org_roles = if required.is_empty() {
+                crate::roles::all_names(&org_db)
+                    .await
+                    .map_err(|error| internal("organization roles", error))?
+            } else {
+                Vec::new()
+            };
+            if !crate::roles::allows_in_plugin(
+                &user_roles,
+                required,
+                &found.page.plugin_name,
+                &org_roles,
+            ) {
                 log::info!(
                     "{request_id} page `{route}` needs roles {required:?}; `{user_id}` lacks them -> 403"
                 );

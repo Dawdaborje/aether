@@ -16,6 +16,8 @@
 	// Everything else under `/desk` is for developers only.
 	// Legacy desk URLs (`/organizations`, …) stay reachable so they can 308 to `/desk/…`.
 	const onApps = $derived(routeId.startsWith('/(app)/(system)/apps'));
+	// `/assistant` is the AI chat, for every signed-in member (the server decides whether AI is on).
+	const onAssistant = $derived(routeId === '/(app)/(system)/assistant');
 	const onProfile = $derived(
 		routeId === '/(app)/(system)/profile' || routeId.startsWith('/(app)/(system)/profile/')
 	);
@@ -40,6 +42,7 @@
 	);
 	const allowed = $derived(
 		onApps ||
+			onAssistant ||
 			onProfile ||
 			(onUsers && (authSession.canManageUsers || authSession.isDeveloper)) ||
 			(onRoles && (authSession.canManageUsers || authSession.isDeveloper)) ||

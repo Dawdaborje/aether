@@ -108,7 +108,7 @@
 				{/each}
 			</ul>
 		{:else if appsStore.problem === 'failed'}
-			<p class="text-sm text-destructive" role="alert">The apps could not be loaded.</p>
+			<p class="text-sm text-muted-foreground">The apps could not be loaded.</p>
 		{:else if apps.length === 0}
 			<Empty
 				icon={PackageOpenIcon}

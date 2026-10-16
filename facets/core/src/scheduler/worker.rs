@@ -344,6 +344,12 @@ async fn execute(state: &AppState, org_db: &str, job: &Job) -> Result<(), JobFai
                     permanent: error.permanent,
                 })
         }
+        crate::ai_jobs::KIND => crate::ai_jobs::run(state, org_db, job)
+            .await
+            .map_err(|(message, permanent)| JobFailure { message, permanent }),
+        crate::ocr_jobs::KIND => crate::ocr_jobs::run(state, org_db, job)
+            .await
+            .map_err(|(message, permanent)| JobFailure { message, permanent }),
         "communication" => messaging::deliver(state, org_db, &payload)
             .await
             .map_err(|error| JobFailure {

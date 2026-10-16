@@ -111,6 +111,8 @@ struct TaskDbRow {
     plugin: String,
     name: String,
     function_name: String,
+    title: Option<String>,
+    description: Option<String>,
     cron: Option<String>,
     every_secs: Option<i64>,
     timezone: Option<String>,
@@ -133,6 +135,8 @@ fn task_json(row: TaskDbRow) -> Value {
         "plugin": row.plugin,
         "name": row.name,
         "function": row.function_name,
+        "title": row.title,
+        "description": row.description,
         "kind": kind,
         "cron": row.cron,
         "every_secs": row.every_secs,
@@ -165,7 +169,7 @@ async fn list_tasks(
     };
     let mut response = match org
         .query(
-            "SELECT plugin, name, function_name, cron, every_secs, timezone, queue, max_attempts, source, enabled, catch_up, \
+            "SELECT plugin, name, function_name, title, description, cron, every_secs, timezone, queue, max_attempts, source, enabled, catch_up, \
              <string> next_run AS next_run, <string> last_run AS last_run \
              FROM scheduled_tasks WHERE plugin IN $plugins ORDER BY plugin, name;",
         )
@@ -204,7 +208,7 @@ async fn get_task(
     }
     let mut response = match org
         .query(
-            "SELECT plugin, name, function_name, cron, every_secs, timezone, queue, max_attempts, source, enabled, catch_up, \
+            "SELECT plugin, name, function_name, title, description, cron, every_secs, timezone, queue, max_attempts, source, enabled, catch_up, \
              <string> next_run AS next_run, <string> last_run AS last_run \
              FROM ONLY scheduled_tasks WHERE plugin = $plugin AND name = $name LIMIT 1;",
         )
@@ -240,6 +244,7 @@ async fn get_task(
 #[derive(Debug, Deserialize)]
 struct RunsQuery {
     limit: Option<i64>,
+    offset: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, SurrealValue)]
@@ -298,17 +303,19 @@ async fn list_runs(
         Err(response) => return response,
     };
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    let offset = query.offset.unwrap_or(0).max(0);
     let mut response = match org
         .query(
             "SELECT <string> record::id(id) AS id, state, attempts, max_attempts, last_error, \
              <string> date_started AS date_started, <string> date_finished AS date_finished, \
              <string> run_at AS run_at, <string> date_created AS date_created \
              FROM jobs WHERE plugin = $plugin AND task = $name \
-             ORDER BY date_created DESC LIMIT $limit;",
+             ORDER BY date_created DESC LIMIT $limit START $offset;",
         )
         .bind(("plugin", plugin))
         .bind(("name", name))
         .bind(("limit", limit))
+        .bind(("offset", offset))
         .await
         .and_then(|r| r.check())
     {

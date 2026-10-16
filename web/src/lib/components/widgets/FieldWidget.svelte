@@ -5,9 +5,10 @@
 	import FileField from '$lib/media/FileField.svelte';
 	import ImageField from '$lib/media/ImageField.svelte';
 	import { Input } from '$lib/components/ui/input';
+	import { DatePicker } from '$lib/components/ui/date-picker';
 	import { Textarea } from '$lib/components/ui/textarea';
 	import { Badge } from '$lib/components/ui/badge';
-	import { NativeSelect } from '$lib/components/ui/native-select';
+	import { Select } from '$lib/components/ui/select';
 	import { Field, FieldLabel, FieldContent, FieldDescription } from '$lib/components/ui/field';
 	import { recordOptions, recordTitles } from '$lib/records/titles';
 	import { SearchPicker, type SearchPickerItem } from '$lib/components/ui/search-picker';
@@ -295,17 +296,31 @@
 					oninput={(event) => (value.current = event.currentTarget.value)}
 				/>
 			{:else if fieldType === 'selection'}
-				<NativeSelect
+				<Select
 					{id}
 					{required}
-					value={String(value.current)}
-					onchange={(event) => (value.current = event.currentTarget.value)}
-				>
-					<option value="">Select…</option>
-					{#each options as option (option.value)}
-						<option value={option.value}>{option.label}</option>
-					{/each}
-				</NativeSelect>
+					placeholder="Select…"
+					clearLabel="None"
+					options={options.map((option) => ({
+						value: option.value,
+						// A choice written as `prefer_not_to_say` reads as "Prefer not to say".
+						label:
+							option.label === option.value && /^[a-z0-9_]+$/.test(option.value)
+								? option.value.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase())
+								: option.label
+					}))}
+					value={String(value.current ?? '')}
+					onchange={(next) => (value.current = next)}
+				/>
+			{:else if fieldType === 'date' || fieldType === 'datetime'}
+				<DatePicker
+					{id}
+					{required}
+					type={fieldType === 'datetime' ? 'datetime' : 'date'}
+					placeholder={label}
+					value={String(value.current ?? '')}
+					onchange={(next) => (value.current = next)}
+				/>
 			{:else}
 				{@const numeric =
 					fieldType === 'integer' || fieldType === 'float' || fieldType === 'currency'}
@@ -314,13 +329,7 @@
 				<Input
 					{id}
 					{required}
-					type={numeric || decimal
-						? 'number'
-						: fieldType === 'date'
-							? 'date'
-							: fieldType === 'datetime'
-								? 'datetime-local'
-								: 'text'}
+					type={numeric || decimal ? 'number' : 'text'}
 					{step}
 					placeholder={label}
 					value={String(value.current)}

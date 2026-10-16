@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { reportError } from '$lib/errors/report';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
@@ -37,7 +38,7 @@
 			authSession.applyUser(updated);
 			message = 'Profile saved.';
 		} catch (error) {
-			failed = error instanceof Error ? error.message : 'Could not save.';
+			failed = reportError(error, 'Could not save.');
 		} finally {
 			working = false;
 		}
@@ -58,7 +59,7 @@
 			photoCacheKey = Date.now();
 			message = 'Photo updated.';
 		} catch (error) {
-			failed = error instanceof Error ? error.message : 'Could not upload the photo.';
+			failed = reportError(error, 'Could not upload the photo.');
 		} finally {
 			photoWorking = false;
 		}
@@ -76,7 +77,7 @@
 			photoCacheKey = Date.now();
 			message = 'Photo removed.';
 		} catch (error) {
-			failed = error instanceof Error ? error.message : 'Could not remove the photo.';
+			failed = reportError(error, 'Could not remove the photo.');
 		} finally {
 			photoWorking = false;
 		}

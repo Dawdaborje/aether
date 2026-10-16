@@ -1,0 +1,17 @@
+{
+  "code": "ai",
+  "name": "AI assistant",
+  "description": "Ask a language model, through the organization's own provider and budget. The provider and its key are the kernel's; the plugin sends only the conversation.",
+  "capabilities": [
+    {
+      "code": "complete",
+      "name": "Ask a language model",
+      "description": "Complete a conversation: directly (ai::complete), as a queued request with a callback (ai::submit, ai::result), and the provider's state (ai::status)."
+    },
+    {
+      "code": "embed",
+      "name": "Embed texts",
+      "description": "Turn texts into vectors (ai::embed), and remember a plugin's own text for search by meaning (ai::index, ai::search, ai::forget)."
+    }
+  ]
+}

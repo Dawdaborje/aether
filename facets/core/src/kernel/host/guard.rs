@@ -82,6 +82,16 @@ pub async fn held_roles(ctx: &PluginHostContext) -> Result<Vec<String>, HostErro
     Ok(held)
 }
 
+/// The roles a read of `grant`'s model is judged by: the caller's own for a `direct` grant, else
+/// those plus the `via:` markers of the call trail.
+async fn held_for(ctx: &PluginHostContext, grant: &ModelGrant) -> Result<Vec<String>, HostError> {
+    if grant.direct {
+        Ok(roles(ctx).await?.clone())
+    } else {
+        held_roles(ctx).await
+    }
+}
+
 /// Whether rules are set aside for this caller.
 async fn exempt(ctx: &PluginHostContext) -> Result<bool, HostError> {
     if ctx.bypass_rules {
@@ -153,13 +163,14 @@ pub async fn decide(
     if !rules.limits(op) || exempt(ctx).await? {
         return Ok(Decision::Open);
     }
-    let held = &held_roles(ctx).await?;
+    let owner = grant.rule_owner(&ctx.plugin_name);
+    let held = &held_for(ctx, grant).await?;
     let mut values = HashMap::new();
-    for name in rules.variables_needed(&ctx.plugin_name, op, held) {
+    for name in rules.variables_needed(owner, op, held) {
         let value = variable(ctx, &name).await?;
         values.insert(name, value);
     }
-    Ok(rules.decide(&ctx.plugin_name, op, held, &values)?)
+    Ok(rules.decide(owner, op, held, &values)?)
 }
 
 /// A condition to add to a statement, or nothing when the caller may not touch any record.
@@ -355,15 +366,16 @@ pub async fn field_limits(
     if exempt(ctx).await? {
         return Ok(Default::default());
     }
-    let held = &held_roles(ctx).await?;
+    let owner = grant.rule_owner(&ctx.plugin_name);
+    let held = &held_for(ctx, grant).await?;
     Ok((
         rules
-            .hidden_fields(&ctx.plugin_name, held)
+            .hidden_fields(owner, held)
             .into_iter()
             .map(str::to_string)
             .collect(),
         rules
-            .locked_fields(&ctx.plugin_name, held)
+            .locked_fields(owner, held)
             .into_iter()
             .map(str::to_string)
             .collect(),

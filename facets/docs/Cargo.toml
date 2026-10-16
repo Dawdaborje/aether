@@ -1,0 +1,20 @@
+[package]
+name = "aether_docs"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+
+[dependencies]
+axum.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[build-dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

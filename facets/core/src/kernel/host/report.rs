@@ -13,7 +13,7 @@ use aether_report::{
 use serde_json::{Map, Value as JsonValue};
 
 use crate::data_model::query::{Columns, Unchecked, compile_filter};
-use crate::data_model::{Filter, ModelSchema};
+use crate::data_model::{Decision, FieldType, Filter, ModelSchema, Operation};
 
 use super::context::{ModelGrant, PluginHostContext};
 use super::db::{Access, Extra, guarded_condition, require_model, run_audited, validate_ident};
@@ -27,9 +27,10 @@ pub async fn report_query(
     payload: &JsonValue,
 ) -> Result<JsonValue, HostError> {
     ctx.require_cap("report::query")?;
-    let query = ReportQuery::parse(payload)
+    let mut query = ReportQuery::parse(payload)
         .map_err(|error| HostError::InvalidPayload(error.to_string()))?;
     let grant = require_model(ctx, &query.model, false)?;
+    resolve_report_periods(grant, &mut query)?;
     let Some((condition, mut binds, hidden)) =
         guarded_condition(ctx, grant, &query.model, &query.filter).await?
     else {
@@ -43,7 +44,7 @@ pub async fn report_query(
     for dimension in &query.dimensions {
         let expression = dimension_sql(grant, dimension)?;
         select.push(format!("{expression} AS {}", dimension.field));
-        group.push(expression);
+        group.push(group_key(dimension, expression));
     }
     let mut decimals = Vec::new();
     let mut measures = Vec::new();
@@ -97,6 +98,38 @@ pub async fn report_query(
     }
     body.push_str(" GROUP ALL);");
 
+    // Subtotals: the same measures grouped by each leading prefix of the dimensions, so a
+    // pivot has its row totals even for measures that do not add up (avg, avg_days).
+    let mut sub_keys = Vec::new();
+    if query.subtotals {
+        for depth in 1..query.dimensions.len() {
+            let mut sub_select: Vec<String> = Vec::new();
+            let mut sub_group: Vec<String> = Vec::new();
+            for dimension in &query.dimensions[..depth] {
+                let expression = dimension_sql(grant, dimension)?;
+                sub_select.push(format!("{expression} AS {}", dimension.field));
+                sub_group.push(group_key(dimension, expression));
+            }
+            for ((name, _), sql) in query.measures.iter().zip(measures.iter()) {
+                sub_select.push(format!("{sql} AS {name}"));
+            }
+            body.push_str(&format!(
+                "\nLET $sub{depth} = (SELECT {} FROM type::table($__table)",
+                sub_select.join(", ")
+            ));
+            if !condition.is_empty() {
+                body.push_str(" WHERE ");
+                body.push_str(&condition);
+            }
+            body.push_str(&format!(
+                " GROUP BY {} LIMIT {});",
+                sub_group.join(", "),
+                query.limit
+            ));
+            sub_keys.push(depth);
+        }
+    }
+
     let (fill_label, fill_sql) = match &query.fill {
         Some(fill) => {
             let sql = fill_sql(ctx, fill, &mut binds).await?;
@@ -106,7 +139,13 @@ pub async fn report_query(
     };
     body.push('\n');
     body.push_str(&fill_sql);
-    body.push_str("\nLET $rows = [{ groups: $groups, total: $total, fill: $fill }];");
+    let subtotal_fields: String = sub_keys
+        .iter()
+        .map(|depth| format!(", sub{depth}: $sub{depth}"))
+        .collect();
+    body.push_str(&format!(
+        "\nLET $rows = [{{ groups: $groups, total: $total, fill: $fill{subtotal_fields} }}];"
+    ));
 
     // Everything up to the preview cap depends only on the data and the statement, so that is
     // what Mantle keeps; the cap (an organization setting) is applied after.
@@ -169,8 +208,13 @@ pub async fn report_query(
                 }
                 groups.truncate(query.limit as usize);
             }
+            let mut subtotals = Map::new();
+            for depth in &sub_keys {
+                let rows = present_rows(array_of(bundle.get(format!("sub{depth}"))), &decimals);
+                subtotals.insert(depth.to_string(), JsonValue::Array(rows));
+            }
             Ok((
-                serde_json::json!({ "groups": groups, "total": total }),
+                serde_json::json!({ "groups": groups, "total": total, "subtotals": subtotals }),
                 Vec::new(),
                 n,
             ))
@@ -178,7 +222,26 @@ pub async fn report_query(
     )
     .await?;
     let mut groups: Vec<JsonValue> = array_of(answer.get("groups"));
-    let total = answer.get("total").cloned().unwrap_or(JsonValue::Null);
+    let mut total = answer.get("total").cloned().unwrap_or(JsonValue::Null);
+    // Formulas are pure functions of measures, so they run after the cached read.
+    aether_report::apply_formulas(&query.formulas, &query.dimensions, &mut groups, &mut total);
+    let mut subtotals = answer
+        .get("subtotals")
+        .and_then(JsonValue::as_object)
+        .cloned()
+        .unwrap_or_default();
+    for (depth, rows) in subtotals.iter_mut() {
+        let depth: usize = depth.parse().unwrap_or(1);
+        if let Some(rows) = rows.as_array_mut() {
+            let mut unused = total.clone();
+            aether_report::apply_formulas(
+                &query.formulas,
+                &query.dimensions[..depth.min(query.dimensions.len())],
+                rows,
+                &mut unused,
+            );
+        }
+    }
 
     let total_groups = groups.len() as u64;
     let (shown, preview_rows) = if query.preview {
@@ -195,10 +258,95 @@ pub async fn report_query(
         "shown": shown,
         "total_groups": total_groups,
     });
+    if query.subtotals {
+        data["subtotals"] = JsonValue::Object(subtotals);
+    }
     if let Some(cap) = preview_rows {
         data["preview_rows"] = JsonValue::from(cap);
     }
     Ok(serde_json::json!({ "ok": true, "data": data }))
+}
+
+/// `report::sources`: the models this plugin may report on, with the fields the caller may see.
+///
+/// Models the caller can read nothing of (their rules match no record) are left out, and so are
+/// fields their rules hide, so a query builder never offers a column the query would refuse.
+/// Needs `report::query`. Payload (all optional): `model` names one source, `fields: false`
+/// answers names only (no field list, and no look at the rules). Answer:
+/// `{ sources: [{ name, plugin, model, fields: [..] }] }`.
+pub async fn report_sources(
+    ctx: &PluginHostContext,
+    payload: &JsonValue,
+) -> Result<JsonValue, HostError> {
+    ctx.require_cap("report::query")?;
+    let only = payload.get("model").and_then(JsonValue::as_str);
+    let with_fields = payload.get("fields").and_then(JsonValue::as_bool) != Some(false);
+    let mut names: Vec<&String> = ctx
+        .models
+        .keys()
+        .filter(|name| only.is_none_or(|only| name.as_str() == only))
+        .collect();
+    names.sort();
+    let mut sources = Vec::new();
+    for name in names {
+        let Ok(grant) = require_model(ctx, name, false) else {
+            continue;
+        };
+        let Some(schema) = &grant.schema else {
+            continue;
+        };
+        let (plugin, model) = match name.split_once('.') {
+            Some((plugin, model)) => (Some(plugin), model),
+            None => (None, name.as_str()),
+        };
+        if !with_fields {
+            // Names only still leave out a model the rules let the caller read nothing of.
+            if matches!(guard::decide(ctx, grant, Operation::Read).await?, Decision::Deny) {
+                continue;
+            }
+            sources.push(serde_json::json!({ "name": name, "plugin": plugin, "model": model }));
+            continue;
+        }
+        let Some((_, _, hidden)) = guarded_condition(ctx, grant, name, &Map::new()).await? else {
+            continue;
+        };
+        let fields: Vec<JsonValue> = schema
+            .fields()
+            .filter(|field| {
+                !field.deprecated
+                    && field.kind.has_column()
+                    && !matches!(field.kind, FieldType::Json | FieldType::Image | FieldType::File)
+                    && !hidden.contains(&field.name)
+            })
+            .map(|field| {
+                let options: Vec<JsonValue> = field
+                    .options
+                    .iter()
+                    .map(|option| {
+                        serde_json::json!({
+                            "value": option.value,
+                            "label": option.label.clone().unwrap_or_else(|| option.value.clone()),
+                        })
+                    })
+                    .collect();
+                serde_json::json!({
+                    "name": field.name,
+                    "label": field.label,
+                    "type": field.kind.as_str(),
+                    "target": field.target,
+                    "scale": schema.scale_of(&field.name).ok().flatten(),
+                    "options": options,
+                })
+            })
+            .collect();
+        sources.push(serde_json::json!({
+            "name": name,
+            "plugin": plugin,
+            "model": model,
+            "fields": fields,
+        }));
+    }
+    Ok(serde_json::json!({ "ok": true, "data": { "sources": sources } }))
 }
 
 pub async fn report_export(
@@ -234,6 +382,29 @@ fn empty_answer(query: &ReportQuery) -> JsonValue {
     })
 }
 
+/// Turn `in_period` names in the filters into dates (UTC), using each field's kind.
+fn resolve_report_periods(grant: &ModelGrant, query: &mut ReportQuery) -> Result<(), HostError> {
+    let today = chrono::Utc::now().date_naive();
+    let kind = |field: &str| -> Option<String> {
+        grant
+            .schema
+            .as_ref()
+            .and_then(|schema| schema.field_kind(field).ok())
+            .map(str::to_string)
+    };
+    let invalid = |error: aether_report::ReportError| HostError::InvalidPayload(error.to_string());
+    aether_report::resolve_periods(&mut query.filter, today, &kind).map_err(invalid)?;
+    for (_, measure) in query.measures.iter_mut() {
+        if let Measure::CountIf(filter)
+        | Measure::SumIf { filter, .. }
+        | Measure::AvgIf { filter, .. } = measure
+        {
+            aether_report::resolve_periods(filter, today, &kind).map_err(invalid)?;
+        }
+    }
+    Ok(())
+}
+
 fn check_grains(grant: &ModelGrant, query: &ReportQuery) -> Result<(), HostError> {
     let Some(schema) = &grant.schema else {
         return Ok(());
@@ -266,13 +437,30 @@ fn require_temporal(schema: &ModelSchema, field: &str, what: &str) -> Result<(),
     }
 }
 
+/// What a statement groups by. A plain column is grouped as it is. A date grain is a function of
+/// the column, and a `GROUP BY` takes fields, not calls, so it groups by the alias the select gives it.
+fn group_key(dimension: &Dimension, expression: String) -> String {
+    if dimension.grain.is_some() {
+        dimension.field.clone()
+    } else {
+        expression
+    }
+}
+
 fn dimension_sql(grant: &ModelGrant, dimension: &Dimension) -> Result<String, HostError> {
     let column = column_expr(grant, &dimension.field)?;
+    // A record without the date has no group: it stays empty rather than failing the whole report.
+    let dated = |formatted: String| {
+        format!("IF {column} = NONE OR {column} = NULL THEN NONE ELSE {formatted} END")
+    };
     Ok(match dimension.grain {
-        Some(grain) => format!(
+        Some(grain) if grain.is_quarter() => dated(format!(
+            "string::concat(time::format(type::datetime({column}), \"%Y\"), \"-Q\", <string>math::ceil(<int>time::format(type::datetime({column}), \"%m\") / 3))"
+        )),
+        Some(grain) => dated(format!(
             "time::format(type::datetime({column}), \"{}\")",
             grain.format()
-        ),
+        )),
         None => column,
     })
 }
@@ -304,20 +492,18 @@ fn measure_sql(
         Measure::Min(field) => number(field, "math::min"),
         Measure::Max(field) => number(field, "math::max"),
         Measure::CountIf(filter) => {
-            let parsed = Filter::parse(filter)?;
-            let compiled = match &grant.schema {
-                Some(schema) => compile_filter(&parsed, schema.as_ref(), prefix)?,
-                None => compile_filter(&parsed, &Unchecked, prefix)?,
-            };
-            let condition = if compiled.sql.is_empty() {
-                "true".to_string()
-            } else {
-                compiled.sql
-            };
-            Ok((
-                format!("count(IF {condition} THEN true ELSE NONE END)"),
-                compiled.binds,
-            ))
+            let (condition, binds) = condition_sql(grant, filter, prefix)?;
+            Ok((format!("count(IF {condition} THEN true ELSE NONE END)"), binds))
+        }
+        Measure::SumIf { field, filter } => {
+            let column = column_expr(grant, field)?;
+            let (condition, binds) = condition_sql(grant, filter, prefix)?;
+            Ok((format!("math::sum(IF {condition} THEN {column} ELSE 0 END)"), binds))
+        }
+        Measure::AvgIf { field, filter } => {
+            let column = column_expr(grant, field)?;
+            let (condition, binds) = condition_sql(grant, filter, prefix)?;
+            Ok((format!("math::mean(IF {condition} THEN {column} ELSE NONE END)"), binds))
         }
         Measure::AvgDays { from, to } => {
             let start = column_expr(grant, from)?;
@@ -335,11 +521,31 @@ fn measure_sql(
     }
 }
 
+/// A filter as a boolean SQL condition (`true` when it is empty) with its binds.
+fn condition_sql(
+    grant: &ModelGrant,
+    filter: &Map<String, JsonValue>,
+    prefix: &str,
+) -> Result<(String, Vec<(String, JsonValue)>), HostError> {
+    let parsed = Filter::parse(filter)?;
+    let compiled = match &grant.schema {
+        Some(schema) => compile_filter(&parsed, schema.as_ref(), prefix)?,
+        None => compile_filter(&parsed, &Unchecked, prefix)?,
+    };
+    let condition = if compiled.sql.is_empty() {
+        "true".to_string()
+    } else {
+        compiled.sql
+    };
+    Ok((condition, compiled.binds))
+}
+
 fn measure_scale(grant: &ModelGrant, measure: &Measure) -> Option<u32> {
     let field = match measure {
         Measure::Sum(field) | Measure::Avg(field) | Measure::Min(field) | Measure::Max(field) => {
             field.as_str()
         }
+        Measure::SumIf { field, .. } | Measure::AvgIf { field, .. } => field.as_str(),
         _ => return None,
     };
     grant.schema.as_ref()?.scale(field)
@@ -438,8 +644,14 @@ fn zero_measures(query: &ReportQuery) -> JsonValue {
     let mut object = Map::new();
     for (name, measure) in &query.measures {
         let value = match measure {
-            Measure::Count | Measure::CountIf(_) | Measure::Sum(_) => JsonValue::from(0),
-            Measure::Avg(_) | Measure::Min(_) | Measure::Max(_) | Measure::AvgDays { .. } => {
+            Measure::Count | Measure::CountIf(_) | Measure::Sum(_) | Measure::SumIf { .. } => {
+                JsonValue::from(0)
+            }
+            Measure::Avg(_)
+            | Measure::Min(_)
+            | Measure::Max(_)
+            | Measure::AvgIf { .. }
+            | Measure::AvgDays { .. } => {
                 JsonValue::Null
             }
         };

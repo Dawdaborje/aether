@@ -8,6 +8,6 @@ mod spec;
 
 pub use export::{ExportColumn, ExportFile, ExportFormat, ExportTable, export_table, parse_export};
 pub use spec::{
-    AvgDaysTo, Dimension, Fill, Grain, Measure, ReportError, ReportQuery, PREVIEW_CHOICES,
-    PREVIEW_DEFAULT, normalize_preview_rows,
+    AvgDaysTo, Dimension, Fill, Formula, Grain, Measure, ReportError, ReportQuery, PREVIEW_CHOICES,
+    PREVIEW_DEFAULT, normalize_preview_rows, apply_formulas, MAX_GROUPS, period_bounds, resolve_periods,
 };

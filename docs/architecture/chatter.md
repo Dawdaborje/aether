@@ -1,6 +1,13 @@
+---
+title: "Chatter"
+description: "The conversation and history of a record, as a chatter timeline. It is off unless a model asks for it: a model without it has no panel, no endpoints, no stored lines and no cost."
+section: architecture
+status: stable
+order: 100
+---
 # Chatter
 
-The conversation and history of a record, in the style of Odoo's chatter and Frappe's timeline. It
+The conversation and history of a record, as a chatter timeline. It
 is **off unless a model asks for it**: a model without it has no panel, no endpoints, no stored lines
 and no cost.
 

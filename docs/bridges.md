@@ -1,3 +1,10 @@
+---
+title: "Aether Bridges"
+description: "Bridges are first-party integrations compiled into the kernel. A bridge's settings and credentials live in the database settings (global, with an organization override), secrets encrypted; nothing…"
+section: guide
+status: stable
+order: 60
+---
 ## Aether Bridges
 
 Bridges are first-party integrations compiled into the kernel. A bridge's settings and credentials live in the database settings (global, with an organization override), secrets encrypted; nothing about a bridge is written in `aether.toml`. Implemented so far: the messaging bridges (SMTP, Resend, Twilio, Termii, Africa's Talking; see [Communication](architecture/communication.md)), **Paystack** and **OpenStreetMap**, which plugins call with `bridge::call`. The table below is the plan; the rest are still empty crates.
@@ -67,6 +74,10 @@ let started: Value = bridge::call("paystack", "initialize_transaction", &json!({
 | Bridge | Settings | Actions |
 |---|---|---|
 | `paystack` | `secret_key` (secret), `base_url` | `initialize_transaction { email, amount, currency?, reference?, callback_url?, metadata? }` (amount in the currency's smallest unit) returns `{ authorization_url, access_code, reference }`; `verify_transaction { reference }` returns `{ status, reference, amount, currency, paid_at, channel, customer_email, gateway_response }` |
+| `liteparse` *(internal: used by `ocr::parse`, not by `bridge::call`)* | `binary_path`, `default_language`, `tessdata_path`, `ocr_server_url`, `ocr_server_token` (secret), `dpi`, `max_pages`, `timeout_secs` | `parse { path, language?, pages?, ocr?, max_pages?, max_text_bytes?, timeout_secs? }`, `status {}`; see [Document parsing](architecture/ocr.md) |
+| `ollama` *(internal: used by `ai::complete`, not by `bridge::call`)* | `base_url`, `default_model`, `default_embed_model` | `chat { messages, model?, max_tokens?, temperature?, json?, timeout_secs? }`, `embed { input, model? }`, `models {}`; local models, see [AI](architecture/ai.md) |
+| `openai_compatible` *(internal)* | `api_key` (secret), `base_url`, `default_model`, `default_embed_model` | `chat`, `embed`, `models`; OpenAI, OpenRouter, vLLM, LM Studio and any server with the same API |
+| `anthropic` *(internal)* | `api_key` (secret), `base_url`, `default_model` | `chat`, `models`; no embeddings |
 | `open_street_map` | `base_url`, `contact` | `geocode { query, limit?, country_codes? }` returns a list of `{ display_name, lat, lon, kind, importance }`; `reverse { lat, lon }` returns `{ display_name, lat, lon, address }` or `null`. The public server allows about one request a second and asks for a contact: requests are spaced a second apart and identify the kernel; for real volume run your own Nominatim and set `base_url` |
 
 ### Adding a bridge

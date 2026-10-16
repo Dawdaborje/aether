@@ -22,7 +22,7 @@ use serde_json::json;
 use surrealdb::types::SurrealValue;
 
 use crate::app_dir::AppDir;
-use crate::application::settings_api::require_session;
+use crate::application::settings_api::require_active_user;
 use crate::plugin_manager::revisions::{self, FileEntry, RevisionIndex, relative_path};
 use crate::state::AppState;
 
@@ -216,7 +216,7 @@ async fn serve_asset(
     headers: HeaderMap,
     AxumPath((plugin, path)): AxumPath<(String, String)>,
 ) -> Response {
-    if let Err((status, body)) = require_session(&state, &headers).await {
+    if let Err((status, body)) = require_active_user(&state, &headers).await {
         return (status, body).into_response();
     }
     let Some(logical) = safe_relative(&path) else {
@@ -236,7 +236,7 @@ async fn serve_logo(
     headers: HeaderMap,
     AxumPath(plugin): AxumPath<String>,
 ) -> Response {
-    if let Err((status, body)) = require_session(&state, &headers).await {
+    if let Err((status, body)) = require_active_user(&state, &headers).await {
         return (status, body).into_response();
     }
     let row = match lookup_plugin(&state, &plugin).await {
@@ -258,7 +258,7 @@ async fn serve_workspace_logo(
     headers: HeaderMap,
     AxumPath(workspace): AxumPath<String>,
 ) -> Response {
-    if let Err((status, body)) = require_session(&state, &headers).await {
+    if let Err((status, body)) = require_active_user(&state, &headers).await {
         return (status, body).into_response();
     }
     let core = match state.core().await {

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { reportError } from '$lib/errors/report';
 	import { page } from '$app/stores';
 	import { resolve } from '$app/paths';
 	import ControlPanel from '$lib/components/layout/shell/ControlPanel.svelte';
@@ -29,6 +30,11 @@
 			id: 'schedules',
 			label: 'Schedules',
 			href: `/desk/organizations/${params.db}/schedules`
+		},
+		{
+			id: 'plugin-activity',
+			label: 'Plugin activity',
+			href: `/desk/organizations/${params.db}/plugin-activity`
 		}
 	]);
 
@@ -38,6 +44,7 @@
 		if (path.includes('/roles')) return 'roles';
 		if (path.includes('/ownership')) return 'ownership';
 		if (path.includes('/schedules')) return 'schedules';
+		if (path.includes('/plugin-activity')) return 'plugin-activity';
 		return 'overview';
 	});
 
@@ -47,7 +54,7 @@
 		try {
 			organization = await fetchOrganization(params.db);
 		} catch (error) {
-			failed = error instanceof Error ? error.message : 'Organization could not be loaded.';
+			failed = reportError(error, 'Organization could not be loaded.');
 			organization = null;
 		} finally {
 			loading = false;

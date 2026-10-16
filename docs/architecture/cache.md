@@ -1,3 +1,10 @@
+---
+title: "Caching layer (cache::)"
+description: "Plugins reach a namespaced key/value store through kernel commands only: cache::get, cache::set, cache::invalidate, cache::clear (and structured helpers such as cache::set_row / cache::get_row)."
+section: architecture
+status: stable
+order: 90
+---
 # Caching layer (`cache::*`)
 
 Plugins reach a namespaced key/value store through kernel commands only:

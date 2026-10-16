@@ -38,6 +38,8 @@ pub fn routes() -> Router<AppState> {
         .merge(crate::scheduler_api::routes())
         .merge(crate::mantle_api::routes())
         .merge(crate::search_favorites_api::routes())
+        .merge(crate::record_favorites_api::routes())
+        .merge(crate::ai_chat::routes())
         .merge(crate::ui_prefs_api::routes())
         .merge(crate::company_api::routes())
         .merge(crate::models_api::routes())

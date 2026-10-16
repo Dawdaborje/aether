@@ -1,0 +1,41 @@
+{
+ "code": "ai",
+ "name": "AI providers",
+ "description": "Language models that answer plugins through the kernel",
+ "icon": "sparkles",
+ "icon_type": "lucide",
+ "color": "violet",
+ "color_type": "lucide",
+ "items": [
+  {
+   "feature_key": "ollama",
+   "name": "Ollama",
+   "label": "Ollama",
+   "description": "Models that run on your own machines",
+   "version": null,
+   "is_builtin": true,
+   "enabled_globally": false,
+   "config_schema": null
+  },
+  {
+   "feature_key": "openai_compatible",
+   "name": "OpenAI-compatible",
+   "label": "OpenAI-compatible",
+   "description": "OpenAI, OpenRouter, vLLM, LM Studio and any server with the same API",
+   "version": null,
+   "is_builtin": true,
+   "enabled_globally": false,
+   "config_schema": null
+  },
+  {
+   "feature_key": "anthropic",
+   "name": "Anthropic",
+   "label": "Anthropic",
+   "description": "Claude models",
+   "version": null,
+   "is_builtin": true,
+   "enabled_globally": false,
+   "config_schema": null
+  }
+ ]
+}

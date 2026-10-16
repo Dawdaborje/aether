@@ -12,14 +12,14 @@
 	}: {
 		/** Trail from the app down to this page; the last entry is the current page. */
 		crumbs: Crumb[];
-		/** Primary buttons, shown on the left under the trail (Odoo's "New" position). */
+		/** Primary buttons, shown on the left under the trail (the "New" position). */
 		actions?: Snippet;
 		/** Right-hand controls: search, filters, view switcher. */
 		children?: Snippet;
 	} = $props();
 </script>
 
-<!-- Odoo's control panel: breadcrumbs, the page's main actions, and its search and view controls. -->
+<!-- Control panel: breadcrumbs, the page's main actions, and its search and view controls. -->
 <div class="border-b border-border bg-canvas" data-part="page.control-panel">
 	<div class="flex w-full flex-wrap items-center gap-x-6 gap-y-1 px-4 py-2 md:px-6">
 		<div class="min-w-0 space-y-1.5">

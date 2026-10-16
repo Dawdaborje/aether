@@ -11,7 +11,7 @@ type AppMenu = {
  * Flat app menus → sidebar NavItems.
  *
  * - No `group` → top-level link.
- * - A group with 2+ pages → collapsible section (Frappe-style).
+ * - A group with 2+ pages → collapsible section.
  * - A group with only one page → that page as a top-level link (no redundant
  *   "ATTENDANCE ▾ / Attendance" dropdown).
  *

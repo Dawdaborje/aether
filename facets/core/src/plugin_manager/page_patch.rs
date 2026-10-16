@@ -23,8 +23,7 @@
 //!
 //! `expr` is a small subset of XPath: steps joined by `/` (a child) or `//` (any
 //! descendant); each step is a tag name or `*`, with `[@name='value']` conditions and an
-//! optional `[n]` (the n-th match, from 1). Only the first match is changed, like Odoo's
-//! view inheritance. A patch that matches nothing is skipped and reported; it never
+//! optional `[n]` (the n-th match, from 1). Only the first match is changed. A patch that matches nothing is skipped and reported; it never
 //! breaks the page it patches.
 //!
 //! Tags are the page's own (`view`, `column`, `field`, …). `@type` on a `view` is its view

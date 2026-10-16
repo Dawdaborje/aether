@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 use axum::{
     Extension, Json, Router,
     body::Body,
-    extract::{ConnectInfo, Path, State},
+    extract::{ConnectInfo, Path, Query, State},
     http::{HeaderMap, StatusCode, Uri, header},
     response::{IntoResponse, Response},
     routing::{delete, get, post},
@@ -21,13 +21,13 @@ use crate::access::{
     identity::{IdentityError, SESSION_COOKIE, identify, with_retry_after},
 };
 use crate::app_dir::AppDir;
-use crate::application::settings_api::require_session;
+use crate::application::settings_api::{require_active_user, require_session};
 use crate::magic_link::{self, CreateMagicLink, PURPOSE_PASSWORD_RESET};
 use crate::member_mail;
 use crate::org_admin::{
     FirstMember, OrganizationError, OrganizationRequest, OrganizationUpdate, StorageTarget,
     add_member, can_manage_admin_role, can_manage_users, clear_logo as clear_org_logo,
-    create_org_role, create_organization, delete_org_role, get_profile, grant_member_role,
+    create_org_role, create_organization, create_user, delete_org_role, get_profile, grant_member_role,
     invite_member, is_owner_or_developer, list_members, list_ownership_transfers,
     list_platform_users, list_profiles, read_logo, revoke_member_role, set_logo, set_member_active,
     set_member_password, set_org_developer, soft_kick_member, transfer_ownership, update_org_role,
@@ -44,7 +44,7 @@ const MAX_DESCRIPTION: usize = 4000;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/api/ui/users", get(platform_users))
+        .route("/api/ui/users", get(platform_users).post(create_platform_user))
         .route("/api/ui/organizations", get(list).post(create))
         .route("/api/ui/organizations/transfer-ownership", post(transfer))
         .route("/api/ui/organizations/{db}", get(get_one).patch(update_one))
@@ -55,6 +55,10 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/api/ui/organizations/{db}/members",
             get(members).post(add_org_member),
+        )
+        .route(
+            "/api/ui/organizations/{db}/plugin-activity",
+            get(plugin_activity_log),
         )
         .route(
             "/api/ui/organizations/{db}/roles",
@@ -124,16 +128,23 @@ struct PasswordBody {
 #[derive(Debug, Deserialize)]
 struct CreateBody {
     name: String,
+    /// The organization's contact address (required).
+    email: String,
     identifier: Option<String>,
     description: Option<String>,
     parent: Option<String>,
-    member: MemberBody,
+    /// Omitted to create the organization with no member yet.
+    #[serde(default)]
+    member: Option<MemberBody>,
 }
 
 #[derive(Debug, Deserialize)]
 struct UpdateBody {
     /// When set, replaces the display name.
     name: Option<String>,
+    /// When set, replaces the organization's email.
+    #[serde(default)]
+    email: Option<String>,
     /// When the key is present, replaces description (`""` clears it).
     #[serde(default)]
     description: Option<String>,
@@ -226,7 +237,9 @@ fn map_org_error(error: OrganizationError) -> Response {
             "That parent would create a cycle.".into(),
         ),
         OrganizationError::InvalidLogo(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
-        OrganizationError::EmptyOrganizationName | OrganizationError::MissingUserCredentials => {
+        OrganizationError::EmptyOrganizationName
+        | OrganizationError::InvalidOrganizationEmail
+        | OrganizationError::MissingUserCredentials => {
             (StatusCode::BAD_REQUEST, error.to_string())
         }
         OrganizationError::NotOwner => (
@@ -383,6 +396,10 @@ fn problem(body: &CreateBody) -> Option<String> {
     if name.is_empty() || name.chars().count() > MAX_NAME {
         return Some(format!("The name must be 1 to {MAX_NAME} characters."));
     }
+    let email = body.email.trim();
+    if !email.contains('@') || email.chars().any(char::is_whitespace) {
+        return Some("Enter the organization's email address.".into());
+    }
     if let Some(identifier) = &body.identifier
         && identifier.chars().count() > MAX_IDENTIFIER
     {
@@ -397,8 +414,9 @@ fn problem(body: &CreateBody) -> Option<String> {
             "The description must be at most {MAX_DESCRIPTION} characters."
         ));
     }
-    match &body.member {
-        MemberBody::Invite { email, username } => {
+    match body.member.as_ref() {
+        None => {}
+        Some(MemberBody::Invite { email, username }) => {
             if !email.contains('@') || email.chars().any(char::is_whitespace) {
                 return Some("Enter a valid email address.".into());
             }
@@ -409,11 +427,11 @@ fn problem(body: &CreateBody) -> Option<String> {
                 return Some("The username must be at least 3 characters, with no spaces.".into());
             }
         }
-        MemberBody::New {
+        Some(MemberBody::New {
             username,
             email,
             password,
-        } => {
+        }) => {
             if username.trim().len() < 3 || username.chars().any(char::is_whitespace) {
                 return Some("The username must be at least 3 characters, with no spaces.".into());
             }
@@ -427,7 +445,7 @@ fn problem(body: &CreateBody) -> Option<String> {
                 ));
             }
         }
-        MemberBody::Existing { login } => {
+        Some(MemberBody::Existing { login }) => {
             if login.trim().is_empty() {
                 return Some("Enter the username or email of an existing user.".into());
             }
@@ -524,6 +542,7 @@ async fn update_one(
         &db,
         OrganizationUpdate {
             name,
+            email: body.email.as_deref().map(str::trim).filter(|v| !v.is_empty()),
             description,
             parent_db_name: parent,
         },
@@ -582,7 +601,7 @@ async fn get_logo(
     headers: HeaderMap,
     Path(db): Path<String>,
 ) -> Response {
-    if let Err((status, response)) = require_session(&state, &headers).await {
+    if let Err((status, response)) = require_active_user(&state, &headers).await {
         return (status, response).into_response();
     }
     let session = state.fresh_session();
@@ -599,6 +618,58 @@ async fn get_logo(
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct PlatformUserBody {
+    username: String,
+    email: String,
+    password: String,
+}
+
+/// Create a platform user that belongs to no organization yet (developers only; the user is
+/// added to organizations from the Organizations page or by invitation).
+async fn create_platform_user(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<PlatformUserBody>,
+) -> Response {
+    let actor = match require_user(&state, &headers).await {
+        Ok(actor) => actor,
+        Err(response) => return response,
+    };
+    if !actor.is_developer {
+        return failure(
+            StatusCode::FORBIDDEN,
+            "Only a developer can create platform users.",
+        );
+    }
+    let username = body.username.trim();
+    let email = body.email.trim();
+    if username.chars().count() < 3 || username.chars().any(char::is_whitespace) {
+        return failure(
+            StatusCode::BAD_REQUEST,
+            "The username must be at least 3 characters, with no spaces.",
+        );
+    }
+    if !email.contains('@') || email.chars().any(char::is_whitespace) {
+        return failure(StatusCode::BAD_REQUEST, "Enter a valid email address.");
+    }
+    let length = body.password.chars().count();
+    if !(MIN_PASSWORD..=MAX_PASSWORD).contains(&length) {
+        return failure(
+            StatusCode::BAD_REQUEST,
+            format!("The password must be {MIN_PASSWORD} to {MAX_PASSWORD} characters."),
+        );
+    }
+    let session = state.fresh_session();
+    if let Err(error) = create_user(&session, &state.namespace, username, email, &body.password).await {
+        return map_org_error(error);
+    }
+    match list_platform_users(&session, &state.namespace).await {
+        Ok(users) => Json(json!({ "ok": true, "users": users })).into_response(),
+        Err(error) => map_org_error(error),
+    }
+}
+
 async fn platform_users(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Err((status, response)) = require_session(&state, &headers).await {
         return (status, response).into_response();
@@ -607,6 +678,40 @@ async fn platform_users(State(state): State<AppState>, headers: HeaderMap) -> Re
     match list_platform_users(&session, &state.namespace).await {
         Ok(users) => Json(json!({ "users": users })).into_response(),
         Err(error) => map_org_error(error),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ActivityQuery {
+    #[serde(default)]
+    limit: Option<u32>,
+    #[serde(default)]
+    offset: Option<u32>,
+}
+
+/// Who installed or upgraded which plugin here, and who loaded plugins into the catalog.
+async fn plugin_activity_log(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(db): Path<String>,
+    Query(query): Query<ActivityQuery>,
+) -> Response {
+    if let Err(response) = require_can_manage(&state, &headers, &db).await {
+        return response;
+    }
+    match crate::plugin_activity::list_for_org(
+        &state,
+        &db,
+        query.limit.unwrap_or(100),
+        query.offset.unwrap_or(0),
+    )
+    .await
+    {
+        Ok(body) => Json(body).into_response(),
+        Err(error) => {
+            log::error!("plugin activity of `{db}`: {error}");
+            failure(StatusCode::INTERNAL_SERVER_ERROR, "database error")
+        }
     }
 }
 
@@ -951,6 +1056,84 @@ async fn send_password_reset(
     .into_response()
 }
 
+/// A role with the plugin and workspace it comes from, so the people granting roles can narrow
+/// a long list by the area they are working in.
+#[derive(Debug, serde::Serialize)]
+struct PlacedRole {
+    #[serde(flatten)]
+    role: roles::RoleSummary,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    plugin: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    plugin_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    workspace: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    workspace_label: Option<String>,
+}
+
+/// Attach plugin and workspace to each role from the catalog. A role's plugin is the part of its
+/// name before the dot; kernel and custom roles have none. A catalog that cannot be read leaves the
+/// roles as they were.
+async fn place_roles(state: &AppState, list: Vec<roles::RoleSummary>) -> Vec<PlacedRole> {
+    use std::collections::HashMap;
+    use surrealdb::types::SurrealValue;
+    #[derive(Debug, Deserialize, SurrealValue)]
+    struct PluginRow {
+        name: String,
+        label: Option<String>,
+        workspace: Option<String>,
+    }
+    #[derive(Debug, Deserialize, SurrealValue)]
+    struct WorkspaceRow {
+        name: String,
+        label: Option<String>,
+        group_label: Option<String>,
+    }
+    let mut plugins: HashMap<String, (Option<String>, Option<String>)> = HashMap::new();
+    let mut workspaces: HashMap<String, String> = HashMap::new();
+    if let Ok(core) = state.core().await {
+        if let Ok(mut response) = core.query("SELECT name, label, workspace FROM plugins;").await {
+            if let Ok(rows) = response.take::<Vec<PluginRow>>(0) {
+                for row in rows {
+                    plugins.entry(row.name).or_insert((row.label, row.workspace));
+                }
+            }
+        }
+        if let Ok(mut response) =
+            core.query("SELECT name, label, group_label FROM plugin_workspaces;").await
+        {
+            if let Ok(rows) = response.take::<Vec<WorkspaceRow>>(0) {
+                for row in rows {
+                    let label = row.group_label.or(row.label).unwrap_or_else(|| row.name.clone());
+                    workspaces.insert(row.name, label);
+                }
+            }
+        }
+    }
+    list.into_iter()
+        .map(|role| {
+            let plugin = role
+                .name
+                .split_once('.')
+                .map(|(plugin, _)| plugin.to_string())
+                .filter(|plugin| plugins.contains_key(plugin));
+            let (plugin_label, workspace) = match &plugin {
+                Some(name) => plugins.get(name).cloned().unwrap_or((None, None)),
+                None => (None, None),
+            };
+            let workspace_label = workspace.as_ref().and_then(|w| workspaces.get(w).cloned());
+            PlacedRole {
+                role,
+                plugin,
+                plugin_label,
+                workspace,
+                workspace_label,
+            }
+        })
+        .collect()
+}
+
 async fn org_roles(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -961,7 +1144,10 @@ async fn org_roles(
     }
     let session = state.fresh_session();
     match roles::list_in(&session, &state.namespace, &db).await {
-        Ok(roles) => Json(json!({ "roles": roles })).into_response(),
+        Ok(roles) => {
+            let placed = place_roles(&state, roles).await;
+            Json(json!({ "roles": placed })).into_response()
+        }
         Err(error) => {
             log::error!("list org roles: {error}");
             failure(StatusCode::INTERNAL_SERVER_ERROR, "database error")
@@ -1207,20 +1393,21 @@ async fn create(
         app_dir: AppDir::new(&state.config.app_dir),
         media: state.media.clone(),
     };
-    let member = match &body.member {
-        MemberBody::New {
+    let member = match body.member.as_ref() {
+        None => FirstMember::None,
+        Some(MemberBody::New {
             username,
             email,
             password,
-        } => FirstMember::User {
+        }) => FirstMember::User {
             username: username.trim(),
             email: email.trim(),
             password,
         },
-        MemberBody::Existing { login } => FirstMember::Existing {
+        Some(MemberBody::Existing { login }) => FirstMember::Existing {
             login: login.trim(),
         },
-        MemberBody::Invite { .. } => {
+        Some(MemberBody::Invite { .. }) => {
             return failure(
                 StatusCode::BAD_REQUEST,
                 "Creating an organization needs a new or existing first member, not an invite.",
@@ -1234,6 +1421,7 @@ async fn create(
         .filter(|value| !value.is_empty());
     let request = OrganizationRequest {
         name: body.name.trim(),
+        email: body.email.trim(),
         db_name: identifier,
         member,
         description: body.description.as_deref(),
@@ -1334,15 +1522,23 @@ mod tests {
     fn new_user(username: &str, email: &str, password: &str) -> CreateBody {
         CreateBody {
             name: "Acme".into(),
+            email: "hello@acme.io".into(),
             identifier: None,
             description: None,
             parent: None,
-            member: MemberBody::New {
+            member: Some(MemberBody::New {
                 username: username.into(),
                 email: email.into(),
                 password: password.into(),
-            },
+            }),
         }
+    }
+
+    #[test]
+    fn a_request_without_a_member_has_no_problem() {
+        let mut body = new_user("", "", "");
+        body.member = None;
+        assert_eq!(problem(&body), None);
     }
 
     #[test]
@@ -1361,10 +1557,11 @@ mod tests {
         assert!(problem(&unnamed).is_some());
         let existing = CreateBody {
             name: "Acme".into(),
+            email: "hello@acme.io".into(),
             identifier: None,
             description: None,
             parent: None,
-            member: MemberBody::Existing { login: " ".into() },
+            member: Some(MemberBody::Existing { login: " ".into() }),
         };
         assert!(problem(&existing).is_some());
     }

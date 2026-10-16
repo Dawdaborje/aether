@@ -1,10 +1,12 @@
 <script lang="ts">
 	import { browserStorage } from '$lib/browserStorage';
+	import { apiFetch } from '$lib/api/client';
 	import { beforeNavigate, goto } from '$app/navigation';
 	import { untrack } from 'svelte';
 	import { cn } from '$lib/utils';
 	import type { PageNode } from '$lib/dsl/types';
 	import PageRenderer from './PageRenderer.svelte';
+	import RecordActions from './RecordActions.svelte';
 	import ChatterPanel from '$lib/chatter/ChatterPanel.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import * as Alert from '$lib/components/ui/alert';
@@ -14,6 +16,7 @@
 	import { getPageChrome } from '$lib/pages/pageChrome.svelte';
 	import {
 		FormState,
+		getFormState,
 		getPageState,
 		interpolate,
 		keyOf,
@@ -24,7 +27,7 @@
 	let { node }: { node: PageNode } = $props();
 
 	// Buttons and the state tracker sit in a bar that stays at the top of the sheet, with Save,
-	// like an Odoo form header: `<header>` (its children), `<statusbar>`, `<button>`,
+	// as a form header: `<header>` (its children), `<statusbar>`, `<button>`,
 	// `<buttonbox>` and `<action>` at the top level of the form go there.
 	const BAR_TYPES = new Set([
 		'statusbar',
@@ -60,8 +63,14 @@
 	// form with nowhere to put it (in a pop-up, or a page without a title bar) keeps it at the
 	// top of its own sheet.
 	const owner = {};
+	// A form inside another form (a tab another plugin adds to the page, a pop-up) is not the
+	// page's main form and never takes the title bar. Child effects run before their parent's, so
+	// without this the nested form would claim the bar first and leave the main form's Save and
+	// buttons at the bottom of the sheet.
+	const nested = getFormState() !== undefined;
 	let claimed = $state(false);
 	$effect(() => {
+		if (nested) return;
 		if (!chrome || !chrome.hasBar || !chrome.barActions) return;
 		if (chrome.barOwner !== null) return;
 		chrome.barOwner = owner;
@@ -74,7 +83,9 @@
 
 	// Without a title bar (a pop-up form) or when another form has it, Save sits at the bottom
 	// of the form. While a page's title bar is still being set up, nothing is shown.
-	const inline = $derived(!chrome || !chrome.hasBar || (chrome.barOwner !== null && !claimed));
+	const inline = $derived(
+		!chrome || !chrome.hasBar || nested || (chrome.barOwner !== null && !claimed)
+	);
 
 	/** Move `node` into `target` (the control panel) while it is there. */
 	function portal(node: HTMLElement, target: HTMLElement | null) {
@@ -115,6 +126,49 @@
 		form.saveLabel = submitLabel;
 		form.save = submitFunction ? () => save() : null;
 	});
+
+	/** Whether this person has starred the record on screen. */
+	let favorite = $state(false);
+
+	$effect(() => {
+		const key = recordKey;
+		const plugin = page?.plugin;
+		const model = chatterModel;
+		if (!key || !plugin || !model) {
+			favorite = false;
+			return;
+		}
+		void page?.tick;
+		void apiFetch(
+			`/api/ui/records/favorites?plugin=${encodeURIComponent(plugin)}&model=${encodeURIComponent(model)}`
+		)
+			.then((res) => (res.ok ? res.json() : { ids: [] }))
+			.then((body: { ids?: string[] }) => {
+				favorite = (body.ids ?? []).includes(key);
+			})
+			.catch(() => {
+				favorite = false;
+			});
+	});
+
+	/** Reload the record from the server, dropping unsaved edits. */
+	function reloadRecord() {
+		loadedFor = '';
+		page?.refresh();
+	}
+
+	function afterRecordAction(what: 'archive' | 'unarchive' | 'delete' | 'favorite' | 'action') {
+		// A deleted record has nothing left to show: go back to where the list is.
+		if (what === 'delete' && redirect) {
+			void goto(navHref(redirect));
+			return;
+		}
+		reloadRecord();
+	}
+
+	/** The source answered, with no record: show the page's `<empty>` block instead of a blank form. */
+	let noRecord = $state(false);
+	const emptyNode = $derived((node.children ?? []).find((child) => child.type === 'empty'));
 
 	let loading = $state(false);
 	let saving = $state(false);
@@ -265,6 +319,7 @@
 		void page.call(source, { ...page.params }).then((result) => {
 			if (current !== latest) return;
 			loading = false;
+			noRecord = result.ok && (result.data === null || result.data === undefined);
 			if (
 				result.ok &&
 				result.data &&
@@ -348,13 +403,17 @@
 		</Alert.Root>
 	{/if}
 
-	<FieldGroup class="gap-6">
-		{#each node.children ?? [] as child, i (child.name ?? `${child.type}-${i}`)}
-			{#if !isBarChild(child)}
-				<PageRenderer node={child} />
-			{/if}
-		{/each}
-	</FieldGroup>
+	{#if noRecord && emptyNode}
+		<PageRenderer node={emptyNode} />
+	{:else}
+		<FieldGroup class="gap-6">
+			{#each node.children ?? [] as child, i (child.name ?? `${child.type}-${i}`)}
+				{#if !isBarChild(child) && child.type !== 'empty'}
+					<PageRenderer node={child} />
+				{/if}
+			{/each}
+		</FieldGroup>
+	{/if}
 
 	{#if (submitFunction || bar.length > 0) && (claimed || inline)}
 		<div
@@ -376,8 +435,20 @@
 				{#each actionNodes as child, i (child.name ?? `bar-${child.type}-${i}`)}
 					<PageRenderer node={child} />
 				{/each}
+				{#if source && recordKey && chatterModel}
+					<RecordActions
+						ids={[recordKey]}
+						model={chatterModel}
+						{favorite}
+						refreshing={loading}
+						onRefresh={reloadRecord}
+						onDone={afterRecordAction}
+					/>
+				{/if}
 				{#if submitFunction && !hasSaveNode}
-					<Button type="submit" size="sm" disabled={saving || loading}>
+					<!-- Not `type="submit"`: in the title bar this button is moved out of the <form>, where a
+					     submit button has nothing to submit. Enter in a field still submits the form itself. -->
+					<Button type="button" size="sm" disabled={saving || loading} onclick={() => void save()}>
 						{saving ? 'Saving…' : submitLabel}
 					</Button>
 				{/if}

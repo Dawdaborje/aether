@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { reportError } from '$lib/errors/report';
 	import * as Dialog from '$lib/components/ui/dialog/index.js';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Skeleton } from '$lib/components/ui/skeleton';
@@ -41,7 +42,7 @@
 			})
 			.catch((error) => {
 				if (cancelled) return;
-				failed = error instanceof Error ? error.message : 'The run could not be loaded.';
+				failed = reportError(error, 'The run could not be loaded.');
 			})
 			.finally(() => {
 				if (!cancelled) loading = false;
@@ -66,7 +67,7 @@
 </script>
 
 <Dialog.Root bind:open>
-	<Dialog.Content class="flex max-h-[90vh] max-w-2xl flex-col gap-0 overflow-hidden p-0">
+	<Dialog.Content class="flex h-[80vh] max-h-[80vh] w-full max-w-4xl flex-col sm:max-w-4xl gap-0 overflow-hidden p-0">
 		<Dialog.Header class="border-b border-border px-6 py-4">
 			<Dialog.Title>Run</Dialog.Title>
 			<Dialog.Description class="font-mono text-xs">

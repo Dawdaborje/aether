@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { reportError } from '$lib/errors/report';
 	import { apiFetch } from '$lib/api/client';
 	import { Button } from '$lib/components/ui/button';
 	import ThemePreview from '$lib/components/settings/ThemePreview.svelte';
@@ -40,7 +41,7 @@
 		try {
 			await load();
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'The themes could not be loaded.';
+			error = reportError(err, 'The themes could not be loaded.');
 		} finally {
 			loading = false;
 		}
@@ -62,7 +63,7 @@
 			}
 			await Promise.all([load(), themeStore.loadFromApi('')]);
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'The theme could not be changed.';
+			error = reportError(err, 'The theme could not be changed.');
 		} finally {
 			busy = null;
 		}

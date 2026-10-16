@@ -1,7 +1,7 @@
 use crate::cache::{CacheBackendKind, CacheConfig, MemcachedCacheConfig, RedisCacheConfig};
 use crate::config_manager::errors::{ConfigError, MissingSetting};
 use crate::config_manager::models::{
-    AetherConfig, AuditConfig, CoreConfig, DatabaseConfig, LoggingConfig, MediaBackendKind,
+    AetherConfig, AuditConfig, CoreConfig, DatabaseConfig, DocsConfig, LoggingConfig, MediaBackendKind,
     MediaConfig, NotificationsConfig, OrgResolutionMode, PluginRuntimeConfig, PublicConfig,
     SchedulerConfig, SecurityConfig, ServerConfig, TenancyConfig,
 };
@@ -749,6 +749,16 @@ pub fn load_config(
         Some(table) => table.clone().try_into()?,
         None => LoggingConfig::default(),
     };
+    let docs: DocsConfig = match optional_table(&value, "docs")? {
+        Some(table) => table.clone().try_into()?,
+        None => DocsConfig::default(),
+    };
+    if docs.enabled && docs.mount_path().is_none() {
+        return Err(ConfigError::InvalidType {
+            field: "docs.path".to_string(),
+            expected: "a path such as /docs (the root is used by the API)".to_string(),
+        });
+    }
     if logging.filename.trim().is_empty() {
         return Err(ConfigError::InvalidType {
             field: "logging.filename".to_string(),
@@ -785,6 +795,7 @@ pub fn load_config(
         security,
         scheduler,
         logging,
+        docs,
         ..Default::default()
     })
 }
@@ -1196,6 +1207,21 @@ mod tests {
             Some("flag-host".to_string())
         );
         Ok(())
+    }
+
+    #[test]
+    fn docs_section_defaults_and_mount_path() {
+        let default = DocsConfig::default();
+        assert!(default.enabled);
+        assert_eq!(default.mount_path().as_deref(), Some("/docs"));
+
+        let custom: DocsConfig = toml::from_str("path = \"help/\"").unwrap();
+        assert_eq!(custom.mount_path().as_deref(), Some("/help"));
+
+        let root: DocsConfig = toml::from_str("path = \"/\"").unwrap();
+        assert_eq!(root.mount_path(), None, "the root belongs to the API");
+        let off: DocsConfig = toml::from_str("enabled = false").unwrap();
+        assert!(!off.enabled);
     }
 
     #[test]

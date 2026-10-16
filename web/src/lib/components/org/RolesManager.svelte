@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { reportError } from '$lib/errors/report';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import type { ColumnDef } from '@tanstack/table-core';
@@ -14,7 +15,7 @@
 		fetchOrganizationRoles,
 		type OrgRole
 	} from '$lib/org/api';
-	import { kindLabel, roleKind } from './roleDisplay';
+	import { kindLabel, matchesSearch, roleKind } from './roleDisplay';
 
 	let {
 		db,
@@ -38,12 +39,10 @@
 
 	const visible = $derived(
 		(roles ?? []).filter((role) => {
-			const needle = query.trim().toLowerCase();
-			if (!needle) return true;
-			return [role.name, role.label, role.description ?? '', kindLabel(roleKind(role.name, role.is_system))]
-				.join(' ')
-				.toLowerCase()
-				.includes(needle);
+			return matchesSearch(
+				[role.name, role.label, role.description, kindLabel(roleKind(role.name, role.is_system))],
+				query
+			);
 		})
 	);
 
@@ -97,7 +96,7 @@
 		try {
 			roles = await fetchOrganizationRoles(db);
 		} catch (error) {
-			failed = error instanceof Error ? error.message : 'Roles could not be loaded.';
+			failed = reportError(error, 'Roles could not be loaded.');
 			roles = roles ?? [];
 		}
 	}
@@ -132,7 +131,7 @@
 			creating = false;
 			openRole(created);
 		} catch (error) {
-			createError = error instanceof Error ? error.message : 'Role could not be created.';
+			reportError(error, 'Role could not be created.');
 		} finally {
 			working = false;
 		}

@@ -1,3 +1,10 @@
+---
+title: "Aether plugin design"
+description: "So a plugin is a wasm compile with it's frontend components for the program extensibility of the aether"
+section: architecture
+status: stable
+order: 340
+---
 # Aether plugin design
 
 So a plugin is a wasm compile with it's frontend components for the program extensibility of the aether

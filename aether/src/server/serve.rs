@@ -71,6 +71,7 @@ pub async fn run_server(
         .unwrap_or_else(|| "aether".into());
 
     let server_config = config.server.clone();
+    let docs_mount = config.docs.enabled.then(|| config.docs.mount_path()).flatten();
 
     let state = match AppState::new(
         db_conn.clone(),
@@ -133,9 +134,15 @@ pub async fn run_server(
     // 50 MB decoded (~67 MB as base64). Keep one limit for the whole API.
     const MAX_UPLOAD_BODY: usize = 70 * 1024 * 1024;
 
-    let app = Router::new()
+    let mut app = Router::new()
         .merge(core_routes())
-        .nest("/api/auth", auth_routes())
+        .nest("/api/auth", auth_routes());
+    // The documentation site, rendered from pages compiled into the binary (no database, no files).
+    if let Some(path) = &docs_mount {
+        app = app.nest_service(path, aether_docs::router(path));
+        log::info!("Documentation is served at {path}");
+    }
+    let app = app
         .fallback(aether_core::error_pages::not_found)
         .layer(axum::extract::DefaultBodyLimit::max(MAX_UPLOAD_BODY))
         .layer(axum::middleware::from_fn_with_state(
@@ -184,6 +191,10 @@ pub async fn run_server(
         notification_hub.close_all();
         // Ignored: there is no receiver left only if the server already ended.
         let _ = shutdown_tx.send(true);
+        // A second interrupt means "now": a hung database must not make the process unkillable.
+        wait_for_shutdown_signal().await;
+        log::warn!("Second interrupt received; exiting without waiting");
+        std::process::exit(130);
     });
 
     let mut drain_rx = shutdown_rx.clone();
@@ -215,8 +226,19 @@ pub async fn run_server(
 
     // Let running jobs finish; the scheduler waits for them (up to 30 s) before it returns.
     let _ = scheduler_stop.send(true);
-    if let Some(task) = scheduler_task {
-        let _ = task.await;
+    if let Some(mut task) = scheduler_task {
+        // The worker finishes running jobs for up to 30 s, but its loop can also be stuck inside a database
+        // call; bound the wait so shutdown always ends.
+        match tokio::time::timeout(SCHEDULER_STOP_TIMEOUT, &mut task).await {
+            Ok(_) => {}
+            Err(_) => {
+                log::warn!(
+                    "The scheduler did not stop within {}s (is the database reachable?); abandoning it",
+                    SCHEDULER_STOP_TIMEOUT.as_secs()
+                );
+                task.abort();
+            }
+        }
     }
     discovery.abort();
     if let Some(task) = dev_reload {
@@ -247,6 +269,9 @@ pub async fn run_server(
 
 /// How long in-flight requests get to finish after a shutdown request.
 const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How long shutdown waits for the embedded scheduler (its own job drain is 30 s).
+const SCHEDULER_STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(35);
 
 /// How long to wait for the database to acknowledge the closing sign-out.
 const DB_CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);

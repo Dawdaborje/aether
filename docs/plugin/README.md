@@ -1,3 +1,10 @@
+---
+title: "Aether Plugin Documentation"
+description: "A plugin or addon is a component meant to extend the features of aether."
+section: plugin
+status: stable
+order: 10
+---
 # Aether Plugin Documentation
 
 A plugin or addon is a component meant to extend the features of aether.
@@ -9,7 +16,7 @@ There are 2 ways to create a plugin:
 # Workspace
 
 A workspace packages related plugins for load/install. On the Apps launcher it is
-normally a **folder** (Frappe desktop `parent_icon`): each member that declares
+normally a **folder**: each member that declares
 `[app]` keeps its own icon inside that folder. Set `launcher = "flat"` (Base) to
 list each member as its own home-grid tile instead. Plugins may also set
 `[app] folder = "Time"` to create or join a named folder within the same
@@ -78,7 +85,8 @@ it may listen to) and `bridges` (integrations it may call with `bridge::call`, s
 [File watches](../architecture/watch.md)). `[[command]]` entries are commands an administrator runs with `aether --command`
 (see [Plugin commands](cli-commands.md)). `[[schedule]]` entries declare recurring background tasks; see
 [the scheduler](../architecture/scheduler.md). Sending email and SMS is one command,
-[`communication::send`](../architecture/communication.md).
+[`communication::send`](../architecture/communication.md). `[[ai_tool]]` entries offer functions to the AI assistant
+(see [AI](../architecture/ai.md)); asking a model, and OCR, are the commands `ai::complete` and `ocr::parse`.
 
 A plugin becomes a tile on the Apps launcher by declaring `[app]`; see
 [Organizations, switching, and the Apps launcher](../architecture/organizations.md).

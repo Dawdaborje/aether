@@ -1,8 +1,9 @@
 //! Calculated fields: `"compute": "qty * price"`.
 //!
-//! The expression uses the record's own whole-number and decimal fields, numbers, `+`, `-`, `*`
-//! and parentheses. There is no division: it cannot be exact, so a plugin that needs one rounds
-//! it itself. The kernel turns the expression into integer arithmetic on the stored whole units
+//! The expression uses the record's own whole-number and decimal fields, numbers, `+`, `-`, `*`,
+//! `/` and parentheses. A quotient is worked out to 6 digits after the point (rounded half away
+//! from zero) and is 0 when the divisor is 0, so later arithmetic and the field's own rounding
+//! start from a fixed precision. The kernel turns the expression into integer arithmetic on the stored whole units
 //! (decimals are stored as whole units of their smallest digit, see [`super::decimal`]), so the
 //! result is exact, and rounds half away from zero only when it has more digits than the field.
 //! A missing number counts as zero.
@@ -11,6 +12,8 @@ use std::collections::BTreeSet;
 
 /// Longest expression, in characters.
 const MAX_LENGTH: usize = 200;
+/// Digits after the point of a quotient.
+const QUOTIENT_SCALE: u32 = 6;
 /// Deepest nesting of parentheses.
 const MAX_DEPTH: usize = 8;
 
@@ -21,6 +24,7 @@ enum Token {
     Plus,
     Minus,
     Star,
+    Slash,
     Open,
     Close,
     Dot,
@@ -39,6 +43,7 @@ pub enum Expr {
     Add(Box<Expr>, Box<Expr>),
     Sub(Box<Expr>, Box<Expr>),
     Mul(Box<Expr>, Box<Expr>),
+    Div(Box<Expr>, Box<Expr>),
     /// `sum(lines.amount)` or `count(lines)`: over the rows of a child field.
     Rollup(Rollup),
 }
@@ -94,11 +99,11 @@ fn tokens(text: &str) -> Result<Vec<Token>, String> {
                 out.push(Token::Close);
                 i += 1;
             }
-            '/' | '%' => {
-                return Err(
-                    "has no division: it cannot be exact, so round it in the plugin".into(),
-                );
+            '/' => {
+                out.push(Token::Slash);
+                i += 1;
             }
+            '%' => return Err("has no remainder operator".into()),
             c if c.is_ascii_digit() => {
                 let start = i;
                 while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
@@ -154,10 +159,19 @@ impl Parser {
 
     fn product(&mut self, depth: usize) -> Result<Expr, String> {
         let mut left = self.unary(depth)?;
-        while self.peek() == Some(&Token::Star) {
+        while let Some(token) = self.peek() {
+            let multiply = match token {
+                Token::Star => true,
+                Token::Slash => false,
+                _ => break,
+            };
             self.at += 1;
             let right = self.unary(depth)?;
-            left = Expr::Mul(Box::new(left), Box::new(right));
+            left = if multiply {
+                Expr::Mul(Box::new(left), Box::new(right))
+            } else {
+                Expr::Div(Box::new(left), Box::new(right))
+            };
         }
         Ok(left)
     }
@@ -262,7 +276,7 @@ impl Expr {
             Self::Rollup(rollup) => out.push(rollup.clone()),
             Self::Number { .. } | Self::Field(_) => {}
             Self::Neg(inner) => inner.collect_rollups(out),
-            Self::Add(a, b) | Self::Sub(a, b) | Self::Mul(a, b) => {
+            Self::Add(a, b) | Self::Sub(a, b) | Self::Mul(a, b) | Self::Div(a, b) => {
                 a.collect_rollups(out);
                 b.collect_rollups(out);
             }
@@ -276,7 +290,7 @@ impl Expr {
                 out.insert(name.clone());
             }
             Self::Neg(inner) => inner.collect(out),
-            Self::Add(a, b) | Self::Sub(a, b) | Self::Mul(a, b) => {
+            Self::Add(a, b) | Self::Sub(a, b) | Self::Mul(a, b) | Self::Div(a, b) => {
                 a.collect(out);
                 b.collect(out);
             }
@@ -341,6 +355,23 @@ impl Expr {
                     return Err("multiplies numbers with too many digits after the point".into());
                 }
                 (format!("({a} * {b})"), sa + sb)
+            }
+            Self::Div(a, b) => {
+                let ((a, sa), (b, sb)) = (
+                    a.units(row, operand, rollup)?,
+                    b.units(row, operand, rollup)?,
+                );
+                let up = QUOTIENT_SCALE + sb;
+                if up < sa || up - sa > 12 {
+                    return Err("divides numbers with too many digits after the point".into());
+                }
+                let numerator = format!("({a} * {})", 10_i64.pow(up - sa));
+                (
+                    format!(
+                        "(IF {b} = 0 THEN 0 ELSE <int>math::round(<float>{numerator} / <float>{b}) END)"
+                    ),
+                    QUOTIENT_SCALE,
+                )
             }
             Self::Add(a, b) | Self::Sub(a, b) => {
                 let ((a, sa), (b, sb)) = (
@@ -413,6 +444,16 @@ mod tests {
     }
 
     #[test]
+    fn division_works_to_six_digits_and_guards_zero() -> Result<(), String> {
+        let sql = Expr::parse("price / qty")?.to_sql("$rows[0]", 2, &operand, &|_| None)?;
+        assert!(sql.contains("IF ($rows[0].fld_qty ?? 0) = 0 THEN 0"), "{sql}");
+        // price has 2 digits, qty none: the numerator is scaled by 10^(6 + 0 - 2).
+        assert!(sql.contains("* 10000)"), "{sql}");
+        assert!(Expr::parse("1 % 2").is_err());
+        Ok(())
+    }
+
+    #[test]
     fn nonsense_is_refused() {
         for bad in [
             "sum(lines)",
@@ -421,7 +462,6 @@ mod tests {
             "sum lines.x",
             "",
             "qty /",
-            "qty / 2",
             "qty *",
             "(qty",
             "qty qty",

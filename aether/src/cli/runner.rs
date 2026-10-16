@@ -32,7 +32,11 @@ use super::{
 
 /// Parse CLI args, configure logging, and dispatch commands.
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
+    let mut args = Args::parse();
+    // An MCP client shows the server's stderr to its user; the default `debug` would bury it.
+    if args.mcp && args.log == "debug" {
+        args.log = "warn".to_string();
+    }
     init_logger(&args);
 
     log::warn!("Starting in '{}' environment", args.environment);
@@ -122,6 +126,30 @@ async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             .await
             .map_err(|error| error.to_string())?;
             print_load_summary(&loaded);
+            let actor = aether_core::plugin_activity::Actor::system(&format!(
+                "cli:{}",
+                crate::cli::commands::operating_system_user()
+            ));
+            for plugin in loaded.iter().filter(|plugin| plugin.created) {
+                aether_core::plugin_activity::record_in(
+                    ctx.db,
+                    &ctx.namespace,
+                    &ctx.database,
+                    &aether_core::plugin_activity::Entry {
+                        kind: aether_core::plugin_activity::kind::CATALOG_LOAD,
+                        plugin: plugin.name.clone(),
+                        from_version: None,
+                        to_version: Some(plugin.version.clone()),
+                        organization: None,
+                        actor: actor.clone(),
+                        source: "cli:load".into(),
+                        ok: true,
+                        error: None,
+                        detail: serde_json::Value::Null,
+                    },
+                )
+                .await;
+            }
         }
     }
 
@@ -133,6 +161,30 @@ async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         let ctx = get_db_context(&args).await;
         let report = install_plugins(ctx.db, &ctx.namespace, &ctx.database, org, specs).await?;
         print_install_summary(org, &report);
+        let actor = aether_core::plugin_activity::Actor::system(&format!(
+            "cli:{}",
+            crate::cli::commands::operating_system_user()
+        ));
+        for (name, version) in &report.installed {
+            aether_core::plugin_activity::record_in(
+                ctx.db,
+                &ctx.namespace,
+                &ctx.database,
+                &aether_core::plugin_activity::Entry {
+                    kind: aether_core::plugin_activity::kind::INSTALL,
+                    plugin: name.clone(),
+                    from_version: None,
+                    to_version: Some(version.clone()),
+                    organization: Some(org.clone()),
+                    actor: actor.clone(),
+                    source: "cli:install".into(),
+                    ok: true,
+                    error: None,
+                    detail: serde_json::Value::Null,
+                },
+            )
+            .await;
+        }
         let seeded: Vec<String> = report.installed.iter().map(|(name, _)| name.clone()).collect();
         crate::cli::commands::run_lifecycle_seeds(
             ctx,
@@ -150,6 +202,30 @@ async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         let ctx = get_db_context(&args).await;
         let report = upgrade_plugins(ctx.db, &ctx.namespace, &ctx.database, org, specs).await?;
         print_upgrade_summary(org, &report);
+        let actor = aether_core::plugin_activity::Actor::system(&format!(
+            "cli:{}",
+            crate::cli::commands::operating_system_user()
+        ));
+        for (name, from, to) in &report.upgraded {
+            aether_core::plugin_activity::record_in(
+                ctx.db,
+                &ctx.namespace,
+                &ctx.database,
+                &aether_core::plugin_activity::Entry {
+                    kind: aether_core::plugin_activity::kind::UPGRADE,
+                    plugin: name.clone(),
+                    from_version: Some(from.clone()),
+                    to_version: Some(to.clone()),
+                    organization: Some(org.clone()),
+                    actor: actor.clone(),
+                    source: "cli:upgrade".into(),
+                    ok: true,
+                    error: None,
+                    detail: serde_json::Value::Null,
+                },
+            )
+            .await;
+        }
         let seeded: Vec<String> = report.upgraded.iter().map(|(name, _, _)| name.clone()).collect();
         crate::cli::commands::run_lifecycle_seeds(
             ctx,
@@ -363,8 +439,11 @@ async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
         let ctx = get_db_context(&args).await;
         let storage = storage_target(&ctx.config).await?;
+        // The organization's own address; the first user's email is the sensible default.
+        let org_email = args.org_email.as_deref().unwrap_or(email.as_str());
         let request = OrganizationRequest {
             name: organization_name,
+            email: org_email,
             db_name: args.org_db_name.as_deref(),
             member: FirstMember::User { username, email, password },
             description: None,
@@ -503,6 +582,23 @@ async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         let ctx = get_db_context(&args).await;
         if let Err(err) = seed_system(ctx.db, &ctx.namespace, &ctx.database).await {
             log::error!("Seeding failed: {err}");
+            std::process::exit(1);
+        }
+    }
+
+    if args.mcp {
+        #[cfg(feature = "mcp")]
+        if let Err(err) = crate::mcp::run_stdio().await {
+            log::error!("MCP server failed: {err}");
+            std::process::exit(1);
+        }
+        #[cfg(not(feature = "mcp"))]
+        return Err("this build of aether does not include the MCP server (build with the `mcp` feature)".into());
+    }
+
+    if let Some(bind) = &args.serve_docs {
+        if let Err(err) = crate::server::docs::run_docs_server(bind).await {
+            log::error!("Documentation server failed: {err}");
             std::process::exit(1);
         }
     }

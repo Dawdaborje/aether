@@ -1,3 +1,10 @@
+---
+title: "Visitors, public pages and the audit trail"
+description: "Plugins can serve pages and functions to people who are not logged in. Anonymous access is opt-in per page and per function, every anonymous caller has an identity, and everything they do is recorded."
+section: architecture
+status: stable
+order: 20
+---
 # Visitors, public pages and the audit trail
 
 Plugins can serve pages and functions to people who are not logged in. Anonymous

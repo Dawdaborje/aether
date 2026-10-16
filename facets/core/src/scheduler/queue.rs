@@ -32,7 +32,7 @@ pub enum QueueError {
 /// What to put on the queue.
 #[derive(Debug, Clone)]
 pub struct NewJob {
-    /// `"plugin"` or `"communication"`.
+    /// `"plugin"`, `"communication"`, `"ocr"` or `"ai"`.
     pub kind: &'static str,
     pub plugin: Option<String>,
     pub function: Option<String>,

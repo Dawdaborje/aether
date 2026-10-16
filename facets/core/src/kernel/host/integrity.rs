@@ -24,6 +24,8 @@ const SERIES_BLOCK: usize = 12;
 const SERIES_BASE: usize = 700;
 const CHECK_FILTER_BASE: usize = 10_000;
 const CHECK_MESSAGE_BASE: usize = 20_000;
+const UNIQUE_FILTER_BASE: usize = 30_000;
+const UNIQUE_MESSAGE_BASE: usize = 40_000;
 
 /// The `CONTENT` expression of a create. Fields of a naming series that the plugin left empty
 /// are given the next number; for a model without one it is the plain data.
@@ -41,7 +43,35 @@ pub(super) fn create_content(
         if data.contains_key(&series.column) {
             continue;
         }
+        // A series that numbers on a state change waits for it, unless the record is born there.
+        if let Some((column, values)) = &series.trigger {
+            let born = data
+                .get(column)
+                .and_then(JsonValue::as_str)
+                .is_some_and(|v| values.iter().any(|w| w == v));
+            if !born {
+                continue;
+            }
+        }
         validate_ident(&series.column)?;
+        let scope = match &series.scope_column {
+            Some(column) => Some(
+                data.get(column)
+                    .and_then(JsonValue::as_str)
+                    .map(str::to_string)
+                    .ok_or_else(|| {
+                        HostError::InvalidPayload(format!(
+                            "`{}` is numbered per another field of the record: give it a value",
+                            series.field
+                        ))
+                    })?,
+            ),
+            None => None,
+        };
+        let mut key = counter_key(&schema.table, &series.column, series.reset, year, month);
+        if let Some(scope) = &scope {
+            key = format!("{key}_{scope}");
+        }
         let segments = series.pattern.segments(year, month);
         if segments.len() > MAX_SEGMENTS {
             return Err(HostError::InvalidPayload(format!(
@@ -51,38 +81,13 @@ pub(super) fn create_content(
         }
         let base = SERIES_BASE + index * SERIES_BLOCK;
         let (key_name, number) = (format!("d{base}"), format!("d{}", base + 1));
-        binds.push((
-            key_name.clone(),
-            JsonValue::String(counter_key(
-                &schema.table,
-                &series.column,
-                series.reset,
-                year,
-                month,
-            )),
-        ));
+        binds.push((key_name.clone(), JsonValue::String(key)));
         extra.before.push(format!(
             "LET ${number} = (UPSERT type::record('{SEQUENCE_TABLE}', ${key_name}) \
              SET counter = (counter ?? 0) + 1 RETURN AFTER)[0].counter;"
         ));
-        let mut pieces = Vec::new();
-        for (offset, segment) in segments.into_iter().enumerate() {
-            match segment {
-                Segment::Text(text) => {
-                    let name = format!("d{}", base + 2 + offset);
-                    binds.push((name.clone(), JsonValue::String(text)));
-                    pieces.push(format!("${name}"));
-                }
-                Segment::Number(width) => pieces.push(format!(
-                    "string::concat(string::repeat('0', math::max([0, {width} - string::len(<string>${number})])), <string>${number})"
-                )),
-            }
-        }
-        entries.push(format!(
-            "['{}', string::concat({})]",
-            series.column,
-            pieces.join(", ")
-        ));
+        let value = compose(&series.pattern.segments(year, month), base, &number, binds);
+        entries.push(format!("['{}', {value}]", series.column));
     }
     if let Some((column, value_sql)) = injected {
         validate_ident(column)?;
@@ -96,6 +101,91 @@ pub(super) fn create_content(
             entries.join(", ")
         )
     })
+}
+
+/// SQL that joins the pieces of a number; the counter is in the variable `number`.
+fn compose(
+    segments: &[Segment],
+    base: usize,
+    number: &str,
+    binds: &mut Vec<(String, JsonValue)>,
+) -> String {
+    let mut pieces = Vec::new();
+    for (offset, segment) in segments.iter().enumerate() {
+        match segment {
+            Segment::Text(text) => {
+                let name = format!("d{}", base + 2 + offset);
+                binds.push((name.clone(), JsonValue::String(text.clone())));
+                pieces.push(format!("${name}"));
+            }
+            Segment::Number(width) => pieces.push(format!(
+                "string::concat(string::repeat('0', math::max([0, {width} - string::len(<string>${number})])), <string>${number})"
+            )),
+        }
+    }
+    format!("string::concat({})", pieces.join(", "))
+}
+
+/// The assignments an update adds when it sets a state that numbers the record (a series with
+/// `assign_on`). The counter is only taken when the record has no number yet, so reopening and
+/// confirming again never uses a second number.
+pub(super) fn assign_on_update(
+    schema: &ModelSchema,
+    set: &Map<String, JsonValue>,
+    binds: &mut Vec<(String, JsonValue)>,
+    extra: &mut Extra,
+) -> Result<Vec<String>, HostError> {
+    let now = chrono::Utc::now();
+    let (year, month) = (now.year(), now.month());
+    let mut assignments = Vec::new();
+    for (index, series) in schema.sequences.iter().enumerate() {
+        let Some((column, values)) = &series.trigger else { continue };
+        let fires = set
+            .get(column)
+            .and_then(JsonValue::as_str)
+            .is_some_and(|v| values.iter().any(|w| w == v));
+        if !fires || set.contains_key(&series.column) {
+            continue;
+        }
+        validate_ident(&series.column)?;
+        let record = "type::record($__table, $__key)";
+        let base = SERIES_BASE + index * SERIES_BLOCK;
+        let (key_name, number) = (format!("d{base}"), format!("d{}", base + 1));
+        let mut key = counter_key(&schema.table, &series.column, series.reset, year, month);
+        let scope_sql = match &series.scope_column {
+            Some(scope) => {
+                validate_ident(scope)?;
+                // The value being set now, else the one the record has.
+                Some(match set.get(scope).and_then(JsonValue::as_str) {
+                    Some(value) => {
+                        key = format!("{key}_{value}");
+                        None
+                    }
+                    None => Some(format!("(SELECT VALUE {scope} FROM ONLY {record})")),
+                })
+            }
+            None => None,
+        };
+        binds.push((key_name.clone(), JsonValue::String(key)));
+        let key_sql = match scope_sql.flatten() {
+            Some(sql) => format!("string::concat(${key_name}, '_', <string>{sql})"),
+            None => format!("${key_name}"),
+        };
+        let has_number = format!(
+            "(SELECT VALUE {col} FROM ONLY {record}) != NONE",
+            col = series.column
+        );
+        extra.before.push(format!(
+            "LET ${number} = IF {has_number} THEN NONE ELSE (UPSERT type::record('{SEQUENCE_TABLE}', {key_sql}) \
+             SET counter = (counter ?? 0) + 1 RETURN AFTER)[0].counter END;"
+        ));
+        let value = compose(&series.pattern.segments(year, month), base, &number, binds);
+        assignments.push(format!(
+            "{col} = IF {col} != NONE THEN {col} ELSE {value} END",
+            col = series.column
+        ));
+    }
+    Ok(assignments)
 }
 
 /// After a create or update of one record: refuse the write when the record breaks one of the
@@ -125,6 +215,52 @@ pub(super) fn model_checks(
         extra.after.push(format!(
             "IF array::len({rows}) > 0 AND array::len((SELECT VALUE id FROM {rows}[0].id WHERE {})) = 0 {{ THROW ${message}; }};",
             compiled.sql
+        ));
+    }
+    unique_checks(schema, rows, binds, extra)?;
+    Ok(())
+}
+
+/// After a create or update of one record: refuse the write when another record that matches a
+/// `unique_when` rule's filter has the same values in its fields, and this one matches it too.
+fn unique_checks(
+    schema: &ModelSchema,
+    rows: &str,
+    binds: &mut Vec<(String, JsonValue)>,
+    extra: &mut Extra,
+) -> Result<(), HostError> {
+    for (index, rule) in schema.uniques.iter().enumerate() {
+        let compiled = compile_filter(
+            &rule.filter,
+            schema,
+            &format!("d{}", UNIQUE_FILTER_BASE + index * 100),
+        )
+        .map_err(|error| HostError::InvalidPayload(error.to_string()))?;
+        let message = format!("d{}", UNIQUE_MESSAGE_BASE + index);
+        binds.extend(compiled.binds);
+        binds.push((
+            message.clone(),
+            JsonValue::String(format!("aether: {}", rule.message)),
+        ));
+        let mut same = String::new();
+        for column in &rule.columns {
+            validate_ident(column)?;
+            same.push_str(&format!(" AND {column} = {rows}[0].{column}"));
+        }
+        let (this, others) = if compiled.sql.is_empty() {
+            ("true".to_string(), String::new())
+        } else {
+            (
+                format!(
+                    "array::len((SELECT VALUE id FROM {rows}[0].id WHERE {})) > 0",
+                    compiled.sql
+                ),
+                format!(" AND ({})", compiled.sql),
+            )
+        };
+        extra.after.push(format!(
+            "IF array::len({rows}) > 0 AND {this} AND array::len((SELECT VALUE id FROM {table} WHERE id != {rows}[0].id{same}{others} LIMIT 1)) > 0 {{ THROW ${message}; }};",
+            table = schema.table
         ));
     }
     Ok(())
@@ -231,6 +367,41 @@ pub(super) fn refresh_parents(schema: &ModelSchema, extra: &mut Extra) -> Result
             "IF array::len($rows) > 0 AND $rows[0].{col} != NONE {{ {body} }};",
             col = link.inverse_column,
             body = statements.join(" ")
+        ));
+    }
+    Ok(())
+}
+
+/// After an update of one record: the copies other models keep of the fields that changed are
+/// refilled (`related` fields are copies; without this they would only catch up when their own
+/// record is next written). Only touched when one of the copied source columns was set or cleared.
+pub(super) fn propagate_copies(
+    schema: &ModelSchema,
+    touched: &[&str],
+    extra: &mut Extra,
+) -> Result<(), HostError> {
+    for dependent in &schema.dependents {
+        let copies: Vec<&(String, String)> = dependent
+            .copies
+            .iter()
+            .filter(|(_, source)| touched.contains(&source.as_str()))
+            .collect();
+        if copies.is_empty() {
+            continue;
+        }
+        validate_ident(&dependent.table)?;
+        validate_ident(&dependent.link_column)?;
+        let mut sets = Vec::new();
+        for (copy, source) in copies {
+            validate_ident(copy)?;
+            validate_ident(source)?;
+            sets.push(format!("{copy} = $rows[0].{source}"));
+        }
+        extra.after.push(format!(
+            "IF array::len($rows) > 0 {{ UPDATE {table} SET {sets} WHERE {link} = <string>$rows[0].id; }};",
+            table = dependent.table,
+            sets = sets.join(", "),
+            link = dependent.link_column
         ));
     }
     Ok(())

@@ -1,3 +1,10 @@
+---
+title: "Localization (i18n)"
+description: "Aether shows every person the interface in their own language. Two things are translated, and they work differently:"
+section: architecture
+status: stable
+order: 230
+---
 # Localization (i18n)
 
 Aether shows every person the interface in their own language. Two things are translated, and

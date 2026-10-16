@@ -27,6 +27,7 @@ use surrealdb::types::SurrealValue;
 
 use crate::app_dir::AppDir;
 use crate::application::settings_api::require_session;
+use crate::plugin_activity::{self, Actor, Entry};
 use crate::config_manager::services::peek_plugin_paths;
 use crate::plugin_assets;
 use crate::plugin_manager::catalog::{PluginSpec, install_plugins, upgrade_plugins};
@@ -613,6 +614,7 @@ async fn install(
     if body.plugins.len() > MAX_SELECTION || body.organizations.len() > MAX_SELECTION {
         return failure(StatusCode::BAD_REQUEST, "too many selections");
     }
+    let actor = Actor::from_headers(&state, &headers).await;
     let mut specs = Vec::with_capacity(body.plugins.len());
     for raw in &body.plugins {
         match raw.parse::<PluginSpec>() {
@@ -699,9 +701,39 @@ async fn install(
                         .iter()
                         .map(|(name, version)| format!("{name}@{version}"))
                         .collect();
+                    log_installed(&state, &actor, &organization, "desk:install", &report.installed, true).await;
+                    // Dependencies that came along are seeded too, before the plugins that need them.
+                    let names: Vec<String> =
+                        report.installed.iter().map(|(name, _)| name.clone()).collect();
+                    if !names.is_empty() {
+                        match crate::plugin_manager::commands::run_lifecycle(
+                            &state,
+                            &organization,
+                            &names,
+                            crate::plugin_manager::commands::LifecyclePhase::Install,
+                            "system:install",
+                        )
+                        .await
+                        {
+                            Ok(seeds) => {
+                                for seed in seeds.iter().filter(|s| !s.ok) {
+                                    log::warn!(
+                                        "install seed {}.{} in `{organization}` failed: {}",
+                                        seed.plugin,
+                                        seed.command,
+                                        seed.detail.as_deref().unwrap_or("unknown")
+                                    );
+                                }
+                            }
+                            Err(error) => {
+                                log::warn!("dependency seeds in `{organization}` failed: {error}");
+                            }
+                        }
+                    }
                 }
                 Err(error) => {
                     log::warn!("installing dependencies in `{organization}` failed: {error}");
+                    log_failed(&state, &actor, &organization, "desk:install", plugin_activity::kind::INSTALL, &brought, &error.to_string()).await;
                     outcomes.push(OrgOutcome {
                         organization,
                         installed: Vec::new(),
@@ -735,6 +767,7 @@ async fn install(
                         .iter()
                         .map(|(name, _, to)| format!("{name}@{to}"))
                         .collect();
+                    log_upgraded(&state, &actor, &organization, "desk:upgrade", &report.upgraded).await;
                     if !names.is_empty()
                         && let Err(error) = crate::plugin_manager::commands::run_lifecycle(
                             &state,
@@ -750,6 +783,7 @@ async fn install(
                 }
                 Err(error) => {
                     log::warn!("upgrading in organization `{organization}` failed: {error}");
+                    log_failed(&state, &actor, &organization, "desk:upgrade", plugin_activity::kind::UPGRADE, &moves, &error.to_string()).await;
                     outcomes.push(OrgOutcome {
                         organization,
                         installed: Vec::new(),
@@ -787,6 +821,7 @@ async fn install(
                     report.already_installed.len()
                 );
                 crate::plugin_manager::installed::invalidate(&state.cache, &organization);
+                log_installed(&state, &actor, &organization, "desk:install", &report.installed, false).await;
                 let seed_plugins: Vec<String> = report
                     .installed
                     .iter()
@@ -840,6 +875,7 @@ async fn install(
             }
             Err(error) => {
                 log::warn!("installing in organization `{organization}` failed: {error}");
+                log_failed(&state, &actor, &organization, "desk:install", plugin_activity::kind::INSTALL, &fresh, &error.to_string()).await;
                 OrgOutcome {
                     organization,
                     installed: Vec::new(),
@@ -990,9 +1026,123 @@ struct Applied {
     error: Option<String>,
 }
 
+/// Record plugins installed in an organization.
+async fn log_installed(
+    state: &AppState,
+    actor: &Actor,
+    organization: &str,
+    source: &str,
+    installed: &[(String, String)],
+    as_dependency: bool,
+) {
+    for (name, version) in installed {
+        plugin_activity::record(
+            state,
+            Entry {
+                kind: plugin_activity::kind::INSTALL,
+                plugin: name.clone(),
+                from_version: None,
+                to_version: Some(version.clone()),
+                organization: Some(organization.to_string()),
+                actor: actor.clone(),
+                source: source.to_string(),
+                ok: true,
+                error: None,
+                detail: json!({ "as_dependency": as_dependency }),
+            },
+        )
+        .await;
+    }
+}
+
+/// Record plugins moved to another revision in an organization.
+async fn log_upgraded(
+    state: &AppState,
+    actor: &Actor,
+    organization: &str,
+    source: &str,
+    upgraded: &[(String, String, String)],
+) {
+    for (name, from, to) in upgraded {
+        plugin_activity::record(
+            state,
+            Entry {
+                kind: plugin_activity::kind::UPGRADE,
+                plugin: name.clone(),
+                from_version: Some(from.clone()),
+                to_version: Some(to.clone()),
+                organization: Some(organization.to_string()),
+                actor: actor.clone(),
+                source: source.to_string(),
+                ok: true,
+                error: None,
+                detail: Value::Null,
+            },
+        )
+        .await;
+    }
+}
+
+/// Record an install or upgrade that failed, for each plugin that was being moved.
+async fn log_failed(
+    state: &AppState,
+    actor: &Actor,
+    organization: &str,
+    source: &str,
+    kind: &'static str,
+    specs: &[PluginSpec],
+    error: &str,
+) {
+    for spec in specs {
+        plugin_activity::record(
+            state,
+            Entry {
+                kind,
+                plugin: spec.name.clone(),
+                from_version: None,
+                to_version: spec.version.clone(),
+                organization: Some(organization.to_string()),
+                actor: actor.clone(),
+                source: source.to_string(),
+                ok: false,
+                error: Some(error.to_string()),
+                detail: Value::Null,
+            },
+        )
+        .await;
+    }
+}
+
+/// Record what a catalog load changed (unchanged plugins are not logged).
+async fn log_loaded(state: &AppState, actor: &Actor, source: &str, loaded: &[LoadedEntry]) {
+    for row in loaded.iter().filter(|row| row.created) {
+        plugin_activity::record(
+            state,
+            Entry {
+                kind: plugin_activity::kind::CATALOG_LOAD,
+                plugin: row.name.clone(),
+                from_version: None,
+                to_version: Some(row.version.clone()),
+                organization: None,
+                actor: actor.clone(),
+                source: source.to_string(),
+                ok: true,
+                error: None,
+                detail: Value::Null,
+            },
+        )
+        .await;
+    }
+}
+
 /// Move organizations that have a plugin installed to the revision just loaded for it, and drop
 /// the caches that still describe the old one. Plugins that did not change are left alone.
-async fn apply_loaded(state: &AppState, loaded: &[LoadedEntry]) -> Vec<Applied> {
+async fn apply_loaded(
+    state: &AppState,
+    loaded: &[LoadedEntry],
+    actor: &Actor,
+    source: &str,
+) -> Vec<Applied> {
     let mut applied = Vec::new();
     let fresh: Vec<&LoadedEntry> = loaded.iter().filter(|row| row.created).collect();
     if fresh.is_empty() {
@@ -1050,6 +1200,7 @@ async fn apply_loaded(state: &AppState, loaded: &[LoadedEntry]) -> Vec<Applied> 
                         &state.cache,
                         &organization.db_name,
                     );
+                    log_upgraded(state, actor, &organization.db_name, source, &report.upgraded).await;
                     if !report.upgraded.is_empty()
                         && let Err(error) = crate::plugin_manager::commands::run_lifecycle(
                             state,
@@ -1071,6 +1222,16 @@ async fn apply_loaded(state: &AppState, loaded: &[LoadedEntry]) -> Vec<Applied> 
                         organization.db_name,
                         row.version
                     );
+                    log_failed(
+                        state,
+                        actor,
+                        &organization.db_name,
+                        source,
+                        plugin_activity::kind::UPGRADE,
+                        std::slice::from_ref(&spec),
+                        &error.to_string(),
+                    )
+                    .await;
                     Some(error.to_string())
                 }
             };
@@ -1202,6 +1363,7 @@ async fn reload(
     if let Err((status, body)) = require_session(&state, &headers).await {
         return (status, body).into_response();
     }
+    let actor = Actor::from_headers(&state, &headers).await;
     let entries = match resolve_reload_entries(&state, &body) {
         Ok(entries) => entries,
         Err(response) => return response,
@@ -1214,8 +1376,11 @@ async fn reload(
                 loaded.len(),
                 created
             );
-            let applied = if body.apply.unwrap_or(true) {
-                apply_loaded(&state, &loaded).await
+            // Loading only fills the catalog. Moving organizations to what was loaded is a separate,
+            // explicit step (`apply: true`).
+            log_loaded(&state, &actor, "desk:reload", &loaded).await;
+            let applied = if body.apply.unwrap_or(false) {
+                apply_loaded(&state, &loaded, &actor, "desk:reload_upgrade").await
             } else {
                 Vec::new()
             };
@@ -1233,6 +1398,7 @@ async fn upload(
     if let Err((status, body)) = require_session(&state, &headers).await {
         return (status, body).into_response();
     }
+    let actor = Actor::from_headers(&state, &headers).await;
     let filename = body.filename.trim();
     if filename.is_empty() {
         return failure(StatusCode::BAD_REQUEST, "filename is required");
@@ -1305,7 +1471,9 @@ async fn upload(
                 created,
                 dest.display()
             );
-            let applied = apply_loaded(&state, &loaded).await;
+            log_loaded(&state, &actor, "desk:upload", &loaded).await;
+            // An upload only fills the catalog; organizations are moved by Reload & upgrade.
+            let applied: Vec<Applied> = Vec::new();
             Json(json!({
                 "loaded": loaded,
                 "applied": applied,

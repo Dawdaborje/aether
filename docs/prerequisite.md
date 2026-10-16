@@ -1,3 +1,10 @@
+---
+title: "Prerequisite"
+description: "What you need installed before running Aether: the aether binary, SurrealDB and, for WebAssembly plugins, the Extism CLI."
+section: guide
+status: stable
+order: 30
+---
 # Prerequisite
 
 ## Tech Stack

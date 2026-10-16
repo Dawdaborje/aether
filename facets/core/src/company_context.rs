@@ -1,6 +1,6 @@
 //! Current company for the signed-in user inside an organization.
 //!
-//! Parties and other shared masters are **not** filtered by this. It is the Odoo-style
+//! Parties and other shared masters are **not** filtered by this. It is the
 //! working company: shown in the shell, available on `context::get`, and the default
 //! for company-scoped documents later.
 

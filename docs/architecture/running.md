@@ -1,3 +1,10 @@
+---
+title: "Running Aether"
+description: "aether --serve needs an initialized database (aether --init once for a fresh install; it reports clearly if you forgot)."
+section: architecture
+status: stable
+order: 380
+---
 # Running Aether
 
 ## Starting and stopping
@@ -16,6 +23,30 @@ to SurrealDB, which closes when the process exits.
 Process logs go to stderr by default; set `[logging] file = true` (or
 `--log-file` / `--log-dir`) to also append under `app_dir`. See
 [logging.md](logging.md).
+
+## The documentation website
+
+These docs are compiled into the `aether` binary, so they are available wherever it runs, with no
+source tree, no config file and no database.
+
+```sh
+aether --serve-docs                  # http://127.0.0.1:7899
+aether --serve-docs 0.0.0.0:8080     # another address
+```
+
+`aether --serve` also serves the same site, at `/docs` by default (`http://localhost:7890/docs`).
+Change or turn it off in `aether.toml`:
+
+```toml
+[docs]
+enabled = true     # false: do not serve the documentation under --serve
+path = "/docs"     # where it is mounted; "/" is refused because the API uses it
+```
+
+The site has a search box (`/search?q=...`), a light and a dark theme, and every page as plain
+markdown by adding `.md` to its address (`/plugin/pages.md`). `/llms.txt` lists all pages and
+`/llms-full.txt` is the whole documentation in one file, for language models. Pages marked
+*proposal* describe designs that are not built yet; the site and both text files say so.
 
 ## Loading plugins while the server runs
 

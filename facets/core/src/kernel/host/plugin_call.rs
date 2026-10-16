@@ -63,6 +63,30 @@ pub async fn plugins_call(
     Ok(serde_json::json!({ "ok": true, "data": data }))
 }
 
+/// `plugins::available`: whether a plugin this one lists in `dependencies` or
+/// `optional_dependencies` is installed and enabled in the organization. Payload `{ "plugin" }`,
+/// answer `{ "ok": true, "data": bool }`.
+pub async fn plugins_available(
+    ctx: &PluginHostContext,
+    payload: &JsonValue,
+) -> Result<JsonValue, HostError> {
+    ctx.require_cap("plugins::call")?;
+    let name = payload
+        .get("plugin")
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| HostError::InvalidPayload("`plugin` is required".into()))?;
+    if !ctx.dependencies.iter().any(|dependency| dependency == name) {
+        return Err(HostError::Message(format!(
+            "`{name}` is not one of this plugin's dependencies; list it under `dependencies` or `optional_dependencies` in plugin.toml"
+        )));
+    }
+    let available = match &ctx.caller {
+        Some(caller) => caller.available(name).await,
+        None => false,
+    };
+    Ok(serde_json::json!({ "ok": true, "data": available }))
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
@@ -158,6 +182,19 @@ mod tests {
             recorder.0.lock().unwrap().is_empty(),
             "nothing refused may reach the caller"
         );
+    }
+
+    #[tokio::test]
+    async fn available_asks_the_caller_and_only_about_declared_plugins() {
+        let (ctx, _) = ctx(&["billing"], &[]);
+        let known = kernel_command(&ctx, "plugins::available", serde_json::json!({ "plugin": "billing" }))
+            .await
+            .unwrap();
+        // The recorder keeps the default answer: nothing is installed.
+        assert_eq!(known["data"], serde_json::json!(false));
+        let unknown =
+            kernel_command(&ctx, "plugins::available", serde_json::json!({ "plugin": "other" })).await;
+        assert!(matches!(unknown, Err(HostError::Message(_))), "{unknown:?}");
     }
 
     #[tokio::test]

@@ -1,3 +1,10 @@
+---
+title: "Plugin commands (the command line)"
+description: "Like Django's manage.py commands: a plugin offers named commands, and an administrator runs any installed plugin's commands from the command line."
+section: plugin
+status: stable
+order: 20
+---
 # Plugin commands (the command line)
 
 Like Django's `manage.py` commands: a plugin offers named commands, and an administrator runs any
@@ -29,7 +36,7 @@ args = [
   { name = "source", required = true },
 ]
 
-# Master data (like Odoo `data` / Frappe fixtures): the kernel runs these with
+# Master data: the kernel runs these with
 # empty args after install / upgrade into an organization. Keep them idempotent.
 [[command]]
 name = "seed"
@@ -82,8 +89,7 @@ standard error and the exit status is 1, so commands work in shell scripts and c
 Set `on_install = true` and/or `on_upgrade = true` on a command that takes no required
 arguments. After `--install-plugin` / Desk install (or `--upgrade-plugin`), the kernel runs
 those commands for each newly installed or upgraded plugin, in dependency order, as
-`system:install` / `system:cli:…`. Prefer idempotent seeds (create-if-missing), as in Odoo
-`data` files and Frappe fixtures. You can still run the same command by hand with
+`system:install` / `system:cli:…`. Prefer idempotent seeds (create-if-missing). You can still run the same command by hand with
 `aether --command <plugin>.seed --org <org>`.
 
 ## Demo data (Desk)
@@ -139,3 +145,16 @@ tools
 The catalog keeps each plugin version's commands in `plugins.commands` (migration
 `024_plugin_commands`), filled when a plugin is loaded. Listing and running read the version installed
 in the organization, so upgrading a plugin changes its commands for that organization at the same time.
+
+## Proposed kernel CLI (not built)
+
+These belong to the proposals in [the gaps roadmap](../architecture/gaps_roadmap.md) and are the first use of
+subcommands next to the existing flags.
+
+| Command | Design |
+|---|---|
+| `aether audit verify [--org] [--anchor file]`, `aether audit export-anchor` | [Audit chain](../architecture/audit_chain.md) |
+| `aether check [--plugin] [--org] [--json]` | [Verification](../architecture/verification.md) |
+| `aether preview --org <org> --change <change set>` | [Verification](../architecture/verification.md) |
+| `aether plugin preflight`, `aether plugin rollback` | [Verification](../architecture/verification.md) |
+| `aether import --org <org> --model <model> --file <file> [--dry-run]` | [Import and export](../architecture/import_export.md) |

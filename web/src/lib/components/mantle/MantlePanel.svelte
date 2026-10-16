@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { reportError } from '$lib/errors/report';
 	import { onDestroy, onMount } from 'svelte';
 	import FlameIcon from '@lucide/svelte/icons/flame';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
@@ -23,7 +24,7 @@
 		try {
 			stats = await fetchMantleStats();
 		} catch (error) {
-			failed = error instanceof Error ? error.message : 'Mantle stats could not be loaded.';
+			failed = reportError(error, 'Mantle stats could not be loaded.');
 		} finally {
 			loading = false;
 		}

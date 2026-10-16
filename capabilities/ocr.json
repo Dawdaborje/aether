@@ -1,0 +1,12 @@
+{
+  "code": "ocr",
+  "name": "Document parsing and OCR",
+  "description": "Read text, with positions, out of a file stored in the organization's media (PDF, Office, image). The engine and its credentials are the kernel's; the plugin names only the file.",
+  "capabilities": [
+    {
+      "code": "parse",
+      "name": "Parse a stored file",
+      "description": "Extract text and blocks from a media file, running OCR on scanned pages: directly (ocr::parse), as a queued job with a callback (ocr::submit, ocr::result), and the engine's state (ocr::status)."
+    }
+  ]
+}

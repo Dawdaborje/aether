@@ -69,7 +69,7 @@ export function parseColors(raw: unknown): Record<string, string> {
 	}
 }
 
-/** Map Odoo-ish color tokens to Tailwind background classes. */
+/** Map color tokens to Tailwind background classes. */
 export function progressColorClass(token: string): string {
 	const t = token.toLowerCase();
 	if (t === 'danger' || t === 'red') return 'bg-destructive';

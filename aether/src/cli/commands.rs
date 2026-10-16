@@ -12,7 +12,7 @@ use aether_core::{
 use super::db::DbContext;
 
 /// The operating system user, safe to put in an audit record.
-fn operating_system_user() -> String {
+pub(crate) fn operating_system_user() -> String {
     let name = std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_default();
     let clean: String = name
         .chars()

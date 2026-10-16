@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { reportError } from '$lib/errors/report';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { onMount } from 'svelte';
@@ -60,7 +61,7 @@
 				focusPlugin = plugins[0]?.name ?? '';
 			}
 		} catch (error) {
-			loadError = error instanceof Error ? error.message : 'Could not load the models';
+			loadError = reportError(error, 'Could not load the models');
 			plugins = [];
 		}
 	}

@@ -343,6 +343,8 @@ mod tests {
             include_str!("../../../../seeds/settings/global_settings.json"),
             include_str!("../../../../seeds/settings/chatter.json"),
             include_str!("../../../../seeds/settings/bridges.json"),
+            include_str!("../../../../seeds/settings/ocr.json"),
+            include_str!("../../../../seeds/settings/ai.json"),
         ];
         let (mut labels, mut keys, mut groups) = (
             std::collections::HashSet::new(),

@@ -5,6 +5,8 @@ export type ScheduleKind = 'cron' | 'interval';
 export interface ScheduleTask {
 	plugin: string;
 	name: string;
+	title: string | null;
+	description: string | null;
 	function: string;
 	kind: ScheduleKind;
 	cron: string | null;
@@ -17,6 +19,14 @@ export interface ScheduleTask {
 	catch_up: string;
 	next_run: string | null;
 	last_run: string | null;
+}
+
+/** The label to show for a task: its title, or its key made readable ("nightly-report" → "Nightly report"). */
+export function scheduleTitle(task: Pick<ScheduleTask, 'name' | 'title'>): string {
+	const title = task.title?.trim();
+	if (title) return title;
+	const words = task.name.replace(/[_\-.]+/g, ' ').trim();
+	return words ? words.charAt(0).toUpperCase() + words.slice(1) : task.name;
 }
 
 export interface ScheduleRun {
@@ -112,10 +122,11 @@ export async function fetchScheduleRuns(
 	db: string,
 	plugin: string,
 	name: string,
-	limit = 100
+	limit = 100,
+	offset = 0
 ): Promise<ScheduleRun[]> {
 	const res = await apiFetch(
-		`${base(db)}/tasks/${encodeURIComponent(plugin)}/${encodeURIComponent(name)}/runs?limit=${limit}`
+		`${base(db)}/tasks/${encodeURIComponent(plugin)}/${encodeURIComponent(name)}/runs?limit=${limit}&offset=${offset}`
 	);
 	if (!res.ok) {
 		throw new Error(await readError(res, `Runs could not be loaded (${res.status}).`));

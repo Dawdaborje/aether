@@ -311,6 +311,9 @@ struct NewPlugin {
     artifact_path: Option<String>,
     artifact_hash: Option<String>,
     content_hash: String,
+    /// Hash of every file in the package folder as it was when this row was written. A later
+    /// load whose folder hashes the same has nothing new and skips parsing and validation.
+    source_hash: Option<String>,
     /// The folder under `plugins/<name>/` holding this version's file index.
     revision: Option<String>,
     /// Where the package was loaded from.
@@ -331,6 +334,8 @@ struct NewPlugin {
     event_listeners: Vec<serde_json::Value>,
     /// The manifest's `[[roles]]`.
     roles: Vec<serde_json::Value>,
+    /// The manifest's `[[ai_tool]]` entries.
+    ai_tools: Vec<serde_json::Value>,
     is_builtin: bool,
     is_active: bool,
 }
@@ -432,6 +437,118 @@ struct ModelIdOwner {
 }
 
 /// `0.1.0+20261003T210100Z` is a rebuild of `0.1.0`.
+/// Folders that are never part of a package's content (build output, dependencies, VCS data).
+const SKIPPED_DIRS: &[&str] = &["target", "node_modules", ".git", ".svelte-kit", "__pycache__"];
+
+/// A SHA-256 over every regular file under `dir` (relative path, length, bytes), in path order.
+async fn hash_package_tree(dir: &Path) -> Result<String, CatalogError> {
+    let dir = dir.to_path_buf();
+    let result = tokio::task::spawn_blocking(move || -> io::Result<String> {
+        fn walk(root: &Path, here: &Path, out: &mut Vec<PathBuf>) -> io::Result<()> {
+            for entry in std::fs::read_dir(here)? {
+                let entry = entry?;
+                let kind = entry.file_type()?;
+                let path = entry.path();
+                if kind.is_dir() {
+                    let name = entry.file_name();
+                    if SKIPPED_DIRS.iter().any(|skip| name == *skip) {
+                        continue;
+                    }
+                    walk(root, &path, out)?;
+                } else if kind.is_file() {
+                    if let Ok(relative) = path.strip_prefix(root) {
+                        out.push(relative.to_path_buf());
+                    }
+                }
+            }
+            Ok(())
+        }
+        let mut files = Vec::new();
+        walk(&dir, &dir, &mut files)?;
+        files.sort();
+        let mut hash = Sha256::new();
+        for relative in files {
+            let bytes = std::fs::read(dir.join(&relative))?;
+            hash.update(relative.to_string_lossy().as_bytes());
+            hash.update((bytes.len() as u64).to_le_bytes());
+            hash.update(&bytes);
+        }
+        Ok(hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect())
+    })
+    .await
+    .map_err(|error| CatalogError::Io {
+        path: PathBuf::new(),
+        source: io::Error::other(error.to_string()),
+    })?;
+    result.map_err(|source| CatalogError::Io {
+        path: PathBuf::new(),
+        source,
+    })
+}
+
+/// The catalog row this exact folder produced last time, if its stored files are all still there.
+/// `None` means "do the full load".
+async fn unchanged_since_last_load(
+    db: &Surreal<Client>,
+    namespace: &str,
+    core_database: &str,
+    layout: &AppDir,
+    manifest: &PluginManifest,
+    tree_hash: &str,
+) -> Result<Option<LoadedPlugin>, CatalogError> {
+    db.use_ns(namespace).await?;
+    db.use_db(core_database).await?;
+    let mut response = db
+        .query(
+            "SELECT version, content_hash, revision, date_created FROM plugins \
+             WHERE name = $name AND source_hash = $hash ORDER BY date_created DESC LIMIT 1;",
+        )
+        .bind(("name", manifest.plugin.name.clone()))
+        .bind(("hash", tree_hash.to_string()))
+        .await?
+        .check()?;
+    let rows: Vec<KnownVersion> = response.take(0)?;
+    let Some(row) = rows.into_iter().next() else {
+        return Ok(None);
+    };
+    let Some(revision) = row.revision.clone() else {
+        return Ok(None);
+    };
+    let Some(index) = revisions::read_index(layout, &manifest.plugin.name, &revision).await? else {
+        return Ok(None);
+    };
+    // A file missing from `app_dir` is repaired by the full load.
+    if !revisions::missing_files(layout, &index).await?.is_empty() {
+        return Ok(None);
+    }
+    let artifact_path = manifest
+        .plugin
+        .code_file()
+        .and_then(|file| Path::new(file).file_name().map(PathBuf::from))
+        .and_then(|name| {
+            let logical = logical_path(&name);
+            index
+                .files
+                .get(&logical)
+                .map(|entry| revisions::relative_path(&manifest.plugin.name, entry, &logical))
+        })
+        .map(|path| path.to_string_lossy().into_owned());
+    Ok(Some(LoadedPlugin {
+        name: manifest.plugin.name.clone(),
+        version: row.version,
+        artifact_path,
+        // Not read: nothing was parsed. The stored catalog has the real figures.
+        pages: 0,
+        public_pages: 0,
+        theme: None,
+        app: None,
+        created: false,
+        revision: Some(revision),
+        written_files: 0,
+        reused_files: 0,
+    }))
+}
+
 pub fn base_version(version: &str) -> &str {
     version.split('+').next().unwrap_or(version)
 }
@@ -620,6 +737,134 @@ pub async fn check_plugin(
     .await
 }
 
+/// What [`check_plugin_offline`] looked at.
+#[derive(Debug, Clone)]
+pub struct OfflineCheck {
+    pub name: String,
+    pub version: String,
+    pub models: Vec<String>,
+    pub pages: usize,
+    pub components: usize,
+    /// Checks that were not made, and why (most need the catalog, which is a database).
+    pub skipped: Vec<&'static str>,
+}
+
+/// [`check_plugin`] without a database: parses and validates a package on disk and stops there.
+///
+/// Makes every check of a load that does not read the catalog (manifest, models, pages, components,
+/// granted models, capabilities, theme, layouts, rules, texts, declared files, script syntax). It
+/// cannot check links to other plugins' models or components taken from other plugins, and says so
+/// in [`OfflineCheck::skipped`]. Used by the MCP server (`aether --mcp`) so a plugin can be checked on
+/// a machine that has no database. Like a real load it stops at the first problem.
+pub async fn check_plugin_offline(plugin_path: &Path) -> Result<OfflineCheck, CatalogError> {
+    let manifest_path = if plugin_path.is_dir() {
+        plugin_path.join(MANIFEST_FILE)
+    } else {
+        plugin_path.to_path_buf()
+    };
+    let manifest_path = tokio::fs::canonicalize(&manifest_path)
+        .await
+        .map_err(io_error(&manifest_path))?;
+    let package_dir = manifest_path
+        .parent()
+        .ok_or_else(|| CatalogError::InvalidManifestPath(manifest_path.clone()))?
+        .to_path_buf();
+    let manifest_text = tokio::fs::read_to_string(&manifest_path)
+        .await
+        .map_err(io_error(&manifest_path))?;
+    let manifest =
+        PluginManifest::parse(&manifest_text).map_err(|source| CatalogError::Manifest {
+            path: manifest_path.clone(),
+            source,
+        })?;
+    if manifest.plugin.name.trim().is_empty() || manifest.plugin.version.trim().is_empty() {
+        return Err(CatalogError::IncompleteManifest(manifest_path));
+    }
+
+    let components = discover_components(&package_dir).await?;
+    let pages = discover_pages(&package_dir).await?;
+    let layouts = discover_layouts(&package_dir).await?;
+    let error_sets = discover_error_sets(&package_dir).await?;
+    let model_files = read_models(&package_dir)?;
+    let models: Vec<ModelDef> = model_files.iter().map(|(_, model)| model.clone()).collect();
+    validate_page_models(&manifest, &models, &pages)?;
+    validate_component_models(&models, &components)?;
+    validate_granted_models(&manifest, &models, &manifest_path)?;
+    validate_capabilities(&manifest, &manifest_path)?;
+
+    let mut theme = read_theme(&manifest, &manifest_path, &package_dir).await?;
+    if let Some(theme) = theme.as_mut() {
+        bind_theme_shell_defs(theme, &layouts, &error_sets, &manifest_path)?;
+    }
+    validate_page_layouts(&pages, &layouts)?;
+    read_app(&manifest, &manifest_path, &pages)?;
+    let rule_files = read_rule_files(&package_dir).await?;
+    crate::data_model::rules::parse_all(
+        &rule_files
+            .iter()
+            .map(|(path, text)| (logical_path(path), text.clone()))
+            .collect::<Vec<_>>(),
+        &models,
+    )
+    .map_err(|problems| CatalogError::Rules {
+        plugin: manifest.plugin.name.clone(),
+        problems: problems.join("; "),
+    })?;
+
+    for declared in declared_files(&manifest) {
+        resolve_package_file(&package_dir, declared).await?;
+    }
+    collect_asset_files(&package_dir).await?;
+    if let Some(icon) = manifest.plugin.icon_path.as_deref().filter(|path| !path.is_empty()) {
+        resolve_package_file(&package_dir, icon).await?;
+    }
+    if let Some(found) = super::i18n::read_catalogs(&package_dir, &manifest)
+        .await
+        .map_err(CatalogError::I18n)?
+    {
+        super::i18n::check_overrides(&manifest, &found.catalogs).map_err(CatalogError::I18n)?;
+    }
+
+    let declares = |file: &Option<String>| file.as_deref().is_some_and(|file| !file.is_empty());
+    if declares(&manifest.plugin.wasm_file) && declares(&manifest.plugin.script) {
+        return Err(CatalogError::BothWasmAndScript(manifest_path.clone()));
+    }
+    let mut skipped = vec![
+        "links from this plugin's models to models of other plugins (need the catalog)",
+        "components used from other plugins (need the catalog)",
+        "model ids already taken in the catalog",
+    ];
+    if let Some(code_file) = manifest.plugin.code_file() {
+        // A compiled plugin is checked before it is built; only a script is read here.
+        if !manifest.plugin.is_script() && resolve_package_file(&package_dir, code_file).await.is_err() {
+            skipped.push("the WebAssembly module is not built yet (see the README), so it was not checked");
+        }
+    }
+    if let Some(code_file) = manifest.plugin.code_file().filter(|_| manifest.plugin.is_script()) {
+        let source = package_dir.join(resolve_package_file(&package_dir, code_file).await?);
+        if manifest.plugin.is_script() {
+            let kind = super::script::ScriptKind::of_path(&source)
+                .ok_or_else(|| CatalogError::ScriptExtension { path: source.clone() })?;
+            let bytes = tokio::fs::read(&source).await.map_err(io_error(&source))?;
+            super::script::ScriptProgram::compile(kind, &String::from_utf8_lossy(&bytes)).map_err(
+                |error| CatalogError::ScriptInvalid {
+                    path: source.clone(),
+                    message: error.to_string(),
+                },
+            )?;
+        }
+    }
+
+    Ok(OfflineCheck {
+        name: manifest.plugin.name.clone(),
+        version: manifest.plugin.version.clone(),
+        models: models.iter().map(|model| model.name.clone()).collect(),
+        pages: pages.len(),
+        components: components.len(),
+        skipped,
+    })
+}
+
 /// `plugin.model` → `model_id` for every package in `plugin_paths` that has models on disk.
 /// Used by `--dry-run` so foreign links can resolve against the batch, not only the catalog.
 pub fn batch_model_ids(plugin_paths: &[PathBuf]) -> Result<HashMap<String, String>, CatalogError> {
@@ -687,6 +932,21 @@ async fn load_plugin_inner(
     if manifest.plugin.name.trim().is_empty() || manifest.plugin.version.trim().is_empty() {
         return Err(CatalogError::IncompleteManifest(manifest_path));
     }
+
+    // Nothing on disk changed since the last load: say so before parsing or validating anything.
+    // The hash covers every file of the package folder (not only the ones that are stored), so any
+    // edit takes the full path below, which then decides whether the stored content differs.
+    let source_hash: Option<String> = if dry_run {
+        None
+    } else {
+        let tree = hash_package_tree(&package_dir).await?;
+        if let Some(done) =
+            unchanged_since_last_load(db, namespace, core_database, &layout, &manifest, &tree).await?
+        {
+            return Ok(done);
+        }
+        Some(tree)
+    };
 
     let components = discover_components(&package_dir).await?;
     let pages = discover_pages(&package_dir).await?;
@@ -853,6 +1113,11 @@ async fn load_plugin_inner(
         .iter()
         .filter_map(|role| serde_json::to_value(role).ok())
         .collect();
+    let ai_tools: Vec<serde_json::Value> = manifest
+        .ai_tool
+        .iter()
+        .filter_map(|tool| serde_json::to_value(tool).ok())
+        .collect();
     let event_listeners: Vec<serde_json::Value> = manifest
         .events
         .iter()
@@ -977,6 +1242,15 @@ async fn load_plugin_inner(
                 })
                 .transpose()?,
         };
+        // Remember what the folder hashed to, so the next load can skip all of the above.
+        if let Some(hash) = &source_hash {
+            db.query("UPDATE plugins SET source_hash = $hash WHERE name = $name AND version = $version;")
+                .bind(("hash", hash.clone()))
+                .bind(("name", definition.name.clone()))
+                .bind(("version", same.version.clone()))
+                .await?
+                .check()?;
+        }
         return Ok(summary(
             same.version.clone(),
             artifact_path,
@@ -1074,6 +1348,7 @@ async fn load_plugin_inner(
         artifact_path: artifact_path.clone(),
         artifact_hash: wasm_hash,
         content_hash,
+        source_hash: source_hash.clone(),
         revision: Some(stored.revision.clone()),
         source_path: Some(package_dir.to_string_lossy().into_owned()),
         app,
@@ -1086,6 +1361,7 @@ async fn load_plugin_inner(
         watches,
         event_listeners,
         roles,
+        ai_tools,
         is_builtin: definition.is_builtin,
         is_active: true,
     };

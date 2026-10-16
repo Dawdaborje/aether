@@ -7,6 +7,7 @@
 	import InstallAppsModal from '$lib/components/apps/InstallAppsModal.svelte';
 	import UpgradeAppsModal from '$lib/components/apps/UpgradeAppsModal.svelte';
 	import PluginDetailModal from '$lib/components/apps/PluginDetailModal.svelte';
+	import * as Dialog from '$lib/components/ui/dialog/index.js';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Skeleton } from '$lib/components/ui/skeleton';
@@ -22,6 +23,7 @@
 		type CatalogPluginGroup
 	} from '$lib/apps/catalogGroup';
 	import { matchPlugin } from '$lib/apps/matchPlugin';
+	import { pageError } from '$lib/pages/pageContext.svelte';
 	import { currentSystemNavParent } from '$lib/systemStore';
 	import { resolve } from '$app/paths';
 	import type { AppTileData } from '$lib/components/apps/types';
@@ -31,15 +33,16 @@
 	let installWorkspaces = $state<string[]>([]);
 	let catalog = $state<CatalogPlugin[] | null>(null);
 	let loadError = $state(false);
-	/** Category keys currently checked. Empty = show every plugin (Odoo-style default). */
+	/** Category keys currently checked. Empty = show every plugin (the default). */
 	let selectedCategories = $state<string[]>([]);
 	let query = $state('');
 	let detailVersions = $state<CatalogPlugin[]>([]);
 	let detailOpen = $state(false);
 	let reloading = $state(false);
 	let uploading = $state(false);
+	/** What the last reload or upload did; shown in a dialog until dismissed. */
 	let actionMessage = $state<string | null>(null);
-	let actionError = $state<string | null>(null);
+	let messageOpen = $state(false);
 	let zipInput: HTMLInputElement | undefined = $state();
 
 	onMount(() => {
@@ -60,7 +63,8 @@
 
 	function summarizeLoad(
 		loaded: { name: string; created: boolean }[],
-		applied: { ok: boolean; plugin: string; organization: string; error: string | null }[] = []
+		applied: { ok: boolean; plugin: string; organization: string; error: string | null }[] = [],
+		upgraded = true
 	): string {
 		const created = loaded.filter((row) => row.created).length;
 		const unchanged = loaded.length - created;
@@ -69,6 +73,7 @@
 		if (unchanged) parts.push(`${unchanged} unchanged`);
 		if (parts.length === 0) return 'No packages loaded.';
 		let text = `Loaded ${loaded.length} package${loaded.length === 1 ? '' : 's'} (${parts.join(', ')}).`;
+		if (!upgraded) text += ' Organizations were not changed: use Reload & upgrade to move them to the new revisions.';
 		const moved = applied.filter((row) => row.ok).length;
 		if (moved) text += ` Upgraded ${moved} installed module${moved === 1 ? '' : 's'} in your organizations.`;
 		const failed = applied.filter((row) => !row.ok);
@@ -80,16 +85,27 @@
 		return text;
 	}
 
-	async function onReload() {
+	/** Surface a failure in the shared error modal rather than inline text. */
+	function showError(error: unknown, fallback: string, fn: string) {
+		pageError.current = {
+			kind: 'validation',
+			status: 0,
+			message: error instanceof Error && error.message ? error.message : fallback,
+			plugin: 'aether',
+			fn
+		};
+	}
+
+	async function onReload(apply = false) {
 		reloading = true;
 		actionMessage = null;
-		actionError = null;
 		try {
-			const result = await reloadCatalog();
-			actionMessage = summarizeLoad(result.loaded, result.applied);
+			const result = await reloadCatalog(undefined, { apply });
+			actionMessage = summarizeLoad(result.loaded, result.applied, apply);
+			messageOpen = true;
 			await load();
 		} catch (error) {
-			actionError = error instanceof Error ? error.message : 'Could not reload the catalog';
+			showError(error, 'Could not reload the catalog', 'reload');
 		} finally {
 			reloading = false;
 		}
@@ -102,13 +118,13 @@
 		if (!file) return;
 		uploading = true;
 		actionMessage = null;
-		actionError = null;
 		try {
 			const result = await uploadCatalogZip(file);
-			actionMessage = summarizeLoad(result.loaded, result.applied);
+			actionMessage = summarizeLoad(result.loaded, result.applied, false);
+			messageOpen = true;
 			await load();
 		} catch (error) {
-			actionError = error instanceof Error ? error.message : 'Could not upload the zip';
+			showError(error, 'Could not upload the zip', 'upload');
 		} finally {
 			uploading = false;
 		}
@@ -197,7 +213,7 @@
 	<header
 		class="flex flex-wrap items-end justify-between gap-3 border-b border-border px-4 py-4 md:px-6"
 	>
-		<div class="min-w-0">
+		<div class="min-w-0 flex-1 basis-80">
 			<h1 class="text-lg font-semibold tracking-tight">Apps</h1>
 			<p class="text-sm text-muted-foreground">
 				All plugins loaded into the kernel. Filter by category on the left; open a tile for
@@ -205,7 +221,7 @@
 				<a class="underline underline-offset-2" href={resolve('/apps')}>the app launcher</a>.
 			</p>
 		</div>
-		<div class="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
+		<div class="ml-auto flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
 			<div class="relative w-full max-w-xs">
 				<SearchIcon
 					class="pointer-events-none absolute top-1/2 left-3 z-10 size-4 -translate-y-1/2 text-muted-foreground"
@@ -243,6 +259,15 @@
 			<Button
 				size="sm"
 				variant="outline"
+				title="Load from disk, then move every organization that has a changed plugin installed to its new revision"
+				disabled={reloading || uploading}
+				onclick={() => void onReload(true)}
+			>
+				Reload &amp; upgrade orgs
+			</Button>
+			<Button
+				size="sm"
+				variant="outline"
 				disabled={reloading || uploading}
 				onclick={() => zipInput?.click()}
 			>
@@ -251,12 +276,6 @@
 			<Button size="sm" variant="outline" onclick={() => (upgrading = true)}>Upgrade modules</Button>
 			<Button size="sm" onclick={() => startInstall()}>Install into org</Button>
 		</div>
-		{#if actionMessage}
-			<p class="basis-full text-sm text-muted-foreground" role="status">{actionMessage}</p>
-		{/if}
-		{#if actionError}
-			<p class="basis-full text-sm text-destructive" role="alert">{actionError}</p>
-		{/if}
 	</header>
 
 	<div class="flex min-h-0 flex-1">
@@ -396,3 +415,15 @@
 	preselected={installSeed}
 	preselectedWorkspaces={installWorkspaces}
 />
+
+<Dialog.Root bind:open={messageOpen}>
+	<Dialog.Content class="sm:max-w-md">
+		<Dialog.Header>
+			<Dialog.Title>Catalog updated</Dialog.Title>
+			<Dialog.Description class="text-left">{actionMessage}</Dialog.Description>
+		</Dialog.Header>
+		<Dialog.Footer>
+			<Button onclick={() => (messageOpen = false)}>OK</Button>
+		</Dialog.Footer>
+	</Dialog.Content>
+</Dialog.Root>

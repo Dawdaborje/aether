@@ -136,6 +136,8 @@ class NotificationsStore {
 	private async run(abort: AbortController): Promise<void> {
 		let backoff = 1000;
 		while (!abort.signal.aborted) {
+			/** The stream opened and was read until the server ended it: an ordinary reconnect. */
+			let endedCleanly = false;
 			try {
 				const headers = new Headers({ Accept: 'text/event-stream' });
 				if (this.lastId) headers.set('Last-Event-ID', this.lastId);
@@ -164,16 +166,37 @@ class NotificationsStore {
 					}
 					// "reconnect": the server's end-of-life for this stream; the loop reopens it.
 				});
+				endedCleanly = true;
 			} catch {
 				if (abort.signal.aborted) return;
 			}
 			this.connected = false;
-			// Dropped mid-flight or never opened: the API (or its proxy target) is gone.
-			this.unreachable = true;
 			if (abort.signal.aborted) return;
+			if (endedCleanly) {
+				// The server closed a healthy stream (its lifetime ended, or it is restarting):
+				// reopen it. That is not an outage and must not raise the banner.
+				this.unreachable = false;
+				await new Promise((resolve) => setTimeout(resolve, 500));
+				continue;
+			}
+			// The stream failed. That alone does not mean the server is down (a proxy may cut
+			// event streams while ordinary requests work), so ask the API itself before saying so.
+			const reachable = await apiAnswers();
+			if (abort.signal.aborted) return;
+			this.unreachable = !reachable;
 			await new Promise((resolve) => setTimeout(resolve, backoff));
 			backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
 		}
+	}
+}
+
+/** Whether the API answers an ordinary request. Any answer below 500 means the server is up. */
+async function apiAnswers(): Promise<boolean> {
+	try {
+		const res = await apiFetch('/api/ui/theme', { signal: AbortSignal.timeout(5000) });
+		return res.status < 500;
+	} catch {
+		return false;
 	}
 }
 

@@ -61,3 +61,24 @@ export function resolveRoleDisplay(
 		is_system: kind !== 'custom'
 	};
 }
+
+/** Lower case, with the separators role keys use (`.`, `_`, `-`) read as spaces and accents dropped. */
+function normalizeForSearch(text: string): string {
+	return text
+		.normalize('NFD')
+		.replace(/[̀-ͯ]/g, '')
+		.toLowerCase()
+		.replace(/[._-]+/g, ' ');
+}
+
+/**
+ * Whether every word of `query` appears somewhere in `parts` (a role's key, label, description…).
+ * Keys are written `hr_leave.leave_approver` but people type "hr leave approver", so separators
+ * count as spaces and the words may come from different fields in any order.
+ */
+export function matchesSearch(parts: (string | null | undefined)[], query: string): boolean {
+	const words = normalizeForSearch(query).split(/\s+/).filter(Boolean);
+	if (words.length === 0) return true;
+	const haystack = normalizeForSearch(parts.filter(Boolean).join(' '));
+	return words.every((word) => haystack.includes(word));
+}

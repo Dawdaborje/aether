@@ -4,7 +4,7 @@ import type { FilterPreset, GroupByOption, SearchChip } from '$lib/search/types'
 const CHROME = Symbol('aether.pageChrome');
 
 /**
- * Odoo-style control panel chrome for a plugin page: New under the breadcrumbs,
+ * Control panel chrome for a plugin page: New under the breadcrumbs,
  * faceted search on the right. The primary list registers into this; PageShell
  * reads it to fill ControlPanel.
  */

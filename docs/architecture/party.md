@@ -1,7 +1,14 @@
+---
+title: "Party: the people and organizations you deal with"
+description: "A party is anyone you do business with or keep a record of: a customer, a supplier, an employee's contact card, a bank, a school, the company itself."
+section: architecture
+status: stable
+order: 320
+---
 # Party: the people and organizations you deal with
 
 A **party** is anyone you do business with or keep a record of: a customer, a supplier, an employee's
-contact card, a bank, a school, the company itself. It is the equivalent of Odoo's `res.partner`: one record per
+contact card, a bank, a school, the company itself. It is one record per
 real-world person or organization, referenced by invoices, leads, contracts, payslips and everything else that
 needs "who".
 
@@ -100,7 +107,7 @@ An organization may hold several companies. The shell keeps a **working company*
 - `GET` / `PUT /api/ui/company` for the navbar switcher
 - `company` on `context::get` for plugins (`{ id, name, is_default }` or `null`)
 
-This is Odoo-style company context: it is the default for company-scoped documents later. It does **not**
+This is the company context: it is the default for company-scoped documents later. It does **not**
 filter shared masters. Parties (and countries, currencies, …) stay org-wide; a party is not “owned” by the
 working company. Persist the preference in org table `aether_user_defaults`.
 

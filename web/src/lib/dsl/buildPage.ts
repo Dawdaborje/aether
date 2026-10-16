@@ -32,7 +32,7 @@ function viewTypeOf(node: PageNode): string | undefined {
 }
 
 /**
- * Flatten Odoo-ish `<templates><card/><menu/></templates>` into top-level
+ * Flatten `<templates><card/><menu/></templates>` into top-level
  * `card` + `actions` so KanbanViewWidget has one shape to read.
  */
 function normalizeKanbanChildren(children: PageNode[]): PageNode[] {

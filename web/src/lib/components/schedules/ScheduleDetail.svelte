@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { reportError } from '$lib/errors/report';
 	import * as Dialog from '$lib/components/ui/dialog/index.js';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
@@ -8,6 +9,7 @@
 		fetchScheduleTask,
 		formatDuration,
 		formatEvery,
+		scheduleTitle,
 		restartSchedule,
 		runScheduleNow,
 		stopSchedule,
@@ -29,7 +31,10 @@
 	} = $props();
 
 	let detail = $state<ScheduleTask | null>(null);
+	const PAGE_SIZE = 20;
 	let runs = $state<ScheduleRun[] | null>(null);
+	let hasMore = $state(false);
+	let loadingMore = $state(false);
 	let failed = $state<string | null>(null);
 	let loading = $state(false);
 	let working = $state(false);
@@ -42,19 +47,37 @@
 		loading = true;
 		failed = null;
 		try {
+			const want = Math.max(PAGE_SIZE, runs?.length ?? 0);
 			const [{ task: next }, nextRuns] = await Promise.all([
 				fetchScheduleTask(db, task.plugin, task.name),
-				fetchScheduleRuns(db, task.plugin, task.name)
+				fetchScheduleRuns(db, task.plugin, task.name, want, 0)
 			]);
 			detail = next;
 			task = next;
 			runs = nextRuns;
+			hasMore = nextRuns.length === want;
 			onUpdated?.(next);
 		} catch (error) {
-			failed = error instanceof Error ? error.message : 'The schedule could not be loaded.';
+			failed = reportError(error, 'The schedule could not be loaded.');
 			runs = runs ?? [];
 		} finally {
 			loading = false;
+		}
+	}
+
+	async function loadMore() {
+		if (!task || !runs || loadingMore) return;
+		loadingMore = true;
+		actionError = null;
+		try {
+			const next = await fetchScheduleRuns(db, task.plugin, task.name, PAGE_SIZE, runs.length);
+			const seen = new Set(runs.map((r) => r.id));
+			runs = [...runs, ...next.filter((r) => !seen.has(r.id))];
+			hasMore = next.length === PAGE_SIZE;
+		} catch (error) {
+			reportError(error, 'Could not load more runs.');
+		} finally {
+			loadingMore = false;
 		}
 	}
 
@@ -63,6 +86,7 @@
 		if (!open || !task) {
 			detail = null;
 			runs = null;
+			hasMore = false;
 			failed = null;
 			actionError = null;
 			loadKey = null;
@@ -95,7 +119,7 @@
 			await stopSchedule(db, task.plugin, task.name);
 			await reload();
 		} catch (error) {
-			actionError = error instanceof Error ? error.message : 'Could not stop the schedule.';
+			reportError(error, 'Could not stop the schedule.');
 		} finally {
 			working = false;
 		}
@@ -109,7 +133,7 @@
 			await restartSchedule(db, task.plugin, task.name);
 			await reload();
 		} catch (error) {
-			actionError = error instanceof Error ? error.message : 'Could not restart the schedule.';
+			reportError(error, 'Could not restart the schedule.');
 		} finally {
 			working = false;
 		}
@@ -123,7 +147,7 @@
 			await runScheduleNow(db, task.plugin, task.name);
 			await reload();
 		} catch (error) {
-			actionError = error instanceof Error ? error.message : 'Could not run the schedule.';
+			reportError(error, 'Could not run the schedule.');
 		} finally {
 			working = false;
 		}
@@ -143,14 +167,14 @@
 </script>
 
 <Dialog.Root bind:open>
-	<Dialog.Content class="flex max-h-[90vh] max-w-3xl flex-col gap-0 overflow-hidden p-0">
+	<Dialog.Content class="flex h-[90vh] max-h-[90vh] w-full max-w-5xl flex-col sm:max-w-5xl gap-0 overflow-hidden p-0">
 		{#if task}
-			<Dialog.Header class="border-b border-border px-6 py-4">
+			<Dialog.Header class="border-b border-border py-4 pr-16 pl-6">
 				<div class="flex flex-wrap items-start justify-between gap-3">
 					<div class="min-w-0 space-y-1">
-						<Dialog.Title class="truncate">{task.plugin}.{task.name}</Dialog.Title>
+						<Dialog.Title class="truncate">{scheduleTitle(detail ?? task)}</Dialog.Title>
 						<Dialog.Description>
-							{task.function} · {scheduleLabel(detail ?? task)}
+							{task.plugin} · {scheduleLabel(detail ?? task)}
 						</Dialog.Description>
 					</div>
 					<div class="flex flex-wrap gap-2">
@@ -190,7 +214,18 @@
 						<Badge variant="outline">{detail.source}</Badge>
 						<Badge variant="outline">queue {detail.queue}</Badge>
 					</div>
+					{#if detail.description}
+						<p class="text-sm text-muted-foreground">{detail.description}</p>
+					{/if}
 					<dl class="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
+						<div>
+							<dt class="text-xs text-muted-foreground">Plugin</dt>
+							<dd class="font-mono text-xs">{detail.plugin}</dd>
+						</div>
+						<div>
+							<dt class="text-xs text-muted-foreground">Function</dt>
+							<dd class="font-mono text-xs">{detail.function}</dd>
+						</div>
 						<div>
 							<dt class="text-xs text-muted-foreground">Next run</dt>
 							<dd>{formatWhen(detail.next_run)}</dd>
@@ -233,6 +268,13 @@
 								</li>
 							{/each}
 						</ul>
+						{#if hasMore}
+							<div class="flex justify-center pt-2">
+								<Button variant="outline" size="sm" disabled={loadingMore} onclick={loadMore}>
+									{loadingMore ? 'Loading…' : 'Load more'}
+								</Button>
+							</div>
+						{/if}
 					{/if}
 				</section>
 			</div>

@@ -1,3 +1,10 @@
+---
+title: "Pages and data"
+description: "A page is XML. The widgets on it get their data by calling functions of the plugin the page belongs to, as the person looking at the page (so the kernel's rules for logged-in members and anonymous…"
+section: plugin
+status: stable
+order: 60
+---
 # Pages and data
 
 A page is XML. The widgets on it get their data by calling **functions of the plugin the page
@@ -16,7 +23,7 @@ shell (SvelteKit-style children), use `wrap` on `<page>`.
 | `layout="bare"` | App chrome (navbar / sidebar / none). Theme default if omitted. |
 | `wrap="notes_shell"` | Content layout: a **component** whose default `<slot />` receives this page's body. |
 | `menu="false"` | Hide from the app sidebar (create/hire forms; open them from list **New**). |
-| `menu_group="Employee"` | Collapsible sidebar section (Frappe-style). |
+| `menu_group="Employee"` | Collapsible sidebar section (collapsible). |
 | `icon` / `sort` | Lucide icon id drawn on the sidebar link, and order among menu entries. Lowercase letters, digits and `-` (for example `calendar-days`). |
 | `roles="hr_user,hr_manager"` | Who may open the page and see it in menus (OR). Short names become `<plugin>.name`. Omit = any member. `org_admin` always passes. |
 
@@ -68,7 +75,7 @@ as direct children of `<page>`. Foreign wraps use `wrap="other.shell"` and need 
 </page>
 ```
 
-The list homepage uses an Odoo-style control panel: **New** under the breadcrumbs
+The list homepage uses a control panel: **New** under the breadcrumbs
 (from `create`), **faceted search** on the right (from `<search/>` / `<filter/>` /
 `<groupby/>`). Chips sync to the URL (`f`, `g`). The create form lives on its own page and
 `redirect`s back after save.
@@ -97,8 +104,7 @@ See [Events](../architecture/events.md).
 
 ### How a linked record is named
 
-A model names its records with `title_field` in `models/<name>.json` (Django's `__str__`, Odoo's
-`_rec_name`). Wherever a page shows a link field (a list column, a group heading), the kernel asks
+A model names its records with `title_field` in `models/<name>.json` (like Django's `__str__`). Wherever a page shows a link field (a list column, a group heading), the kernel asks
 `POST /api/ui/records/titles` for the titles of the linked records and shows those instead of ids;
 no `source` function is needed for it. Link pickers work the same way: a link field whose model
 names the target needs no `source`, and the kernel lists that model's records by title
@@ -220,7 +226,7 @@ them at the top level of the `<view type="form">`:
 
 | Element | Meaning |
 |---|---|
-| `<header>` | Its children (`<button>`, `<action>`, `<buttonbox>`) go in the bar, next to Save. A bare `<button>`/`<action>` at the top level of the form does the same. |
+| `<header>` | Its children (`<button>`, `<action>`, `<buttonbox>`) go in the bar, next to Save. A bare `<button>`/`<action>` at the top level of the form does the same. A button's `href` may hold the page's route values: `href="/crm/deals/{id}/edit"`. |
 | `<statusbar field function>` | The record's state as steps, the current one highlighted, on the right of the bar. The steps come from `options="a, b, c"`, else from `source` (a function returning rows; `optionLabel` names the label field, `sourceparam` a record field whose value is sent as `id`), else from the model field's own selection options, so `<statusbar field="status"/>` is usually enough. With `function`, clicking a step calls it with the route values, the record's `id`, and the chosen step as `status` and as `<field>`; without it the bar only shows the state. |
 
 A `<buttonbox>`, `<header>` or `<statusbar>` written *beside* the form view on a page with one form is moved into the form's bar for you.
@@ -344,13 +350,14 @@ Stock widgets carry a `data-part` attribute, so a theme's stylesheet (see
 | `list.table`, `list.row` | a list view's table and each of its rows |
 | `form.group`, `form.field` | a `<group>`, and each field (`data-field` is its name) |
 | `kanban.column`, `kanban.card` | a kanban column and each card |
-| `dashboard.stat`, `dashboard.chart` | a stat tile and a chart |
+| `dashboard.stat`, `dashboard.chart` | a stat tile and a chart (a board's cards are `dashboard.chart` too) |
+| `board`, `board.filters` | a board and its filter bar |
 | `apps.tile` | a tile of the app launcher |
 
 ## Kanban: `<view type="kanban">`
 
 Rows from `source` are grouped into columns by `group_by`. Cards are declared with `<card>`
-(or Odoo-style `<templates><card/><menu/></templates>`).
+(or `<templates><card/><menu/></templates>`).
 
 ```xml
 <view type="kanban" model="note" source="list_notes"
@@ -401,7 +408,7 @@ A responsive widget grid, optionally fed by one shared `source` object. Child `<
 </view>
 ```
 
-Board-style layout (Odoo `board` inspired) uses `layout` weights and titled columns that embed
+Board-style layout uses `layout` weights and titled columns that embed
 other views:
 
 ```xml
@@ -429,6 +436,39 @@ other views:
 | `<column title>` | Board column; children are nested views/widgets. |
 | `<stat label field source value/>` | KPI card. Uses dashboard `source` + `field`, or its own `source`, or a static `value`. |
 | `<chart title type source field category value/>` | `type` is `bar` (default), `line`, or `pie`. Data from `source` rows, or dashboard `field` holding a row list. `category` / `value` name the series fields (defaults `category` / `value`). |
+
+## Board: `<view type="board">`
+
+A dashboard whose cards are **data**: the source decides how many there are, what they show and which
+filters sit above them, so a person can build one without a plugin author editing XML. Prism draws all of
+its charts and dashboards with it.
+
+```xml
+<view type="board" source="dashboard_board" drill="dashboard_drill"/>
+```
+
+| Attribute | Meaning |
+|---|---|
+| `source` | Function called with the page's route values and `filters` (the filter bar's values by filter name, left out until the bar has been drawn once). Answers a board, below. |
+| `drill` | Optional function called when a bar, slice, table row or pivot cell is clicked, with the route values plus `chart` (the item's `chart`, else its `id`), `segment` (dimension field → raw value), `filters`, `limit` and `offset`. Answers `{ columns: [{key, label}], rows: [{id?, cells}], total, limit, offset }`, shown in a pop-up with paging. Without it cards are not clickable. |
+
+A board is `{ title?, description?, refresh_secs?, filters: [], items: [] }`.
+
+* **Filters** (`name`, `label`, `kind`, `value`): `period` (a named period such as `this_month`, or
+  `{from, to}`; the bar adds "Custom range"), `select` (pick values from `options: [{value, label}]`; the value
+  is a list) or `text`. The bar sends every value back under its name on each change; a name left out means
+  "not drawn yet" (apply the default), an empty value means the person cleared it.
+* **Items** (`id`, `chart?`, `width?`, `card?`, `error?`): `width` is columns out of 12 (full width on a phone).
+  An item with `error` shows the message in place of its card, so one failing chart never blanks the board.
+* **Cards** (`kind`): `number` (`readings: [{name, label, value, previous, change}]`, optional `target`,
+  `progress`, `trend: [{label, value}]`), `bar` `stacked_bar` `row` `line` `area` (`categories`, `keys`, `series:
+  [{name, key, values}]`, `dimensions`), `pie` `donut` (the first series), `table` (`columns`, `rows: [{cells, keys}]`,
+  `totals`) and `pivot` (`rows`, `columns`, `matrix`, `row_totals`, `column_totals`, `grand`). Every card may carry
+  `title`, `description`, `info` (definitions, behind an info mark), `format` (`number`, `compact`, `currency`,
+  `percent`, `days`) and `currency`. `meta.skipped` lists filters that did not fit the card.
+
+Colours come from the theme's `--chart-1` … `--chart-5`. The board refreshes when data changes on the page, and
+every `refresh_secs` when the source asks for it.
 
 ## Calendar: `<view type="calendar">`
 
@@ -460,4 +500,4 @@ Call payload (plus route params): `{ "start", "end", "scale": "month" }`.
 `list` (with optional server `page_size`), `form`, `kanban`, `dashboard`, `calendar`, `group`,
 `notebook`, `stat`, `chart` and chatter work. `tree` and `pivot` currently render as a plain
 list, and `statusbar` and `buttonbox` are generic header and action containers with no state
-behaviour. `gantt`, `graph`, `map` and report views do not exist yet.
+behaviour. `board` draws data-driven dashboards. `gantt`, `graph` and `map` views do not exist yet.

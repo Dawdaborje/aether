@@ -21,6 +21,12 @@ pub struct ModelGrant {
     /// Who may see and change which records and fields; none: nothing beyond the grant.
     #[serde(skip)]
     pub rules: Option<std::sync::Arc<crate::data_model::RuleSet>>,
+    /// A read the caller makes as themselves: the model's rules name roles of the plugin that
+    /// owns the model (not of the calling plugin), and a `via:` marker earned by going through
+    /// plugin functions opens nothing. Set for models reached through `"*"` in
+    /// `optional_dependencies`, so a reporting plugin never shows what the person could not open.
+    #[serde(skip)]
+    pub direct: bool,
 }
 
 impl ModelGrant {
@@ -36,6 +42,17 @@ impl ModelGrant {
                 || perms.contains("delete"),
             schema: None,
             rules: None,
+            direct: false,
+        }
+    }
+
+    /// The plugin whose roles the model's rules name: the model's own plugin for a `direct`
+    /// grant (`plugin.model`), else the calling plugin.
+    pub fn rule_owner<'a>(&'a self, caller: &'a str) -> &'a str {
+        if self.direct {
+            self.name.split_once('.').map_or(caller, |(plugin, _)| plugin)
+        } else {
+            caller
         }
     }
 
@@ -99,6 +116,12 @@ pub trait PluginCaller: Send + Sync {
         payload: serde_json::Value,
         trail: Vec<String>,
     ) -> Result<serde_json::Value, super::error::HostError>;
+
+    /// Whether `plugin` is installed and enabled for the organization of this call. The default
+    /// (no organization to ask) is no.
+    async fn available(&self, _plugin: &str) -> bool {
+        false
+    }
 }
 
 /// Defaults for jobs, from the settings of the organization the job is for.
@@ -132,6 +155,20 @@ pub trait BridgeHandle: Send + Sync {
         action: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, aether_communication::SendError>;
+
+    /// Calls a bridge that only the kernel's own commands use (the document-parsing engines): never a
+    /// plugin directly, so it needs no entry in a plugin's `bridges`. Not available unless overridden.
+    async fn call_internal(
+        &self,
+        _org: &str,
+        bridge: &str,
+        _action: &str,
+        _params: serde_json::Value,
+    ) -> Result<serde_json::Value, aether_communication::SendError> {
+        Err(aether_communication::SendError::permanent(format!(
+            "`{bridge}` is not available here"
+        )))
+    }
 }
 
 /// Kernel services a plugin reaches through host commands. They are handed in already scoped
@@ -296,5 +333,27 @@ impl PluginHostContext {
 
     pub fn model(&self, name: &str) -> Option<&ModelGrant> {
         self.models.get(name)
+    }
+}
+
+#[cfg(test)]
+mod grant_tests {
+    use super::ModelGrant;
+
+    fn grant(name: &str, direct: bool) -> ModelGrant {
+        let mut grant = ModelGrant::from_access(name, &["read".to_string()], None);
+        grant.direct = direct;
+        grant
+    }
+
+    #[test]
+    fn a_direct_read_is_judged_by_the_roles_of_the_models_own_plugin() {
+        assert_eq!(grant("crm_deal.deal", true).rule_owner("prism"), "crm_deal");
+    }
+
+    #[test]
+    fn any_other_grant_is_judged_as_the_calling_plugin() {
+        assert_eq!(grant("crm_deal.deal", false).rule_owner("prism"), "prism");
+        assert_eq!(grant("note", true).rule_owner("notes"), "notes");
     }
 }

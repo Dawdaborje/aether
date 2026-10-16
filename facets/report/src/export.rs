@@ -38,8 +38,8 @@ pub fn export_table(table: &ExportTable) -> Result<ExportFile, ReportError> {
     if table.columns.len() > 32 {
         return Err(ReportError::Invalid("at most 32 columns".into()));
     }
-    if table.rows.len() > 1000 {
-        return Err(ReportError::Invalid("at most 1000 rows".into()));
+    if table.rows.len() > crate::spec::MAX_GROUPS as usize {
+        return Err(ReportError::Invalid("at most 10000 rows".into()));
     }
     let stem = slug(&table.title);
     match table.format {

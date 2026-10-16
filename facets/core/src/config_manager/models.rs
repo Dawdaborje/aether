@@ -569,6 +569,43 @@ pub struct AetherConfig {
     /// Where process logs go (`stderr` and/or a file under `app_dir`).
     #[serde(default)]
     pub logging: LoggingConfig,
+    /// The documentation website mounted by `--serve`.
+    #[serde(default)]
+    pub docs: DocsConfig,
+}
+
+/// `[docs]` in `aether.toml`: the documentation website that `aether --serve` mounts at `path`.
+/// (`aether --serve-docs` runs it on its own and ignores this section.)
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct DocsConfig {
+    /// Serve the documentation under `--serve`. The pages are the ones compiled into the binary.
+    #[serde(default = "default_docs_enabled")]
+    pub enabled: bool,
+    /// Where the site is mounted, such as `/docs`.
+    #[serde(default = "default_docs_path")]
+    pub path: String,
+}
+
+fn default_docs_enabled() -> bool {
+    true
+}
+
+fn default_docs_path() -> String {
+    "/docs".to_string()
+}
+
+impl Default for DocsConfig {
+    fn default() -> Self {
+        Self { enabled: default_docs_enabled(), path: default_docs_path() }
+    }
+}
+
+impl DocsConfig {
+    /// The mount path with a leading `/` and no trailing one; `None` for the root, which would hide the API.
+    pub fn mount_path(&self) -> Option<String> {
+        let path = format!("/{}", self.path.trim().trim_matches('/'));
+        (path != "/").then_some(path)
+    }
 }
 
 /// `[logging]` in `aether.toml`.
@@ -816,6 +853,7 @@ impl Default for AetherConfig {
             scheduler: SchedulerConfig::default(),
             i18n: I18nConfig::default(),
             logging: LoggingConfig::default(),
+            docs: DocsConfig::default(),
         }
     }
 }

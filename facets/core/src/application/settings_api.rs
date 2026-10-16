@@ -59,6 +59,23 @@ pub(crate) async fn require_session(
     }
 }
 
+/// Any signed-in, active user (not developer-only): for assets every member's UI shows,
+/// such as plugin and workspace logos.
+pub(crate) async fn require_active_user(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<(), (StatusCode, Json<JsonValue>)> {
+    match load_session(state, headers).await? {
+        SessionActor {
+            is_active: true, ..
+        } => Ok(()),
+        _ => Err((
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "invalid session" })),
+        )),
+    }
+}
+
 /// A developer for the organization `db_name`: an unrestricted developer, or a member that an
 /// unrestricted developer made a developer of that organization (see `org_admin::is_org_developer`).
 pub(crate) async fn require_org_developer(

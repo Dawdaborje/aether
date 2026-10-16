@@ -1,3 +1,10 @@
+---
+title: "Rhai plugins"
+description: "For a small plugin that reads and writes records, validates input and sends a notification, a WebAssembly build is more than it needs. A plugin can be one Rhai script instead:"
+section: plugin
+status: stable
+order: 70
+---
 # Rhai plugins
 
 For a small plugin that reads and writes records, validates input and sends a notification, a

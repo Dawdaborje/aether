@@ -2,7 +2,7 @@
 //! instead of an id (a list cell, a group heading, a picker).
 //!
 //! The name of a record is the model's `title_field`, set in its `models/<name>.json` like
-//! Django's `__str__` or Odoo's `_rec_name`. A plugin does not need to ship a lookup function
+//! Django's `__str__`. A plugin does not need to ship a lookup function
 //! for it.
 //!
 //! The caller must be a logged-in member. A model whose `rules/` limit who may read it only

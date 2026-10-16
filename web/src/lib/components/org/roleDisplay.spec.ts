@@ -29,3 +29,22 @@ describe('roleDisplay', () => {
 		expect(resolveRoleDisplay('custom.floor_lead', []).label).toBe('Floor Lead');
 	});
 });
+
+import { matchesSearch } from './roleDisplay';
+
+describe('matchesSearch', () => {
+	it('reads separators as spaces and matches words from any field', () => {
+		expect(matchesSearch(['hr_leave.leave_approver', 'Leave approver'], 'hr leave')).toBe(true);
+		expect(matchesSearch(['hr_payroll.payroll_admin', 'Payroll administrator'], 'admin payroll')).toBe(true);
+		expect(matchesSearch(['hr.hr_manager', 'HR manager', null], 'manager hr')).toBe(true);
+	});
+
+	it('needs every word', () => {
+		expect(matchesSearch(['hr.hr_manager', 'HR manager'], 'hr stock')).toBe(false);
+	});
+
+	it('matches without accents and with an empty query', () => {
+		expect(matchesSearch(['Café administrator'], 'cafe')).toBe(true);
+		expect(matchesSearch(['anything'], '   ')).toBe(true);
+	});
+});

@@ -104,3 +104,64 @@ export async function downloadMedia(file: MediaFile): Promise<void> {
 	link.remove();
 	setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
+
+/** How a viewer should show a file: decided from its name and the type the server reports. */
+export type ViewKind = 'image' | 'pdf' | 'csv' | 'json' | 'text' | 'office' | 'archive' | 'other';
+
+export function viewKind(file: Pick<MediaFile, 'name' | 'mime'>): ViewKind {
+	const ext = file.name.toLowerCase().split('.').pop() ?? '';
+	const mime = (file.mime || '').toLowerCase();
+	if (mime.startsWith('image/')) return 'image';
+	if (mime === 'application/pdf' || ext === 'pdf') return 'pdf';
+	if (ext === 'csv' || ext === 'tsv' || mime === 'text/csv') return 'csv';
+	if (ext === 'json' || mime === 'application/json') return 'json';
+	if (mime.startsWith('text/') || ['txt', 'md', 'log', 'xml', 'yml', 'yaml', 'ini'].includes(ext)) {
+		return 'text';
+	}
+	if (['docx', 'xlsx', 'pptx', 'odt', 'ods', 'odp', 'doc', 'xls', 'ppt'].includes(ext)) return 'office';
+	if (mime === 'application/zip' || ['zip', 'gz', 'tar', '7z'].includes(ext)) return 'archive';
+	return 'other';
+}
+
+/** The text of a stored file, cut at `limit` characters so a huge file cannot freeze the page. */
+export async function mediaText(file: MediaFile, limit = 1_000_000): Promise<{ text: string; cut: boolean }> {
+	const response = await apiFetch(`/api/media/${file.key}?name=${encodeURIComponent(file.name)}`);
+	if (!response.ok) throw new Error(await errorOf(response));
+	const text = await response.text();
+	return text.length > limit ? { text: text.slice(0, limit), cut: true } : { text, cut: false };
+}
+
+/** Rows of a comma, semicolon or tab separated file, with quoted cells. */
+export function parseDelimited(text: string, maxRows = 500): string[][] {
+	const first = text.split('\n', 1)[0] ?? '';
+	const sep = [',', ';', '\t'].map((s) => [s, first.split(s).length] as const).sort((a, b) => b[1] - a[1])[0][0];
+	const rows: string[][] = [];
+	let row: string[] = [];
+	let cell = '';
+	let quoted = false;
+	for (let i = 0; i < text.length && rows.length < maxRows; i++) {
+		const c = text[i];
+		if (quoted) {
+			if (c === '"' && text[i + 1] === '"') {
+				cell += '"';
+				i++;
+			} else if (c === '"') quoted = false;
+			else cell += c;
+		} else if (c === '"') quoted = true;
+		else if (c === sep) {
+			row.push(cell);
+			cell = '';
+		} else if (c === '\n' || c === '\r') {
+			if (c === '\r' && text[i + 1] === '\n') i++;
+			row.push(cell);
+			rows.push(row);
+			row = [];
+			cell = '';
+		} else cell += c;
+	}
+	if (rows.length < maxRows && (cell !== '' || row.length > 0)) {
+		row.push(cell);
+		rows.push(row);
+	}
+	return rows;
+}
