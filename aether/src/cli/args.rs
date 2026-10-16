@@ -44,6 +44,14 @@ pub struct Args {
     /// Serve the documentation website on its own (default 127.0.0.1:7899). Needs no config file and no database: the pages are compiled into this binary
     pub serve_docs: Option<String>,
 
+    #[arg(long = "plugin-docs", value_name = "PATH")]
+    /// With --serve-docs or --mcp: a plugin package or workspace folder whose `[docs]` to include (repeat for several). The `plugin_paths` of the config file are included too
+    pub plugin_docs: Vec<PathBuf>,
+
+    #[arg(long, action = clap::ArgAction::SetTrue, requires = "serve_docs")]
+    /// Preview mode for --serve-docs: show the docs of every plugin whatever its `visibility`. Only allowed on a loopback address (127.0.0.1), since anyone who can reach the server would see them
+    pub docs_all: bool,
+
     #[arg(long, action = clap::ArgAction::SetTrue, conflicts_with_all = ["serve", "serve_docs"])]
     /// Run the Model Context Protocol server on stdin/stdout: documentation, plugin scaffolding and plugin validation for LLM clients. Needs no config file and no database. Logs go to stderr
     pub mcp: bool,

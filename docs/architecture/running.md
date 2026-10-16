@@ -43,6 +43,14 @@ enabled = true     # false: do not serve the documentation under --serve
 path = "/docs"     # where it is mounted; "/" is refused because the API uses it
 ```
 
+Plugins can ship their own docs (see [Documenting a plugin](../plugin/README.md#documenting-a-plugin)). Under
+`--serve` they appear in the site under **Plugins**, and who sees what follows the plugin's `visibility` and the
+reader's sign-in. `aether --serve-docs` has no sign-in, so it shows only `public` docs, from the catalog (when
+`-c aether.toml` reaches the database), from the `plugin_paths` of that file, and from any folder given with
+`--plugin-docs <path>` (repeat for several). It logs which plugins it is hiding and why;
+`--docs-all` shows every plugin's docs for previewing on your own machine and is refused on any address but
+`127.0.0.1`.
+
 The site has a search box (`/search?q=...`), a light and a dark theme, and every page as plain
 markdown by adding `.md` to its address (`/plugin/pages.md`). `/llms.txt` lists all pages and
 `/llms-full.txt` is the whole documentation in one file, for language models. Pages marked

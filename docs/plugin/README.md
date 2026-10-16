@@ -153,6 +153,50 @@ back. `aether --upgrade all --org <org_db>` upgrades every installed plugin (dep
 first). An upgrade needs the new version's dependencies installed and refuses page routes
 another installed plugin serves.
 
+## Documenting a plugin
+
+A plugin can ship its own documentation. Put markdown files in a folder and add a `[docs]` table to
+`plugin.toml`:
+
+```toml
+[docs]
+dir = "docs"            # the folder with the .md files (default "docs")
+visibility = "public"   # public | authenticated | org (default "authenticated")
+```
+
+Without the table the plugin has no docs, even if a `docs` folder exists. When the plugin is loaded
+(`aether --load-plugins`) Aether reads the folder, checks it and stores the rendered pages with the plugin's
+catalog entry, so the documentation travels with each version. They then appear on the
+[documentation website](../architecture/running.md) under **Plugins**, in its search, in `/llms.txt`, and to LLM
+tools through [the MCP server](../mcp.md).
+
+**Pages.** `README.md` is the landing page; any other file is a page at its path (`guide/setup.md` is
+`guide/setup`; `guide/README.md` is `guide`). A page may begin with a `---` block with `title`,
+`description` and `order`; without a title the first heading is used. Link to another page with a relative
+`.md` link (`[setup](guide/setup.md#install)`). Images must be `https://` addresses, because a plugin cannot
+ship image files here. Raw HTML in the markdown is shown as text, never run. Limits: 100 files, 256 KB a
+file, 1 MB in all.
+
+**Who can read them.**
+
+| `visibility` | Readers |
+|---|---|
+| `public` | Anyone who can reach the site. |
+| `authenticated` | Any signed-in user. This is the default: publishing is a choice. |
+| `org` | Members of an organization that has the plugin installed (developers see all). |
+
+A page the reader may not see is a plain "not found", the same as a page that does not exist, and is left out
+of the menu, search and `llms.txt`. When a newer version of the plugin has no `[docs]` table, the plugin is
+no longer documented, whatever older versions had.
+
+**Mistakes stop the load.** A link to a page that does not exist, an unsupported link scheme, a relative
+image, a file that is too large, or two files with the same address make `aether --load-plugins` fail with
+every problem listed, and nothing is stored. The MCP tool `validate_plugin` and `--dry-run` report them too.
+
+**Preview while writing.** `aether --serve-docs --plugin-docs ./my_plugin` serves the docs of that folder at
+once and reloads them every few seconds. Because that server has no sign-in it shows only `public` docs and
+says in its log which plugins it is hiding; add `--docs-all` (only on `127.0.0.1`) to see them all.
+
 ## WASM Runtime
 
 Register each immutable plugin version in the core `plugins` catalog with an

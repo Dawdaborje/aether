@@ -70,6 +70,7 @@ dependencies = [
  "aether_docs",
  "aether_orm",
  "aether_storage",
+ "async-trait",
  "axum",
  "clap",
  "colored",

@@ -1,4 +1,4 @@
-use std::{env, path::Path};
+use std::{env, path::{Path, PathBuf}};
 
 use aether_core::application::services::change_user_password;
 use aether_core::org_admin::create_user;
@@ -597,7 +597,8 @@ async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if let Some(bind) = &args.serve_docs {
-        if let Err(err) = crate::server::docs::run_docs_server(bind).await {
+        let sources = docs_sources(&args).await;
+        if let Err(err) = crate::server::docs::run_docs_server(bind, sources, args.docs_all).await {
             log::error!("Documentation server failed: {err}");
             std::process::exit(1);
         }
@@ -702,4 +703,46 @@ async fn connect_context(args: &Args) -> crate::cli::db::DbContext {
             std::process::exit(1);
         }
     }
+}
+
+/// Where `--serve-docs` and `--mcp` find plugin docs: `--plugin-docs` folders, the `plugin_paths` of the config
+/// file, and the catalog when the config reaches a database. All optional: with none of them only Aether's own
+/// documentation is served.
+pub(crate) async fn docs_sources(args: &Args) -> crate::server::docs::DocsSources {
+    use crate::server::docs::DocsSources;
+    let mut sources = DocsSources { search_roots: super::db::load_search_roots(args).unwrap_or_default(), ..Default::default() };
+    sources.entries.extend(args.plugin_docs.iter().cloned());
+    if !matches!(super::db::resolve_config_file(args), Ok(Some(_))) {
+        return sources;
+    }
+    match super::db::get_prerequisites(args).await {
+        Ok(ctx) => {
+            sources.entries.extend(ctx.config.plugin_paths.iter().cloned());
+            // The catalog lives in the `core` database; this handle is private to the docs, so selecting it is safe.
+            let db = ctx.db.clone();
+            match db.use_ns(&ctx.namespace).use_db(&ctx.database).await {
+                Ok(_) => sources.catalog = Some(std::sync::Arc::new(db)),
+                Err(e) => log::warn!("Plugin documentation: cannot select the catalog database ({e}); using the plugin folders only"),
+            }
+        }
+        Err(reason) => {
+            log::warn!("Plugin documentation: not reading the catalog ({reason}); using the plugin folders only");
+            sources.entries.extend(plugin_paths_from_file(args));
+        }
+    }
+    sources
+}
+
+/// `plugin_paths` of the config file, read on its own so that a missing database section does not hide the
+/// plugin folders. Relative entries are relative to the file.
+fn plugin_paths_from_file(args: &Args) -> Vec<PathBuf> {
+    let Ok(Some(file)) = super::db::resolve_config_file(args) else { return Vec::new() };
+    let file = PathBuf::from(file);
+    let Ok(text) = std::fs::read_to_string(&file) else { return Vec::new() };
+    let Ok(doc) = text.parse::<toml_edit::DocumentMut>() else { return Vec::new() };
+    let base = file.parent().map(Path::to_path_buf).unwrap_or_default();
+    doc.get("plugin_paths")
+        .and_then(|v| v.as_array())
+        .map(|list| list.iter().filter_map(|v| v.as_str()).map(|p| if Path::new(p).is_absolute() { PathBuf::from(p) } else { base.join(p) }).collect())
+        .unwrap_or_default()
 }

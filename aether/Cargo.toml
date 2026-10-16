@@ -25,6 +25,7 @@ aether_orm = { path = "../facets/orm" }
 aether_storage = { path = "../facets/storage" }
 aether_authentication = { path = "../facets/authentication" }
 aether_docs = { path = "../facets/docs" }
+async-trait.workspace = true
 include_dir = "0.7.4"
 directories = "6.0.0"
 toml_edit = "0.25.15"

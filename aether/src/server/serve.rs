@@ -139,7 +139,8 @@ pub async fn run_server(
         .nest("/api/auth", auth_routes());
     // The documentation site, rendered from pages compiled into the binary (no database, no files).
     if let Some(path) = &docs_mount {
-        app = app.nest_service(path, aether_docs::router(path));
+        let provider: std::sync::Arc<dyn aether_docs::PluginDocsProvider> = std::sync::Arc::new(aether_core::docs_provider::CatalogDocs::new(state.clone()));
+        app = app.nest_service(path, aether_docs::router_with(path, Some(provider)));
         log::info!("Documentation is served at {path}");
     }
     let app = app
