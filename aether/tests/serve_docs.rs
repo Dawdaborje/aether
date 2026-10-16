@@ -139,3 +139,25 @@ fn an_edited_page_shows_after_a_moment_and_broken_docs_are_skipped_with_a_reason
     assert_eq!(server.get("/plugins/secretive").0, 404, "docs with problems are not shown");
     assert!(server.log_text().contains("missing.md"), "{}", server.log_text());
 }
+
+#[test]
+fn exports_the_site_as_static_files_under_a_base_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("site");
+    let output = Command::new(env!("CARGO_BIN_EXE_aether"))
+        .args(["--export-docs"])
+        .arg(&out)
+        .args(["--docs-base", "/aether-docs"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Wrote "), "{}", String::from_utf8_lossy(&output.stdout));
+    let home = std::fs::read_to_string(out.join("index.html")).unwrap();
+    assert!(home.contains("href=\"/aether-docs/assets/site.css\""), "{home}");
+    assert!(out.join("plugin/pages/index.html").is_file() && out.join("llms.txt").is_file() && out.join(".nojekyll").exists());
+
+    // --docs-base only makes sense with --export-docs.
+    let refused = Command::new(env!("CARGO_BIN_EXE_aether")).args(["--docs-base", "/x"]).output().unwrap();
+    assert!(!refused.status.success());
+}

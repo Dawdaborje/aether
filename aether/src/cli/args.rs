@@ -40,6 +40,14 @@ pub struct Args {
     /// Bind address for the HTTP server (e.g. 0.0.0.0:7890)
     pub serve: Option<String>,
 
+    #[arg(long, value_name = "DIR", conflicts_with_all = ["serve", "serve_docs", "mcp"])]
+    /// Write Aether's documentation website as static HTML files into DIR, for any web host (GitHub Pages, S3, nginx). Needs no config file and no database. There is no search box in the copy
+    pub export_docs: Option<PathBuf>,
+
+    #[arg(long, value_name = "PATH", default_value = "", requires = "export_docs")]
+    /// With --export-docs: the path the files will be served under, such as /aether-docs for a GitHub Pages project site. Default: the root of the host
+    pub docs_base: String,
+
     #[arg(long, value_name = "ADDR", default_missing_value = "127.0.0.1:7899", num_args = 0..=1, conflicts_with = "serve")]
     /// Serve the documentation website on its own (default 127.0.0.1:7899). Needs no config file and no database: the pages are compiled into this binary
     pub serve_docs: Option<String>,

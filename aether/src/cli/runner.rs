@@ -596,6 +596,11 @@ async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         return Err("this build of aether does not include the MCP server (build with the `mcp` feature)".into());
     }
 
+    if let Some(dir) = &args.export_docs {
+        let written = aether_docs::export_site(dir, &args.docs_base).await?;
+        println!("Wrote {written} files to {}. Serve that folder at `{}/`.", dir.display(), args.docs_base.trim().trim_end_matches('/'));
+    }
+
     if let Some(bind) = &args.serve_docs {
         let sources = docs_sources(&args).await;
         if let Err(err) = crate::server::docs::run_docs_server(bind, sources, args.docs_all).await {

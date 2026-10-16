@@ -4,6 +4,7 @@
 //! offers lookup and search. The docs site (`--serve-docs`, `/docs`) and the MCP server (`--mcp`) both
 //! read from here, so they can never disagree and neither needs the source tree at run time.
 
+mod export;
 mod model;
 pub mod plugin_docs;
 mod provider;
@@ -13,6 +14,7 @@ mod site;
 
 pub use model::{Bundle, Capability, Chunk, Doc, Heading, Operation, Status};
 pub use search::{Hit, SearchOptions, search, search_in};
+pub use export::export_site;
 pub use provider::{PluginDocsProvider, StaticDocs};
 pub use site::{router, router_with};
 

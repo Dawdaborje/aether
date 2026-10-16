@@ -35,6 +35,8 @@ struct Site {
     /// `""` when served at the root, `"/docs"` when mounted under the server.
     base: Arc<str>,
     plugins: Option<Arc<dyn PluginDocsProvider>>,
+    /// Rendering for static files: nothing that needs a server (no search box).
+    export: bool,
 }
 
 /// The docs site with Aether's own documentation only. `base` is the path it is served under: `""` (its own
@@ -45,7 +47,15 @@ pub fn router(base: &str) -> Router {
 
 /// The docs site, with the docs plugins ship when a provider is given.
 pub fn router_with(base: &str, plugins: Option<Arc<dyn PluginDocsProvider>>) -> Router {
-    let site = Site { base: base.trim_end_matches('/').into(), plugins };
+    build_router(Site { base: base.trim_end_matches('/').into(), plugins, export: false })
+}
+
+/// The site as `export_site` renders it to static files.
+pub(crate) fn router_for_export(base: &str) -> Router {
+    build_router(Site { base: base.trim_end_matches('/').into(), plugins: None, export: true })
+}
+
+fn build_router(site: Site) -> Router {
     Router::new()
         .route("/", get(home))
         .route("/search", get(search_page))
@@ -328,10 +338,16 @@ fn shell(site: &Site, title: &str, view: View, body: &str, toc: &str, plugins: &
          <link rel=\"stylesheet\" href=\"{base}/assets/site.css\">\
          <script src=\"{base}/assets/site.js\"></script></head><body>\
          <header class=\"top\"><a class=\"brand\" href=\"{home}\">Aether docs</a>\
-         <form action=\"{base}/search\" method=\"get\" role=\"search\"><input type=\"search\" name=\"q\" placeholder=\"Search the docs\" aria-label=\"Search the docs\"></form>\
+         {search}\
          <button class=\"icon\" id=\"theme-toggle\" type=\"button\" aria-label=\"Switch light and dark\">Theme</button></header>\
          <div class=\"layout\">{nav}<main>{body}</main>{toc}</div></body></html>",
         title = esc(title),
+        // Searching needs the server; a static copy has no search box.
+        search = if site.export {
+            "<span style=\"flex:1\"></span>".to_string()
+        } else {
+            format!("<form action=\"{base}/search\" method=\"get\" role=\"search\"><input type=\"search\" name=\"q\" placeholder=\"Search the docs\" aria-label=\"Search the docs\"></form>")
+        },
         nav = sidebar(site, &view, plugins),
     )
 }

@@ -43,6 +43,17 @@ enabled = true     # false: do not serve the documentation under --serve
 path = "/docs"     # where it is mounted; "/" is refused because the API uses it
 ```
 
+To publish the documentation without running Aether, write it out as static files:
+
+```sh
+aether --export-docs ./site                         # for the root of a host
+aether --export-docs ./site --docs-base /aether-docs   # for https://you.github.io/aether-docs/
+```
+
+The folder can be copied to any web host. It is the same pages as the live site, without the search box (searching
+needs the server), and it holds each page's markdown (`<page>.md`), `llms.txt`, `llms-full.txt`, a `404.html` and
+a `.nojekyll` file for GitHub Pages. Plugin docs are not exported: they belong to the instance that has the plugins.
+
 Plugins can ship their own docs (see [Documenting a plugin](../plugin/README.md#documenting-a-plugin)). Under
 `--serve` they appear in the site under **Plugins**, and who sees what follows the plugin's `visibility` and the
 reader's sign-in. `aether --serve-docs` has no sign-in, so it shows only `public` docs, from the catalog (when
