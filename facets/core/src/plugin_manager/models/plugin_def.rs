@@ -496,6 +496,44 @@ pub struct PluginManifest {
     /// Functions the AI assistant may call (`[[ai_tool]]`); see [`PluginAiToolDef`].
     #[serde(default)]
     pub ai_tool: Vec<PluginAiToolDef>,
+    /// The plugin's own documentation (`[docs]`); see [`PluginDocsDef`]. Without this table the plugin has none.
+    #[serde(default)]
+    pub docs: Option<PluginDocsDef>,
+}
+
+/// The plugin's documentation: markdown files that Aether collects when the plugin is loaded and shows on its
+/// documentation website (`aether --serve-docs`, `/docs`) and to LLM tools (`aether --mcp`).
+///
+/// ```toml
+/// [docs]
+/// dir = "docs"              # the folder with the .md files (default "docs")
+/// visibility = "public"     # public | authenticated | org (default "authenticated")
+/// ```
+///
+/// `README.md` is the landing page; other files are pages at their path (`guide/setup.md` is `guide/setup`).
+/// Pages may start with a `---` block of `title`, `description` and `order`. Links between pages are relative
+/// `.md` links; images must be `https://` addresses. Raw HTML is shown as text.
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginDocsDef {
+    /// The folder, relative to the plugin, holding the markdown files. Default `docs`.
+    #[serde(default = "default_docs_dir")]
+    pub dir: String,
+    /// Who may read the docs: `public` (anyone who can reach the site), `authenticated` (any signed-in user; the
+    /// default) or `org` (members of an organization that has the plugin installed).
+    #[serde(default)]
+    pub visibility: aether_docs::plugin_docs::Visibility,
+}
+
+fn default_docs_dir() -> String {
+    "docs".to_string()
+}
+
+impl Default for PluginDocsDef {
+    fn default() -> Self {
+        Self { dir: default_docs_dir(), visibility: Default::default() }
+    }
 }
 
 /// A function of the plugin the AI assistant may ask for, to answer a question with the person's own data.

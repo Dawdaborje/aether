@@ -5,7 +5,7 @@ edition = "2024"
 
 [features]
 # JSON Schemas of plugin.toml, models and rules (used by `aether --mcp`).
-schemars = ["dep:schemars"]
+schemars = ["dep:schemars", "aether_docs/schemars"]
 
 [dependencies]
 schemars = { version = "1", optional = true }
@@ -31,6 +31,7 @@ open_street_map = { path = "../../bridges/maps_and_locations/open_street_map" }
 liteparse = { path = "../../bridges/document_parsing/liteparse" }
 aether_ocr = { path = "../ocr" }
 aether_ai = { path = "../ai" }
+aether_docs = { path = "../docs" }
 ollama = { path = "../../bridges/ai/ollama" }
 openai_compatible = { path = "../../bridges/ai/openai_compatible" }
 anthropic = { path = "../../bridges/ai/anthropic" }

@@ -17,6 +17,7 @@ pub const MAX_TOTAL_BYTES: usize = 1024 * 1024;
 
 /// Who may read a plugin's docs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum Visibility {
     /// Anyone who can reach the site.

@@ -3,6 +3,7 @@ pub mod api;
 pub mod catalog;
 pub mod commands;
 pub mod components;
+pub mod docs;
 pub mod exports;
 pub mod field_hints;
 pub mod i18n;

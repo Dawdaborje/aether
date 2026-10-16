@@ -4,7 +4,12 @@ version = "0.1.0"
 edition = "2024"
 build = "build.rs"
 
+[features]
+# JSON Schema for the types the plugin manifest embeds (Visibility).
+schemars = ["dep:schemars"]
+
 [dependencies]
+schemars = { version = "1", optional = true }
 ammonia = "4"
 async-trait.workspace = true
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }

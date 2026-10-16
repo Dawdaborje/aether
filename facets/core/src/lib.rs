@@ -27,6 +27,7 @@ pub mod ai_chat;
 pub mod ai_jobs;
 pub mod ai_tools;
 pub mod ocr_jobs;
+pub mod docs_provider;
 pub mod notifications;
 pub mod org_admin;
 pub mod org_admin_api;

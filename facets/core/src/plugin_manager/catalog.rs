@@ -150,6 +150,9 @@ pub enum CatalogError {
     #[error("manifest {0} must declare a non-empty plugin name and version")]
     IncompleteManifest(PathBuf),
 
+    #[error("the documentation of plugin `{plugin}` ([docs] in plugin.toml) has problems: {problems}")]
+    Docs { plugin: String, problems: String },
+
     #[error("manifest {0} does not declare `plugin.wasm_file` or `plugin.script`")]
     MissingWasmFile(PathBuf),
 
@@ -336,6 +339,8 @@ struct NewPlugin {
     roles: Vec<serde_json::Value>,
     /// The manifest's `[[ai_tool]]` entries.
     ai_tools: Vec<serde_json::Value>,
+    /// The plugin's rendered documentation (`[docs]`), see `plugin_manager::docs`.
+    docs: Option<serde_json::Value>,
     is_builtin: bool,
     is_active: bool,
 }
@@ -745,6 +750,8 @@ pub struct OfflineCheck {
     pub models: Vec<String>,
     pub pages: usize,
     pub components: usize,
+    /// The number of documentation pages, when the manifest has a `[docs]` table.
+    pub doc_pages: Option<usize>,
     /// Checks that were not made, and why (most need the catalog, which is a database).
     pub skipped: Vec<&'static str>,
 }
@@ -829,6 +836,10 @@ pub async fn check_plugin_offline(plugin_path: &Path) -> Result<OfflineCheck, Ca
     if declares(&manifest.plugin.wasm_file) && declares(&manifest.plugin.script) {
         return Err(CatalogError::BothWasmAndScript(manifest_path.clone()));
     }
+    let docs = super::docs::read(&package_dir, &manifest).map_err(|problems| CatalogError::Docs {
+        plugin: manifest.plugin.name.clone(),
+        problems: problems.join("; "),
+    })?;
     let mut skipped = vec![
         "links from this plugin's models to models of other plugins (need the catalog)",
         "components used from other plugins (need the catalog)",
@@ -861,6 +872,7 @@ pub async fn check_plugin_offline(plugin_path: &Path) -> Result<OfflineCheck, Ca
         models: models.iter().map(|model| model.name.clone()).collect(),
         pages: pages.len(),
         components: components.len(),
+        doc_pages: docs.map(|docs| docs.pages.len()),
         skipped,
     })
 }
@@ -1018,6 +1030,15 @@ async fn load_plugin_inner(
     if let Some(found) = &text_catalogs {
         super::i18n::check_overrides(&manifest, &found.catalogs).map_err(CatalogError::I18n)?;
         files.extend(found.files.iter().cloned());
+    }
+
+    // The plugin's own documentation. Its files join the package's, so editing a page is a change.
+    let docs = super::docs::read(&package_dir, &manifest).map_err(|problems| CatalogError::Docs {
+        plugin: manifest.plugin.name.clone(),
+        problems: problems.join("; "),
+    })?;
+    if let (Some(docs), Some(def)) = (&docs, &manifest.docs) {
+        files.extend(docs.pages.iter().map(|page| PathBuf::from(def.dir.trim()).join(&page.source)));
     }
 
     // The artifact may live in a build folder such as `out/`; it is stored beside
@@ -1362,6 +1383,7 @@ async fn load_plugin_inner(
         event_listeners,
         roles,
         ai_tools,
+        docs: docs.as_ref().and_then(|docs| serde_json::to_value(docs).ok()),
         is_builtin: definition.is_builtin,
         is_active: true,
     };
