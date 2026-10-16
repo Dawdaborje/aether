@@ -80,6 +80,7 @@ struct MenuPageRow {
     title: String,
     icon: Option<String>,
     menu_group: Option<String>,
+    menu_group_icon: Option<String>,
     sort_order: Option<i64>,
     is_menu_visible: Option<bool>,
     is_pattern: bool,
@@ -104,6 +105,9 @@ struct AppMenuItem {
     /// Sidebar section (collapsible); from the page's `menu_group`.
     #[serde(skip_serializing_if = "Option::is_none")]
     group: Option<String>,
+    /// Lucide icon for that section; from the page's `menu_group_icon`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    group_icon: Option<String>,
     /// From the page's `sort` attribute; not sent to the client.
     #[serde(skip)]
     sort_order: i64,
@@ -198,7 +202,7 @@ async fn launcher_catalog(
     if !installed_pairs.is_empty() {
         let mut pages_resp = core
             .query(
-                "SELECT route, title, icon, menu_group, sort_order, is_menu_visible, is_pattern, \
+                "SELECT route, title, icon, menu_group, menu_group_icon, sort_order, is_menu_visible, is_pattern, \
                  required_roles, component_tree.menu_when AS menu_when, \
                  plugin.name AS plugin_name, plugin.version AS plugin_version, \
                  plugin.workspace AS workspace \
@@ -489,10 +493,23 @@ async fn list_apps(
                 .push(row);
         }
         for ((name, version), mut rows) in grouped {
+            // Ungrouped links (e.g. Home) before collapsible sections, then sort_order.
             rows.sort_by(|a, b| {
-                a.sort_order
-                    .unwrap_or(0)
-                    .cmp(&b.sort_order.unwrap_or(0))
+                let a_grouped = a
+                    .menu_group
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|g| !g.is_empty())
+                    .is_some();
+                let b_grouped = b
+                    .menu_group
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|g| !g.is_empty())
+                    .is_some();
+                a_grouped
+                    .cmp(&b_grouped)
+                    .then(a.sort_order.unwrap_or(0).cmp(&b.sort_order.unwrap_or(0)))
                     .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
             });
             let workspace = rows.first().and_then(|row| row.workspace.clone());
@@ -510,11 +527,18 @@ async fn list_apps(
                     .map(str::trim)
                     .filter(|g| !g.is_empty())
                     .map(str::to_string);
+                let group_icon = row
+                    .menu_group_icon
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|icon| !icon.is_empty())
+                    .map(str::to_string);
                 menus.push(AppMenuItem {
                     label,
                     href: row.route,
                     icon: row.icon,
                     group,
+                    group_icon,
                     sort_order: row.sort_order.unwrap_or(0),
                 });
             }
@@ -720,6 +744,7 @@ mod tests {
             title: "Employees".into(),
             icon: None,
             menu_group: None,
+            menu_group_icon: None,
             sort_order: Some(0),
             is_menu_visible: Some(true),
             is_pattern: false,
@@ -760,6 +785,7 @@ mod tests {
                     href: format!("/hr/{plugin}/{i}"),
                     icon: None,
                     group: None,
+                    group_icon: None,
                     sort_order: i as i64,
                 })
                 .collect(),

@@ -81,7 +81,7 @@ caller's organization, for logged-in members only, **filtered by role**: pages
 with `roles="…"` and `[app] roles = […]` are omitted unless the caller holds one
 of those roles (or `org_admin` / developer). Each tile includes `menus`: the
 plugin's main pages the caller may open (literal routes, not `/new`, `/hire`, or
-`{param}` patterns; `menu="false"` hides a page). Pages may set `menu_group` for
+`{param}` patterns; `menu="false"` hides a page). Pages may set `menu_group` and `menu_group_icon` for
 a collapsible sidebar section.
 
 A workspace with `launcher = "folder"` (default) groups leftover members under

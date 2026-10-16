@@ -24,6 +24,7 @@ shell (SvelteKit-style children), use `wrap` on `<page>`.
 | `wrap="notes_shell"` | Content layout: a **component** whose default `<slot />` receives this page's body. |
 | `menu="false"` | Hide from the app sidebar (create/hire forms; open them from list **New**). |
 | `menu_group="Employee"` | Collapsible sidebar section (collapsible). |
+| `menu_group_icon="users"` | Lucide icon for that section (otherwise the first page icon, or a folder). |
 | `icon` / `sort` | Lucide icon id drawn on the sidebar link, and order among menu entries. Lowercase letters, digits and `-` (for example `calendar-days`). |
 | `roles="hr_user,hr_manager"` | Who may open the page and see it in menus (OR). Short names become `<plugin>.name`. Omit = any member. `org_admin` always passes. |
 

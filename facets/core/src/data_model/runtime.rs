@@ -505,7 +505,7 @@ impl ModelSchema {
             .iter()
             .filter(|column| self.tracked.contains(&column.id))
             .map(|column| {
-                serde_json::json!({
+                let mut field = serde_json::json!({
                     "id": column.id,
                     "name": column.def.name,
                     "label": column.def.label.clone().unwrap_or_else(|| column.def.name.clone()),
@@ -515,7 +515,14 @@ impl ModelSchema {
                         "value": o.value,
                         "label": o.label.clone().unwrap_or_else(|| o.value.clone()),
                     })).collect::<Vec<_>>(),
-                })
+                });
+                // Link fields need their target so the panel can show record titles, not ids.
+                if column.def.kind == super::definition::FieldType::Link {
+                    if let Some(target) = &column.def.target {
+                        field["target"] = serde_json::json!(target);
+                    }
+                }
+                field
             })
             .collect()
     }

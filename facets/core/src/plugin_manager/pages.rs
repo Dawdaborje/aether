@@ -145,6 +145,8 @@ pub struct PageDocument {
     pub icon: Option<String>,
     /// Sidebar section label (collapsible group). Empty = ungrouped.
     pub menu_group: Option<String>,
+    /// Lucide icon for the collapsible section named by `menu_group`.
+    pub menu_group_icon: Option<String>,
     /// Sort key among menu entries (lower first). Default 0.
     pub sort_order: i64,
     /// Roles that may open this page (OR). Empty = any member. Short names are
@@ -251,6 +253,19 @@ pub fn parse_page(xml: &str, source: &Path) -> Result<PageDocument, PageError> {
         .or_else(|| root.attribute("menuGroup"))
         .filter(|group| !group.is_empty())
         .map(str::to_string);
+    let menu_group_icon = match root
+        .attribute("menu_group_icon")
+        .or_else(|| root.attribute("menuGroupIcon"))
+    {
+        None | Some("") => None,
+        Some(icon) if super::themes::is_identifier(icon) => Some(icon.to_string()),
+        Some(icon) => {
+            return Err(PageError::InvalidIcon {
+                path: source.to_path_buf(),
+                icon: icon.to_string(),
+            });
+        }
+    };
     let sort_order = match root.attribute("sort") {
         None | Some("") => 0,
         Some(raw) => raw.parse::<i64>().map_err(|_| PageError::InvalidInteger {
@@ -328,6 +343,7 @@ pub fn parse_page(xml: &str, source: &Path) -> Result<PageDocument, PageError> {
         menu_visible,
         icon,
         menu_group,
+        menu_group_icon,
         sort_order,
         roles,
         layout,
@@ -647,11 +663,12 @@ mod tests {
     #[test]
     fn reads_menu_icon_and_sort() -> Result<(), PageError> {
         let page = parse(
-            r#"<page route="/crm/sources" title="Sources" menu="false" icon="tag" sort="40" menu_group="Setup" />"#,
+            r#"<page route="/crm/sources" title="Sources" menu="false" icon="tag" sort="40" menu_group="Setup" menu_group_icon="settings" />"#,
         )?;
         assert!(!page.menu_visible);
         assert_eq!(page.icon.as_deref(), Some("tag"));
         assert_eq!(page.menu_group.as_deref(), Some("Setup"));
+        assert_eq!(page.menu_group_icon.as_deref(), Some("settings"));
         assert_eq!(page.sort_order, 40);
         assert!(page.roles.is_empty());
         Ok(())

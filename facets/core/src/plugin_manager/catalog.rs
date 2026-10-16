@@ -414,6 +414,7 @@ struct NewUiPage {
     is_menu_visible: bool,
     icon: Option<String>,
     menu_group: Option<String>,
+    menu_group_icon: Option<String>,
     sort_order: i64,
     required_roles: Vec<String>,
     component_tree: serde_json::Value,
@@ -1412,6 +1413,7 @@ async fn load_plugin_inner(
             is_menu_visible: page.menu_visible,
             icon: page.icon.clone(),
             menu_group: page.menu_group.clone(),
+            menu_group_icon: page.menu_group_icon.clone(),
             sort_order: page.sort_order,
             required_roles: page
                 .roles
@@ -1497,6 +1499,7 @@ async fn load_plugin_inner(
                 is_menu_visible: $page.is_menu_visible,
                 icon: $page.icon,
                 menu_group: $page.menu_group,
+                menu_group_icon: $page.menu_group_icon,
                 sort_order: $page.sort_order,
                 required_roles: $page.required_roles,
                 component_tree: $page.component_tree,
