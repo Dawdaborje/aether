@@ -588,7 +588,7 @@ async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     if args.mcp {
         #[cfg(feature = "mcp")]
-        if let Err(err) = crate::mcp::run_stdio(mcp_docs_sources(&args)).await {
+        if let Err(err) = crate::mcp::run_stdio(mcp_docs_sources(&args), mcp_live(&args)).await {
             log::error!("MCP server failed: {err}");
             std::process::exit(1);
         }
@@ -755,4 +755,11 @@ fn mcp_docs_sources(args: &Args) -> crate::server::docs::DocsSources {
     sources.entries.extend(args.plugin_docs.iter().cloned());
     sources.entries.extend(plugin_paths_from_file(args));
     sources
+}
+
+/// Live mode starts when `--mcp` is given an organization: its tools work on the instance the config file describes.
+/// Without `--org` there are no live tools at all.
+#[cfg(feature = "mcp")]
+fn mcp_live(args: &Args) -> Option<crate::mcp::Live> {
+    args.org.as_ref().map(|org| crate::mcp::Live::new(args.clone(), org.clone(), args.mcp_allow_write))
 }

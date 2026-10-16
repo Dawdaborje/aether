@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use aether_core::plugin_manager::catalog::PluginSpec;
 use clap::Parser;
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(name = "aether", about = "Aether kernel CLI")]
 pub struct Args {
     #[arg(short, long)]
@@ -43,6 +43,10 @@ pub struct Args {
     #[arg(long, value_name = "ADDR", default_missing_value = "127.0.0.1:7899", num_args = 0..=1, conflicts_with = "serve")]
     /// Serve the documentation website on its own (default 127.0.0.1:7899). Needs no config file and no database: the pages are compiled into this binary
     pub serve_docs: Option<String>,
+
+    #[arg(long, action = clap::ArgAction::SetTrue, requires = "mcp")]
+    /// With --mcp and --org: let the LLM change the instance (load, install and upgrade plugins, run plugin commands). Without it live mode only reads
+    pub mcp_allow_write: bool,
 
     #[arg(long = "plugin-docs", value_name = "PATH")]
     /// With --serve-docs or --mcp: a plugin package or workspace folder whose `[docs]` to include (repeat for several). The `plugin_paths` of the config file are included too

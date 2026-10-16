@@ -179,3 +179,70 @@ fn serves_the_docs_plugins_ship_and_says_who_wrote_them() {
     let none = session(vec![call(2, "get_doc", json!({"path": "index", "plugin": "notes"}))]);
     assert!(text(by_id(&none, 2)).contains("--plugin-docs"));
 }
+
+fn tool_names(response: &Value) -> Vec<String> {
+    response["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect()
+}
+
+const READ_LIVE: [&str; 5] = ["list_installed_plugins", "list_catalog_plugins", "get_org_models", "list_plugin_commands", "check_plugin_against_catalog"];
+const WRITE_LIVE: [&str; 4] = ["load_plugin", "install_plugin", "upgrade_plugin", "run_command"];
+
+#[test]
+fn live_tools_are_only_offered_when_they_apply() {
+    let list = || vec![json!({"jsonrpc":"2.0","id":2,"method":"tools/list"})];
+
+    // No organization: documentation tools only, and the instructions do not talk about an instance.
+    let r = session(list());
+    let tools = tool_names(by_id(&r, 2));
+    assert!(READ_LIVE.iter().chain(&WRITE_LIVE).all(|t| !tools.contains(&t.to_string())), "{tools:?}");
+    assert!(!by_id(&r, 1)["result"]["instructions"].as_str().unwrap().contains("Live mode"));
+
+    // An organization: it can look, not change.
+    let r = session_with(&["--org", "acme"], list());
+    let tools = tool_names(by_id(&r, 2));
+    assert!(READ_LIVE.iter().all(|t| tools.contains(&t.to_string())), "{tools:?}");
+    assert!(WRITE_LIVE.iter().all(|t| !tools.contains(&t.to_string())), "write tools must be hidden: {tools:?}");
+    let instructions = by_id(&r, 1)["result"]["instructions"].as_str().unwrap();
+    assert!(instructions.contains("`acme`") && instructions.contains("Writing is off"), "{instructions}");
+
+    // Writing has to be asked for.
+    let r = session_with(&["--org", "acme", "--mcp-allow-write"], list());
+    let tools = tool_names(by_id(&r, 2));
+    assert!(WRITE_LIVE.iter().all(|t| tools.contains(&t.to_string())), "{tools:?}");
+    assert!(by_id(&r, 1)["result"]["instructions"].as_str().unwrap().contains("Writing is ON"));
+}
+
+#[test]
+fn a_write_tool_cannot_be_called_on_a_read_only_server() {
+    let r = session_with(
+        &["--org", "acme"],
+        vec![call(2, "install_plugin", json!({"plugin": "crm"})), call(3, "run_command", json!({"command": "crm.wipe"}))],
+    );
+    for id in [2, 3] {
+        let response = by_id(&r, id);
+        let refused = response.get("error").is_some() || response["result"]["isError"] == true;
+        assert!(refused, "a hidden write tool must not run: {response}");
+    }
+}
+
+#[test]
+fn without_a_reachable_instance_a_live_tool_says_so_and_the_server_keeps_working() {
+    // A database address nothing listens on: the handshake is not delayed and the tool reports a clear error.
+    let started = std::time::Instant::now();
+    let r = session_with(
+        &["--org", "acme", "--db-host", "127.0.0.1", "--db-port", "1", "--db-user", "root", "--db-password", "root", "--db-namespace", "aether", "--app-dir", std::env::temp_dir().to_str().unwrap()],
+        vec![call(2, "list_installed_plugins", json!({})), call(3, "search_docs", json!({"query": "scheduler"}))],
+    );
+    let failed = by_id(&r, 2);
+    assert_eq!(failed["result"]["isError"], true, "{failed}");
+    assert!(text(failed).contains("Cannot reach the Aether instance") || text(failed).contains("cannot open"), "{}", text(failed));
+    assert!(text(by_id(&r, 3)).contains("architecture/scheduler"), "documentation tools must keep working");
+    assert!(started.elapsed() < std::time::Duration::from_secs(60), "{:?}", started.elapsed());
+}
+
+#[test]
+fn allowing_writes_without_mcp_is_refused() {
+    let output = Command::new(env!("CARGO_BIN_EXE_aether")).arg("--mcp-allow-write").output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--mcp"), "{}", String::from_utf8_lossy(&output.stderr));
+}

@@ -5,19 +5,24 @@
 //!
 //! stdout carries only protocol messages: logs go to stderr (see `cli/logging.rs`).
 
+mod live;
 mod server;
 pub mod tools;
 
+pub use live::Live;
 use crate::server::docs::DocsSources;
 use rmcp::{ServiceExt, transport::stdio};
 
-pub async fn run_stdio(sources: DocsSources) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run_stdio(sources: DocsSources, live: Option<Live>) -> Result<(), Box<dyn std::error::Error>> {
     log::info!(
         "MCP server on stdio ({} documentation pages, {} plugin folder(s))",
         aether_docs::bundle().docs.len(),
         sources.entries.len()
     );
-    let running = server::AetherMcp::new(sources).serve(stdio()).await?;
+    if let Some(live) = &live {
+        log::info!("MCP live mode: organization `{}`, writing {}", live.org, if live.allow_write { "ON" } else { "off" });
+    }
+    let running = server::AetherMcp::new(sources, live).serve(stdio()).await?;
     running.waiting().await?;
     Ok(())
 }

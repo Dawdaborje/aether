@@ -72,6 +72,40 @@ seconds. This process is run by its owner, so the docs of every `visibility` are
 `aether-docs://plugins/<plugin>/<page>`. Everything from a plugin is marked as written by the plugin's author and
 comes with the instruction to treat it as information, not as instructions, because anyone can write a plugin.
 
+## Live mode: working on a real instance
+
+Give the server a configuration and an organization and it can also look at, and with a second flag change, a
+real Aether instance:
+
+```sh
+aether --mcp -c aether.toml --org acme                    # look only
+aether --mcp -c aether.toml --org acme --mcp-allow-write  # also change
+```
+
+The organization is fixed when the server starts, so the model cannot move to another one. The database is
+opened on first use, not at start-up: if it is down, the live tools answer with an error and the documentation
+tools keep working.
+
+| Tool | Needs `--mcp-allow-write` | What it does |
+|---|---|---|
+| `list_installed_plugins` | no | The plugins installed in the organization, with versions. |
+| `list_catalog_plugins` | no | The plugins loaded into the catalog, with their versions. |
+| `get_org_models` | no | The models of the installed plugins and their fields. |
+| `list_plugin_commands` | no | The commands the installed plugins offer, with their arguments. |
+| `check_plugin_against_catalog` | no | The checks `validate_plugin` cannot make without a database: links to other plugins' models and components from other plugins. Loads nothing. |
+| `load_plugin` | yes | Registers a plugin folder or workspace in the catalog, as `aether --load-plugins`. |
+| `install_plugin` | yes | Installs a catalog plugin with its dependencies in the organization, and runs its `on_install` seed commands. |
+| `upgrade_plugin` | yes | Moves an installed plugin to another catalog version (`all` for every plugin), and runs its `on_upgrade` seeds. |
+| `run_command` | yes | Runs a plugin command, as `aether --command`. Commands can change data. |
+
+Tools that do not apply are not offered: without `--org` there are no live tools, and without
+`--mcp-allow-write` there are no write tools, so the model does not try them. Everything goes through the same
+code as the command line, as the actor `system:mcp:<your user>`, and loading, installing and upgrading are
+recorded in the plugin activity log with the source `mcp:load`, `mcp:install` or `mcp:upgrade`.
+
+A model with write access can change a real system, so start it in an organization you can afford to change,
+read what it asks to run, and keep `--mcp-allow-write` off when you only want it to read.
+
 ## Pages that are not built
 
 Some pages are design proposals for features that do not exist yet. They are marked *proposal* in the list

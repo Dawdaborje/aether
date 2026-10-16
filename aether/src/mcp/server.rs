@@ -1,5 +1,6 @@
 //! The Model Context Protocol adapter: tools, resources and prompts over the functions in `tools.rs`.
 
+use super::live::{Live, READ_TOOLS, WRITE_TOOLS};
 use super::tools;
 use crate::server::docs::{DocsSources, gather};
 use aether_docs::plugin_docs::PluginDocs;
@@ -33,12 +34,25 @@ Every page is also a resource at aether-docs://<path>.";
 pub struct AetherMcp {
     tool_router: ToolRouter<Self>,
     sources: std::sync::Arc<DocsSources>,
+    live: Option<std::sync::Arc<Live>>,
     plugins: std::sync::Arc<tokio::sync::Mutex<Option<(std::time::Instant, std::sync::Arc<Vec<PluginDocs>>)>>>,
 }
 
 impl AetherMcp {
-    pub fn new(sources: DocsSources) -> Self {
-        Self { tool_router: Self::tool_router(), sources: std::sync::Arc::new(sources), plugins: Default::default() }
+    /// `live` is set when the server was started with `--org`: its tools work on a real instance. Tools that do not
+    /// apply are not offered at all, so the model does not try them.
+    pub fn new(sources: DocsSources, live: Option<Live>) -> Self {
+        let mut tool_router = Self::tool_router();
+        match &live {
+            None => READ_TOOLS.iter().chain(WRITE_TOOLS).for_each(|name| tool_router.remove_route(name)),
+            Some(l) if !l.allow_write => WRITE_TOOLS.iter().for_each(|name| tool_router.remove_route(name)),
+            Some(_) => {}
+        }
+        Self { tool_router, sources: std::sync::Arc::new(sources), live: live.map(std::sync::Arc::new), plugins: Default::default() }
+    }
+
+    fn live(&self) -> Result<&Live, String> {
+        self.live.as_deref().ok_or_else(|| "Live mode is off: start the server with -c aether.toml --org <organization>.".to_string())
     }
 
     /// The docs plugins ship, read from the plugin folders; reread every few seconds so an author's edits show.
@@ -110,6 +124,34 @@ struct SchemaArgs {
 }
 
 #[derive(Deserialize, JsonSchema)]
+struct ModelsArgs {
+    /// Only this plugin's models (its name).
+    plugin: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct LivePathArgs {
+    /// A plugin folder (the one with plugin.toml) or a workspace folder: absolute, or relative to where this server was started.
+    path: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct PluginVersionArgs {
+    /// The plugin's name, as `list_catalog_plugins` shows it. For upgrades, `all` upgrades every installed plugin.
+    plugin: String,
+    /// A catalog version. Without it: the newest.
+    version: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct RunCommandArgs {
+    /// `<plugin>.<command>`, as `list_plugin_commands` shows it.
+    command: String,
+    /// The command's arguments as a JSON object, using the names `list_plugin_commands` shows.
+    arguments: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 struct ScaffoldArgs {
     /// Plugin name: lower-case letters, digits and `_`.
     name: String,
@@ -159,6 +201,51 @@ impl AetherMcp {
         tools::get_reference(&a.kind)
     }
 
+    #[tool(description = "Live mode. The plugins installed in the organization this server works on, with their versions.")]
+    async fn list_installed_plugins(&self) -> Result<String, String> {
+        self.live()?.list_installed_plugins().await
+    }
+
+    #[tool(description = "Live mode. The plugins in the instance's catalog (loaded, not necessarily installed) with their versions.")]
+    async fn list_catalog_plugins(&self) -> Result<String, String> {
+        self.live()?.list_catalog_plugins().await
+    }
+
+    #[tool(description = "Live mode. The models (record types) of the installed plugins, with their fields, as they are in this organization.")]
+    async fn get_org_models(&self, Parameters(a): Parameters<ModelsArgs>) -> Result<String, String> {
+        self.live()?.get_org_models(a.plugin.as_deref()).await
+    }
+
+    #[tool(description = "Live mode. The commands the installed plugins offer, with their arguments.")]
+    async fn list_plugin_commands(&self) -> Result<String, String> {
+        self.live()?.list_plugin_commands().await
+    }
+
+    #[tool(description = "Live mode. Check a plugin folder against the instance's catalog: the checks validate_plugin cannot make (links to other plugins' models, components from other plugins). Loads nothing.")]
+    async fn check_plugin_against_catalog(&self, Parameters(a): Parameters<LivePathArgs>) -> Result<String, String> {
+        self.live()?.check_plugin_against_catalog(&a.path).await
+    }
+
+    #[tool(description = "Live mode, writes. Register a plugin folder (or workspace) in the instance's catalog, as `aether --load-plugins`. It is not installed anywhere until install_plugin.")]
+    async fn load_plugin(&self, Parameters(a): Parameters<LivePathArgs>) -> Result<String, String> {
+        self.live()?.load_plugin(&a.path).await
+    }
+
+    #[tool(description = "Live mode, writes. Install a catalog plugin (with its dependencies) in the organization, as `aether --install-plugin`, and run its on_install seed commands.")]
+    async fn install_plugin(&self, Parameters(a): Parameters<PluginVersionArgs>) -> Result<String, String> {
+        self.live()?.install_plugin(&a.plugin, a.version.as_deref()).await
+    }
+
+    #[tool(description = "Live mode, writes. Move an installed plugin to another catalog version (the newest by default; `all` upgrades every plugin), as `aether --upgrade-plugin`, and run its on_upgrade seed commands.")]
+    async fn upgrade_plugin(&self, Parameters(a): Parameters<PluginVersionArgs>) -> Result<String, String> {
+        self.live()?.upgrade_plugin(&a.plugin, a.version.as_deref()).await
+    }
+
+    #[tool(description = "Live mode, writes. Run a plugin command in the organization, as `aether --command`. Commands can change data: read list_plugin_commands first.")]
+    async fn run_command(&self, Parameters(a): Parameters<RunCommandArgs>) -> Result<String, String> {
+        self.live()?.run_command(&a.command, a.arguments.as_ref()).await
+    }
+
     #[tool(description = "The exact JSON Schema of a plugin file format (manifest = plugin.toml, workspace = workspace.toml, model = models/*.json, rules = rules/*.json), generated from the types the kernel loads it with. Use it to write or check a file field by field; get_reference has the explanations.")]
     async fn get_schema(&self, Parameters(a): Parameters<SchemaArgs>) -> Result<String, String> {
         tools::get_schema(&a.kind)
@@ -175,11 +262,25 @@ impl AetherMcp {
     }
 }
 
-#[tool_handler]
+// The stored router, so that tools which do not apply (see `new`) are not offered.
+#[tool_handler(router = self.tool_router)]
 impl ServerHandler for AetherMcp {
     fn get_info(&self) -> ServerConfig {
+        let mut instructions = INSTRUCTIONS.to_string();
+        if let Some(live) = &self.live {
+            instructions.push_str(&format!(
+                "\n\nLive mode: this server also works on a real Aether instance, in the organization `{}` only. \
+                 list_installed_plugins, list_catalog_plugins, get_org_models, list_plugin_commands and check_plugin_against_catalog read from it.{}",
+                live.org,
+                if live.allow_write {
+                    " Writing is ON: load_plugin, install_plugin, upgrade_plugin and run_command change the instance as `aether` on the command line would, and are recorded in the plugin activity log. Check with the user before changing anything they did not ask you to change."
+                } else {
+                    " Writing is off (it needs --mcp-allow-write), so you can look but not change."
+                }
+            ));
+        }
         ServerConfig::new(ServerCapabilities::builder().enable_tools().enable_resources().enable_prompts().build())
-            .with_instructions(INSTRUCTIONS)
+            .with_instructions(instructions)
     }
 
     async fn list_resources(
