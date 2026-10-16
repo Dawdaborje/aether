@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use super::plugin_def::PluginAuthor;
 
 /// One entry of `[workspace.plugins]`: `company = { path = "./company" }`.
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct WorkspacePluginRef {
     /// Plugin directory, relative to the directory holding `workspace.toml`.
@@ -12,6 +13,7 @@ pub struct WorkspacePluginRef {
 }
 
 /// The `[workspace]` table of a plugin workspace's `workspace.toml`.
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Deserialize, Serialize)]
 pub struct PluginWorkspaceDefinition {
     pub name: String,
@@ -38,6 +40,7 @@ pub struct PluginWorkspaceDefinition {
 }
 
 /// A whole `workspace.toml`.
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Deserialize, Serialize)]
 pub struct PluginWorkspaceManifest {
     pub workspace: PluginWorkspaceDefinition,

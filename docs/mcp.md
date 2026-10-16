@@ -45,6 +45,7 @@ The server writes only protocol messages to standard output. Its own log lines g
 | `get_doc` | Returns a page, or only the part under one heading. |
 | `list_docs` | Lists every page with a one-line description. |
 | `get_reference` | The complete pages for one file format or feature: `manifest` (plugin.toml, workspace.toml), `model`, `pages`, `rules`, `commands`, `cli-commands`, `lua`, `rhai`, `events`, `scheduler`, `capabilities`. |
+| `get_schema` | The exact JSON Schema of a file format: `manifest` (plugin.toml), `workspace` (workspace.toml), `model` (models/*.json) or `rules` (rules/*.json). It is generated from the types the kernel loads the file with, so it cannot be out of date, and each field carries the kernel's own description. |
 | `list_capabilities`, `get_capability` | The capabilities a plugin can declare, such as `db::query`. |
 | `scaffold_plugin` | The starting files of a plugin in a chosen language, from the same templates as `aether --gen plugin`. Nothing is written to disk; the client creates the files. |
 | `validate_plugin` | Checks a plugin folder the way a load does (manifest, models, pages, rules, capabilities, scripts) and reports the first problem. |
@@ -70,7 +71,7 @@ a configured database; see [Plugin commands](plugin/cli-commands.md) and [Runnin
 
 Ask the client for what you want ("an expense tracker plugin with a model for claims") and it should:
 
-1. read `get_reference` for the manifest, models and pages;
+1. read `get_reference` for the manifest, models and pages, and `get_schema` for the exact fields;
 2. call `scaffold_plugin` and create the files;
 3. write the models, pages and code, declaring the capabilities it uses;
 4. call `validate_plugin` and fix what it reports until the answer is `VALID`.

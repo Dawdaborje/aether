@@ -71,7 +71,7 @@ fn handshake_lists_tools_resources_and_prompts() {
     }
 
     let tools: Vec<&str> = by_id(&r, 2)["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-    for want in ["search_docs", "get_doc", "list_docs", "list_capabilities", "get_capability", "get_reference", "scaffold_plugin", "validate_plugin"] {
+    for want in ["search_docs", "get_doc", "list_docs", "list_capabilities", "get_capability", "get_reference", "get_schema", "scaffold_plugin", "validate_plugin"] {
         assert!(tools.contains(&want), "missing tool {want}: {tools:?}");
     }
     let resources = by_id(&r, 3)["result"]["resources"].as_array().unwrap();

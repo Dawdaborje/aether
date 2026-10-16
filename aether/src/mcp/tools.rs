@@ -174,7 +174,33 @@ pub fn get_reference(kind: &str) -> Result<String, String> {
         let d = doc(slug).ok_or_else(|| format!("The reference page `{slug}` is missing from this build."))?;
         let _ = write!(out, "<!-- aether docs: {} -->\n\n{}{}\n\n", d.slug, status_note(d), d.markdown);
     }
+    let schema = match kind.as_str() {
+        "manifest" => Some("manifest` and `workspace"),
+        "model" => Some("model"),
+        "rules" => Some("rules"),
+        _ => None,
+    };
+    if let Some(kinds) = schema {
+        let _ = write!(out, "---\nThe exact structure of this file format is available as JSON Schema: `get_schema` kind `{kinds}`.");
+    }
     Ok(out)
+}
+
+/// The JSON Schema of a file format, generated from the types the kernel parses it with.
+pub fn get_schema(kind: &str) -> Result<String, String> {
+    use aether_core::schemas::{KINDS, schema};
+    let kind = kind.trim().to_lowercase();
+    let Some(value) = schema(&kind) else {
+        let kinds: Vec<String> = KINDS.iter().map(|(k, file)| format!("- {k}: {file}")).collect();
+        return Err(format!("There is no schema `{kind}`. Schemas:\n{}", kinds.join("\n")));
+    };
+    let file = KINDS.iter().find(|(k, _)| *k == kind).map(|(_, f)| *f).unwrap_or_default();
+    Ok(format!(
+        "JSON Schema of `{file}`, generated from the types the kernel loads it with, so it is exact. A TOML file is described as the \
+         JSON it equals: a table is an object and `[[x]]` is an array under `x`. Descriptions are the kernel's own documentation of each field. \
+         The schema checks structure only; `validate_plugin` runs the full checks. `get_reference` has the explanations and examples.\n\n{}",
+        serde_json::to_string(&value).map_err(|e| e.to_string())?
+    ))
 }
 
 pub fn languages() -> &'static str {
@@ -350,6 +376,43 @@ mod tests {
             assert!(get_reference(kind).is_ok(), "reference {kind}");
         }
         assert!(get_reference("nope").unwrap_err().contains("manifest"));
+    }
+
+    #[test]
+    fn schemas_are_served_for_every_format() {
+        for kind in ["manifest", "workspace", "model", "rules"] {
+            let out = get_schema(kind).unwrap();
+            assert!(out.contains("\"$schema\"") && out.contains("\"properties\""), "{kind}");
+        }
+        assert!(get_schema("MANIFEST").is_ok());
+        assert!(get_schema("pages").unwrap_err().contains("manifest"));
+    }
+
+    /// Every key the scaffolder writes into plugin.toml must be a property in the generated manifest schema
+    /// (at the top level and inside `[plugin]`), so the schema and the templates cannot drift apart.
+    #[tokio::test]
+    async fn scaffolded_manifests_use_only_keys_the_schema_knows() {
+        let schema: serde_json::Value = {
+            let out = get_schema("manifest").unwrap();
+            serde_json::from_str(out.split("\n\n").last().unwrap()).unwrap()
+        };
+        let top = schema["properties"].as_object().unwrap();
+        let plugin_ref = schema["properties"]["plugin"]["$ref"].as_str().expect("plugin is a $ref");
+        let plugin_def = &schema[plugin_ref.trim_start_matches("#/").split('/').next().unwrap()][plugin_ref.rsplit('/').next().unwrap()];
+        let plugin_props = plugin_def["properties"].as_object().expect("PluginDefinition properties");
+        for lang in ["rhai", "lua", "rust", "go", "typescript", "python"] {
+            let out = scaffold_plugin("demo_tool", lang, Some("Demo"), Some("A demo.")).await.unwrap();
+            let text = out.split("=== FILE: plugin.toml ===\n").nth(1).unwrap().split("\n=== END FILE ===").next().unwrap();
+            let doc: toml_edit::DocumentMut = text.parse().unwrap();
+            for (key, item) in doc.iter() {
+                assert!(top.contains_key(key), "{lang}: `{key}` is not in the manifest schema");
+                if key == "plugin" {
+                    for (k, _) in item.as_table().unwrap().iter() {
+                        assert!(plugin_props.contains_key(k), "{lang}: `plugin.{k}` is not in the schema");
+                    }
+                }
+            }
+        }
     }
 
     #[tokio::test]

@@ -34,6 +34,7 @@ pub enum TaskError {
 }
 
 /// How a task treats slots it missed while nothing was running.
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CatchUp {
@@ -54,6 +55,7 @@ impl CatchUp {
 }
 
 /// A task as declared by a plugin.
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct TaskDef {
     pub name: String,

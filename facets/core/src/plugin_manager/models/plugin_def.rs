@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Contract version the addon was authored against (`[plugin.api]`).
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PluginApi {
     #[serde(default = "default_api_version")]
@@ -12,6 +13,7 @@ fn default_api_version() -> String {
 }
 
 /// Optional metadata (`[plugin.meta]`). Prefer this over top-level kind/workspace long-term.
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PluginMeta {
     /// `"addon"` | `"theme"` | `"bridge_pack"` | …
@@ -21,6 +23,7 @@ pub struct PluginMeta {
     pub workspace: Option<String>,
 }
 
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PluginAuthor {
     pub name: String,
@@ -32,6 +35,7 @@ pub struct PluginAuthor {
     pub website: Option<String>,
 }
 
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PluginCategory {
     pub name: String,
@@ -39,6 +43,7 @@ pub struct PluginCategory {
     pub label: String,
 }
 
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct AccessModelDef {
     pub name: String,
@@ -47,6 +52,7 @@ pub struct AccessModelDef {
 }
 
 /// Core `[plugin]` table. Extra future keys are ignored (serde default).
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PluginDefinition {
     pub name: String,
@@ -198,6 +204,7 @@ impl PluginDefinition {
     }
 }
 
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PluginModelRef {
     pub name: String,
@@ -209,6 +216,7 @@ pub struct PluginModelRef {
     pub file: Option<String>,
 }
 
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PluginMenuDef {
     pub name: String,
@@ -230,6 +238,7 @@ fn default_true() -> bool {
     true
 }
 
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PluginHookDef {
     pub name: String,
@@ -258,6 +267,7 @@ pub struct PluginHookDef {
 ///
 /// Listening needs the emitting plugin in `dependencies` and the capability `events::subscribe`;
 /// emitting needs `events::emit`. A handler runs as a background job.
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq)]
 pub struct PluginEventDef {
     pub name: String,
@@ -366,6 +376,7 @@ impl PluginEventDef {
     }
 }
 
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PluginPermissionDef {
     pub key: String,
@@ -373,12 +384,14 @@ pub struct PluginPermissionDef {
     pub label: Option<String>,
 }
 
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PluginCommunication {
     #[serde(default)]
     pub channels: Vec<String>,
 }
 
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PluginThemeDef {
     pub name: String,
@@ -392,6 +405,7 @@ pub struct PluginThemeDef {
 
 /// `[plugin.i18n]`: `default = "en"` is the language of the plugin's text, tried last when a
 /// person's own language has no translation. See `docs/architecture/localization.md`.
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PluginI18nDef {
     pub default: String,
@@ -414,6 +428,7 @@ pub struct PluginI18nDef {
 /// folder = "Time"             # join/create a named folder (same workspace category)
 /// roles = ["hr_user"]         # optional; omit = any member may see the tile
 /// ```
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PluginAppDef {
     #[serde(default)]
@@ -438,6 +453,7 @@ pub struct PluginAppDef {
 }
 
 /// Full `plugin.toml` document. Unknown top-level tables are ignored by serde.
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PluginManifest {
     pub plugin: PluginDefinition,
@@ -445,6 +461,7 @@ pub struct PluginManifest {
     pub models: Vec<PluginModelRef>,
     /// Present only to reject the removed `[[pages]]` table with a clear error.
     #[serde(default, rename = "pages")]
+    #[cfg_attr(feature = "schemars", schemars(skip))]
     legacy_pages: Option<toml::Value>,
     #[serde(default)]
     pub menus: Vec<PluginMenuDef>,
@@ -495,6 +512,7 @@ pub struct PluginManifest {
 /// The kernel runs the function **as the person who is chatting**, so roles and record rules apply as in
 /// the rest of the app. A tool with `writes = true` is never run by the assistant: the person is shown
 /// the proposed call and confirms it. What a tool returns is shown to the model as data, never as instructions.
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct PluginAiToolDef {
     pub name: String,
@@ -551,6 +569,7 @@ pub const WATCH_EVENTS: &[&str] = &["created", "modified", "deleted"];
 /// events = ["created"]       # created, modified, deleted; default created and modified
 /// function = "import_invoice"
 /// ```
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct PluginWatchDef {
     pub name: String,
@@ -659,6 +678,7 @@ impl PluginWatchDef {
 const ARG_TYPES: &[&str] = &["string", "int", "float", "bool", "json"];
 
 /// One argument of a command.
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct CommandArgDef {
     pub name: String,
@@ -704,6 +724,7 @@ impl CommandArgDef {
 /// demo_model = "currency"
 /// args = [{ name = "count", type = "int", default = 10 }]
 /// ```
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct PluginCommandDef {
     pub name: String,
@@ -733,6 +754,7 @@ pub struct PluginCommandDef {
 /// label = "HR manager"
 /// description = "Hires, changes and ends employment"
 /// ```
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct PluginRoleDef {
     pub name: String,

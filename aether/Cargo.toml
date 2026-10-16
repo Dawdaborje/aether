@@ -6,7 +6,7 @@ edition = "2024"
 [features]
 default = ["mcp"]
 # `aether --mcp`: the Model Context Protocol server (documentation and plugin tools for LLMs).
-mcp = ["dep:rmcp", "dep:tempfile"]
+mcp = ["dep:rmcp", "dep:tempfile", "aether_core/schemars"]
 
 [dependencies]
 axum.workspace = true

@@ -89,6 +89,7 @@ pub fn parse_all(
 }
 
 /// What can be done to a record.
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Operation {
@@ -120,6 +121,7 @@ fn all_operations() -> Vec<Operation> {
     Operation::ALL.to_vec()
 }
 
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AccessRule {
@@ -131,6 +133,7 @@ pub struct AccessRule {
     pub when: Option<Map<String, Value>>,
 }
 
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RestrictRule {
@@ -142,6 +145,7 @@ pub struct RestrictRule {
     pub when: Map<String, Value>,
 }
 
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FieldRule {
@@ -155,6 +159,7 @@ pub struct FieldRule {
 }
 
 /// One move of a record from a state to another.
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Transition {
@@ -175,6 +180,7 @@ pub struct Transition {
 
 /// The states of a model and the moves between them. A write that changes the `field` is allowed
 /// only as one of the `transitions` the caller may make; a new record starts in `initial`.
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Workflow {
@@ -187,6 +193,7 @@ pub struct Workflow {
 }
 
 /// The rules of one model.
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuleSet {

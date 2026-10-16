@@ -57,6 +57,7 @@ pub fn is_name(text: &str) -> bool {
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FieldType {
@@ -123,6 +124,7 @@ impl FieldType {
     }
 }
 
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum IndexKind {
@@ -130,6 +132,7 @@ pub enum IndexKind {
     Unique,
 }
 
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SelectOption {
@@ -145,6 +148,7 @@ pub struct SelectOption {
 }
 
 /// An index over several fields together (for one field, use the field's own `index`).
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IndexDef {
@@ -158,6 +162,7 @@ pub struct IndexDef {
     pub unique: bool,
 }
 
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FieldDef {
@@ -247,6 +252,7 @@ pub struct FieldDef {
 }
 
 /// When a naming series starts again from 1.
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SequenceReset {
@@ -258,6 +264,7 @@ pub enum SequenceReset {
 
 /// A naming series such as `INV-{YYYY}-{#####}`: literal text, `{YYYY}`, `{YY}`, `{MM}` (the date the
 /// record is created, UTC) and one `{#####}` for the zero-padded number.
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SequenceDef {
@@ -274,6 +281,7 @@ pub struct SequenceDef {
     pub assign_on: Option<SequenceTrigger>,
 }
 
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SequenceTrigger {
@@ -285,6 +293,7 @@ pub struct SequenceTrigger {
 /// A rule every record of the model must satisfy after it is written, such as "the end date is
 /// not before the start date". `require` is a filter (see the queries doc); a write that leaves
 /// the record not matching it is refused with `message`.
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CheckDef {
@@ -295,6 +304,7 @@ pub struct CheckDef {
 /// No two records that match `when` may share the values of `fields`. The database cannot index
 /// "only some rows", so the kernel enforces it after every create and update, in the write's own
 /// transaction (a refused write changes nothing). An empty `when` makes it an ordinary unique key.
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UniqueWhenDef {
@@ -310,6 +320,7 @@ fn is_false(value: &bool) -> bool {
 }
 
 /// How a model is shown. Presentation only: changing it never touches stored data.
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ViewDef {
@@ -322,6 +333,7 @@ pub struct ViewDef {
     pub sort: Vec<SortKey>,
 }
 
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FormSection {
@@ -330,6 +342,7 @@ pub struct FormSection {
     pub columns: Vec<Vec<String>>,
 }
 
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SortKey {
@@ -339,6 +352,7 @@ pub struct SortKey {
 }
 
 /// Whether anonymous visitors may use a record's chatter.
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VisitorChatter {
@@ -356,6 +370,7 @@ fn yes() -> bool {
 }
 
 /// The conversation and history panel of a record. A model has none unless it asks.
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChatterDef {
@@ -389,6 +404,7 @@ impl Default for ChatterDef {
     }
 }
 
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelDef {

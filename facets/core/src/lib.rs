@@ -41,6 +41,8 @@ pub mod record_titles_api;
 pub mod request_log;
 pub mod roles;
 pub mod routes;
+#[cfg(feature = "schemars")]
+pub mod schemas;
 pub mod scheduler;
 pub mod scheduler_api;
 pub mod record_favorites_api;

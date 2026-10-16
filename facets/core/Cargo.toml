@@ -3,7 +3,12 @@ name = "aether_core"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# JSON Schemas of plugin.toml, models and rules (used by `aether --mcp`).
+schemars = ["dep:schemars"]
+
 [dependencies]
+schemars = { version = "1", optional = true }
 # facets
 aether_organization = { path = "../organization" }
 aether_orm = { path = "../orm" }

@@ -77,6 +77,12 @@ struct ReferenceArgs {
 }
 
 #[derive(Deserialize, JsonSchema)]
+struct SchemaArgs {
+    /// manifest, workspace, model or rules.
+    kind: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
 struct ScaffoldArgs {
     /// Plugin name: lower-case letters, digits and `_`.
     name: String,
@@ -124,6 +130,11 @@ impl AetherMcp {
     #[tool(description = "The complete reference page(s) for one file format or feature of plugins: manifest (plugin.toml, workspace.toml), model, pages, rules, commands, cli-commands, lua, rhai, events, scheduler, capabilities. Read the matching reference before writing that kind of file.")]
     async fn get_reference(&self, Parameters(a): Parameters<ReferenceArgs>) -> Result<String, String> {
         tools::get_reference(&a.kind)
+    }
+
+    #[tool(description = "The exact JSON Schema of a plugin file format (manifest = plugin.toml, workspace = workspace.toml, model = models/*.json, rules = rules/*.json), generated from the types the kernel loads it with. Use it to write or check a file field by field; get_reference has the explanations.")]
+    async fn get_schema(&self, Parameters(a): Parameters<SchemaArgs>) -> Result<String, String> {
+        tools::get_schema(&a.kind)
     }
 
     #[tool(description = "Generate the starting files of a new plugin (the same templates as `aether --gen plugin`) and return them as text. Nothing is written to disk: create the files yourself, then run validate_plugin.")]
