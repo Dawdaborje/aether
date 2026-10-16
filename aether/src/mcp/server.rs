@@ -1,6 +1,8 @@
 //! The Model Context Protocol adapter: tools, resources and prompts over the functions in `tools.rs`.
 
 use super::tools;
+use crate::server::docs::{DocsSources, gather};
+use aether_docs::plugin_docs::PluginDocs;
 use aether_docs::{Status, bundle, doc};
 use rmcp::{
     ErrorData, RoleServer, ServerHandler,
@@ -30,11 +32,30 @@ Every page is also a resource at aether-docs://<path>.";
 #[derive(Clone)]
 pub struct AetherMcp {
     tool_router: ToolRouter<Self>,
+    sources: std::sync::Arc<DocsSources>,
+    plugins: std::sync::Arc<tokio::sync::Mutex<Option<(std::time::Instant, std::sync::Arc<Vec<PluginDocs>>)>>>,
 }
 
 impl AetherMcp {
-    pub fn new() -> Self {
-        Self { tool_router: Self::tool_router() }
+    pub fn new(sources: DocsSources) -> Self {
+        Self { tool_router: Self::tool_router(), sources: std::sync::Arc::new(sources), plugins: Default::default() }
+    }
+
+    /// The docs plugins ship, read from the plugin folders; reread every few seconds so an author's edits show.
+    /// This process is run by its owner, so docs of every visibility are included.
+    async fn plugin_docs(&self) -> std::sync::Arc<Vec<PluginDocs>> {
+        if self.sources.entries.is_empty() {
+            return Default::default();
+        }
+        let mut cached = self.plugins.lock().await;
+        if let Some((at, docs)) = cached.as_ref()
+            && at.elapsed() < std::time::Duration::from_secs(5)
+        {
+            return docs.clone();
+        }
+        let fresh = std::sync::Arc::new(gather(&self.sources).await);
+        *cached = Some((std::time::Instant::now(), fresh.clone()));
+        fresh
     }
 }
 
@@ -48,6 +69,8 @@ struct SearchArgs {
     include_proposals: Option<bool>,
     /// How many results (default 8, at most 25).
     limit: Option<usize>,
+    /// Search only the docs a plugin ships (its name, as `list_docs` shows). Without it Aether's pages and every plugin's are searched.
+    plugin: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -56,12 +79,16 @@ struct GetDocArgs {
     path: String,
     /// Only the part of the page under this heading: a section id from `search_docs`, or words of the heading.
     section: Option<String>,
+    /// Read a page of the docs a plugin ships (its name), instead of one of Aether's own pages.
+    plugin: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
 struct ListDocsArgs {
     /// Limit to one section: guide, plugin, architecture or capabilities.
     section: Option<String>,
+    /// List the pages of the docs a plugin ships (its name).
+    plugin: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -102,19 +129,19 @@ struct ValidateArgs {
 
 #[tool_router]
 impl AetherMcp {
-    #[tool(description = "Search the Aether documentation. Returns matching sections with the get_doc call that opens each one. Hides designs that are not built unless include_proposals is set.")]
+    #[tool(description = "Search the Aether documentation, and the docs that plugins ship when plugin folders are configured. Returns matching sections with the get_doc call that opens each one. Hides designs that are not built unless include_proposals is set.")]
     async fn search_docs(&self, Parameters(a): Parameters<SearchArgs>) -> Result<String, String> {
-        tools::search_docs(&a.query, a.section.as_deref(), a.include_proposals.unwrap_or(false), a.limit)
+        tools::search_docs(&a.query, a.section.as_deref(), a.include_proposals.unwrap_or(false), a.limit, a.plugin.as_deref(), &self.plugin_docs().await)
     }
 
-    #[tool(description = "Read a documentation page, or one section of it. Pages marked PROPOSAL are designs that are not built.")]
+    #[tool(description = "Read a documentation page, or one section of it (add plugin=<name> for a page of a plugin\'s own docs, which its author wrote). Pages marked PROPOSAL are designs that are not built.")]
     async fn get_doc(&self, Parameters(a): Parameters<GetDocArgs>) -> Result<String, String> {
-        tools::get_doc(&a.path, a.section.as_deref())
+        tools::get_doc(&a.path, a.section.as_deref(), a.plugin.as_deref(), &self.plugin_docs().await)
     }
 
-    #[tool(description = "List every documentation page with a one-line description, optionally for one section.")]
+    #[tool(description = "List every documentation page with a one-line description, optionally for one section; also lists the plugins that ship docs, and plugin=<name> lists theirs.")]
     async fn list_docs(&self, Parameters(a): Parameters<ListDocsArgs>) -> Result<String, String> {
-        tools::list_docs(a.section.as_deref())
+        tools::list_docs(a.section.as_deref(), a.plugin.as_deref(), &self.plugin_docs().await)
     }
 
     #[tool(description = "List the capability groups a plugin can declare in plugin.toml (db, http, ai, ...).")]
@@ -160,18 +187,27 @@ impl ServerHandler for AetherMcp {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
-        let resources = bundle()
-            .docs
+        let plugins = self.plugin_docs().await;
+        let mut resources: Vec<Resource> = plugins
             .iter()
-            .map(|d| {
+            .flat_map(|p| {
+                p.pages.iter().map(move |d| {
+                    let mut r = Resource::new(format!("{URI_PREFIX}plugins/{}/{}", p.plugin, d.slug), format!("{}/{}", p.plugin, d.slug))
+                        .with_title(format!("{} (plugin {}, written by its author)", d.title, p.plugin))
+                        .with_description(d.description.clone());
+                    r.mime_type = Some("text/markdown".into());
+                    r
+                })
+            })
+            .collect();
+        resources.extend(bundle().docs.iter().map(|d| {
                 let proposal = if d.status == Status::Proposal { " [proposal, not built]" } else { "" };
                 let mut r = Resource::new(format!("{URI_PREFIX}{}", d.slug), d.slug.clone())
                     .with_title(format!("{}{proposal}", d.title))
                     .with_description(d.description.clone());
                 r.mime_type = Some("text/markdown".into());
                 r
-            })
-            .collect();
+            }));
         Ok(ListResourcesResult::with_all_items(resources))
     }
 
@@ -181,8 +217,13 @@ impl ServerHandler for AetherMcp {
         _context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, ErrorData> {
         let slug = request.uri.strip_prefix(URI_PREFIX).unwrap_or(&request.uri);
-        let page = doc(slug).ok_or_else(|| ErrorData::resource_not_found(format!("No documentation page `{slug}`"), None))?;
-        let text = tools::get_doc(&page.slug, None).map_err(|e| ErrorData::internal_error(e, None))?;
+        let text = if let Some(rest) = slug.strip_prefix("plugins/") {
+            let (plugin, page) = rest.split_once('/').unwrap_or((rest, "index"));
+            tools::get_doc(page, None, Some(plugin), &self.plugin_docs().await).map_err(|e| ErrorData::resource_not_found(e, None))?
+        } else {
+            let page = doc(slug).ok_or_else(|| ErrorData::resource_not_found(format!("No documentation page `{slug}`"), None))?;
+            tools::get_doc(&page.slug, None, None, &[]).map_err(|e| ErrorData::internal_error(e, None))?
+        };
         Ok(ReadResourceResult::new(vec![
             ResourceContents::text(text, request.uri.clone()).with_mime_type("text/markdown"),
         ])

@@ -588,7 +588,7 @@ async fn dispatch(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     if args.mcp {
         #[cfg(feature = "mcp")]
-        if let Err(err) = crate::mcp::run_stdio().await {
+        if let Err(err) = crate::mcp::run_stdio(mcp_docs_sources(&args)).await {
             log::error!("MCP server failed: {err}");
             std::process::exit(1);
         }
@@ -745,4 +745,14 @@ fn plugin_paths_from_file(args: &Args) -> Vec<PathBuf> {
         .and_then(|v| v.as_array())
         .map(|list| list.iter().filter_map(|v| v.as_str()).map(|p| if Path::new(p).is_absolute() { PathBuf::from(p) } else { base.join(p) }).collect())
         .unwrap_or_default()
+}
+
+/// Plugin docs for `aether --mcp`: the same folders as `--serve-docs`, but only from disk. The MCP server must
+/// answer its handshake at once and has no business opening a database connection for documentation.
+#[cfg(feature = "mcp")]
+fn mcp_docs_sources(args: &Args) -> crate::server::docs::DocsSources {
+    let mut sources = crate::server::docs::DocsSources { search_roots: super::db::load_search_roots(args).unwrap_or_default(), ..Default::default() };
+    sources.entries.extend(args.plugin_docs.iter().cloned());
+    sources.entries.extend(plugin_paths_from_file(args));
+    sources
 }

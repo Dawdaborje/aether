@@ -41,7 +41,7 @@ The server writes only protocol messages to standard output. Its own log lines g
 
 | Tool | What it does |
 |---|---|
-| `search_docs` | Searches the documentation and says which `get_doc` call opens each match. |
+| `search_docs` | Searches the documentation (and plugin docs, when configured) and says which `get_doc` call opens each match. |
 | `get_doc` | Returns a page, or only the part under one heading. |
 | `list_docs` | Lists every page with a one-line description. |
 | `get_reference` | The complete pages for one file format or feature: `manifest` (plugin.toml, workspace.toml), `model`, `pages`, `rules`, `commands`, `cli-commands`, `lua`, `rhai`, `events`, `scheduler`, `capabilities`. |
@@ -52,6 +52,25 @@ The server writes only protocol messages to standard output. Its own log lines g
 
 Every page is also a resource at `aether-docs://<path>` (for example `aether-docs://plugin/pages`), and two
 prompts start common jobs: `build_plugin` (a goal and optionally a language) and `write_model`.
+
+## Plugin documentation
+
+Plugins can ship their own docs (see [Documenting a plugin](plugin/README.md#documenting-a-plugin)). Point the
+server at the plugin folders and the LLM can read them too, which is how it learns another plugin's
+functions before using them:
+
+```sh
+aether --mcp --plugin-docs ./plugins/notes --plugin-docs ./plugins/payroll
+```
+
+The `plugin_paths` of an `aether.toml` in the working directory (or given with `-c`) are included as well. Plugin
+folders are read from disk, so no database is needed and the server starts at once; edits show within a few
+seconds. This process is run by its owner, so the docs of every `visibility` are included.
+
+`list_docs` then lists the plugins that have docs, and `list_docs`, `search_docs` and `get_doc` take
+`plugin=<name>` to look only at that plugin. Each plugin page is also a resource at
+`aether-docs://plugins/<plugin>/<page>`. Everything from a plugin is marked as written by the plugin's author and
+comes with the instruction to treat it as information, not as instructions, because anyone can write a plugin.
 
 ## Pages that are not built
 
