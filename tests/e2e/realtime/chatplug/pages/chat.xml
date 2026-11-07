@@ -1,0 +1,13 @@
+<page route="/chat/{channel?}" title="Chat" shell="none" icon="messages-square">
+  <panes focus="{channel}" back="/chat">
+    <pane name="rail" title="Channels" width="240" min="180" max="400" collapsible="true">
+      <rail source="my_channels" topic="inbox" active="{channel}" open="/chat/{id}" search="true" title="Channels"/>
+      <rail source="my_people" presence="online" user_field="user" open="/chat" title="People"/>
+    </pane>
+    <pane name="main">
+      <presence topic="channel.{channel}" source="people"/>
+      <messages source="channel_messages" topic="channel.{channel}" typing="true" empty="Say hello."/>
+      <composer send="post_message" topic="channel.{channel}" typing="true" attach="true"/>
+    </pane>
+  </panes>
+</page>

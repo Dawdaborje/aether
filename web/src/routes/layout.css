@@ -1,0 +1,628 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import 'shadcn-svelte/tailwind.css';
+@import '@fontsource-variable/ibm-plex-sans';
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/600.css';
+/* The Neutral theme (plugins/base/theme_neutral) is set in Noto Sans. */
+@import '@fontsource-variable/noto-sans';
+
+@custom-variant dark (&:is(.dark *));
+@plugin '@tailwindcss/forms';
+@plugin '@tailwindcss/typography';
+
+/*
+ * Built-in default theme (IBM Carbon: White for light, Gray 100 for dark): the same
+ * values as lib/theme/default-theme.json (a test checks).
+ */
+:root {
+	--background: #ffffff;
+	--foreground: #161616;
+	--canvas: #ffffff;
+	--card: #f4f4f4;
+	--card-foreground: #161616;
+	--popover: #f4f4f4;
+	--popover-foreground: #161616;
+	--primary: #0f62fe;
+	--primary-foreground: #ffffff;
+	--primary-hover: #0050e6;
+	--secondary: #393939;
+	--secondary-foreground: #ffffff;
+	--secondary-hover: #474747;
+	--muted: #e0e0e0;
+	--muted-foreground: #525252;
+	--accent: #e8e8e8;
+	--accent-foreground: #161616;
+	--destructive: #da1e28;
+	--success: #24a148;
+	--success-foreground: #ffffff;
+	--warning: #f1c21b;
+	--warning-foreground: #161616;
+	--info: #0043ce;
+	--info-foreground: #ffffff;
+	--border: #c6c6c6;
+	--border-strong: #8d8d8d;
+	--input: #8d8d8d;
+	--ring: #0f62fe;
+	--field: #f4f4f4;
+	--field-hover: #e8e8e8;
+	--layer-hover: #e8e8e8;
+	--highlight: #f1c21b;
+	--highlight-foreground: #161616;
+	--sidebar: #ffffff;
+	--sidebar-foreground: #525252;
+	--sidebar-primary: #0f62fe;
+	--sidebar-primary-foreground: #ffffff;
+	--sidebar-accent: #e8e8e8;
+	--sidebar-accent-foreground: #161616;
+	--sidebar-border: #e0e0e0;
+	--sidebar-ring: #0f62fe;
+	--chart-1: #6929c4;
+	--chart-2: #1192e8;
+	--chart-3: #005d5d;
+	--chart-4: #9f1853;
+	--chart-5: #fa4d56;
+	--radius: 0;
+	--font-sans: 'IBM Plex Sans Variable', 'IBM Plex Sans', 'Helvetica Neue', Arial, sans-serif;
+	--font-mono: 'IBM Plex Mono', Menlo, 'Courier New', monospace;
+	--font-heading: var(--font-sans);
+}
+
+.dark {
+	--background: #161616;
+	--foreground: #f4f4f4;
+	--canvas: #161616;
+	--card: #262626;
+	--card-foreground: #f4f4f4;
+	--popover: #262626;
+	--popover-foreground: #f4f4f4;
+	--primary: #0f62fe;
+	--primary-foreground: #ffffff;
+	--primary-hover: #0050e6;
+	--secondary: #6f6f6f;
+	--secondary-foreground: #ffffff;
+	--secondary-hover: #5e5e5e;
+	--muted: #393939;
+	--muted-foreground: #c6c6c6;
+	--accent: #333333;
+	--accent-foreground: #f4f4f4;
+	--destructive: #fa4d56;
+	--success: #42be65;
+	--success-foreground: #161616;
+	--warning: #f1c21b;
+	--warning-foreground: #161616;
+	--info: #4589ff;
+	--info-foreground: #161616;
+	--border: #393939;
+	--border-strong: #6f6f6f;
+	--input: #6f6f6f;
+	--ring: #ffffff;
+	--field: #262626;
+	--field-hover: #333333;
+	--layer-hover: #333333;
+	--highlight: #f1c21b;
+	--highlight-foreground: #161616;
+	--sidebar: #161616;
+	--sidebar-foreground: #c6c6c6;
+	--sidebar-primary: #0f62fe;
+	--sidebar-primary-foreground: #ffffff;
+	--sidebar-accent: #333333;
+	--sidebar-accent-foreground: #f4f4f4;
+	--sidebar-border: #393939;
+	--sidebar-ring: #ffffff;
+	--chart-1: #8a3ffc;
+	--chart-2: #33b1ff;
+	--chart-3: #007d79;
+	--chart-4: #ff7eb6;
+	--chart-5: #fa4d56;
+}
+
+/*
+ * Theme `density`: Tailwind derives every padding, gap and height from `--spacing`, so
+ * one value tightens or loosens the whole app. `comfortable` is Tailwind's own 0.25rem.
+ */
+/* The corner-radius scale and roles (see "Shape" in docs/architecture/themes.md). The scale
+   follows the theme's `radius`; each role uses a step. A theme's `shape` overrides any of
+   them. With the default `radius` of 0 everything is square except chips and avatars. */
+:root {
+	/* Carbon is flat: only floating surfaces (menus, popovers, dialogs) cast a shadow. */
+	--elevation-2xs: none;
+	--elevation-xs: none;
+	--elevation-sm: none;
+	--elevation-md: 0 2px 6px rgb(0 0 0 / 0.3);
+	--elevation-lg: 0 2px 6px rgb(0 0 0 / 0.3);
+	--elevation-xl: 0 2px 6px rgb(0 0 0 / 0.3);
+	--elevation-2xl: 0 2px 6px rgb(0 0 0 / 0.3);
+	--motion-duration-short: 100ms;
+	--motion-duration-medium: 200ms;
+	--motion-easing-standard: cubic-bezier(0.2, 0, 0.38, 0.9);
+	--motion-easing-emphasized: cubic-bezier(0.4, 0.14, 0.3, 1);
+	--shape-xs: calc(var(--radius) * 0.3);
+	--shape-sm: calc(var(--radius) * 0.6);
+	--shape-md: calc(var(--radius) * 0.8);
+	--shape-lg: var(--radius);
+	--shape-xl: calc(var(--radius) * 1.4);
+	--shape-2xl: calc(var(--radius) * 1.8);
+	--shape-3xl: calc(var(--radius) * 2.2);
+	--shape-4xl: calc(var(--radius) * 2.6);
+	--shape-button: var(--shape-md);
+	--shape-field: var(--shape-md);
+	--shape-card: var(--shape-lg);
+	--shape-chip: calc(infinity * 1px);
+	--shape-menu: var(--shape-md);
+	--shape-dialog: var(--shape-lg);
+	--shape-tooltip: var(--shape-md);
+	--shape-tile: var(--shape-lg);
+	--shape-avatar: calc(infinity * 1px);
+}
+
+/* The type roles (see "Type" in docs/architecture/themes.md). The defaults are Carbon's
+   productive set; a theme's `type` overrides any property of any role, and its `scale`
+   overrides Tailwind's `--text-<step>` sizes, which the roles below read. */
+:root {
+	/* display: page headings (`h1`) */
+	--type-display-size: 2rem;
+	--type-display-leading: 2.5rem;
+	--type-display-weight: 400;
+	--type-display-tracking: 0;
+	--type-display-family: var(--font-heading);
+	--type-display-case: none;
+	/* headline: dialog titles, `h2` */
+	--type-headline-size: var(--text-xl);
+	--type-headline-leading: 1.75rem;
+	--type-headline-weight: 400;
+	--type-headline-tracking: 0;
+	--type-headline-family: var(--font-heading);
+	--type-headline-case: none;
+	/* title: the page title in the shell */
+	--type-title-size: var(--text-base);
+	--type-title-leading: 1.5rem;
+	--type-title-weight: 600;
+	--type-title-tracking: -0.025em;
+	--type-title-family: var(--font-sans);
+	--type-title-case: none;
+	/* heading: section and sheet titles */
+	--type-heading-size: var(--text-lg);
+	--type-heading-leading: 1.75rem;
+	--type-heading-weight: 600;
+	--type-heading-tracking: 0;
+	--type-heading-family: var(--font-heading);
+	--type-heading-case: none;
+	/* subheading: card titles, `h3` */
+	--type-subheading-size: var(--text-base);
+	--type-subheading-leading: 1.5rem;
+	--type-subheading-weight: 600;
+	--type-subheading-tracking: 0;
+	--type-subheading-family: var(--font-heading);
+	--type-subheading-case: none;
+	/* body: running text */
+	--type-body-size: var(--text-sm);
+	--type-body-leading: 1.25rem;
+	--type-body-weight: 400;
+	--type-body-tracking: 0.16px;
+	--type-body-family: var(--font-sans);
+	--type-body-case: none;
+	/* label: field labels */
+	--type-label-size: var(--text-xs);
+	--type-label-leading: 1rem;
+	--type-label-weight: 400;
+	--type-label-tracking: 0.32px;
+	--type-label-family: var(--font-sans);
+	--type-label-case: none;
+	/* caption: small headings over values */
+	--type-caption-size: var(--text-xs);
+	--type-caption-leading: 1rem;
+	--type-caption-weight: 500;
+	--type-caption-tracking: 0.025em;
+	--type-caption-family: var(--font-sans);
+	--type-caption-case: uppercase;
+	/* metric: key figures */
+	--type-metric-size: var(--text-2xl);
+	--type-metric-leading: 2rem;
+	--type-metric-weight: 600;
+	--type-metric-tracking: 0;
+	--type-metric-family: var(--font-sans);
+	--type-metric-case: none;
+	/* button: button labels */
+	--type-button-size: var(--text-sm);
+	--type-button-leading: 1.25rem;
+	--type-button-weight: 400;
+	--type-button-tracking: 0.16px;
+	--type-button-family: var(--font-sans);
+	--type-button-case: none;
+	/* column: table column headers */
+	--type-column-size: var(--text-sm);
+	--type-column-leading: 1.25rem;
+	--type-column-weight: 600;
+	--type-column-tracking: 0.16px;
+	--type-column-family: var(--font-sans);
+	--type-column-case: none;
+}
+
+/* `type-<role>` sets text in a role. Size utilities placed after it (`text-lg`) still win. */
+@utility type-display {
+	font-family: var(--type-display-family);
+	font-size: var(--type-display-size);
+	line-height: var(--type-display-leading);
+	font-weight: var(--type-display-weight);
+	letter-spacing: var(--type-display-tracking);
+	text-transform: var(--type-display-case);
+}
+@utility type-headline {
+	font-family: var(--type-headline-family);
+	font-size: var(--type-headline-size);
+	line-height: var(--type-headline-leading);
+	font-weight: var(--type-headline-weight);
+	letter-spacing: var(--type-headline-tracking);
+	text-transform: var(--type-headline-case);
+}
+@utility type-title {
+	font-family: var(--type-title-family);
+	font-size: var(--type-title-size);
+	line-height: var(--type-title-leading);
+	font-weight: var(--type-title-weight);
+	letter-spacing: var(--type-title-tracking);
+	text-transform: var(--type-title-case);
+}
+@utility type-heading {
+	font-family: var(--type-heading-family);
+	font-size: var(--type-heading-size);
+	line-height: var(--type-heading-leading);
+	font-weight: var(--type-heading-weight);
+	letter-spacing: var(--type-heading-tracking);
+	text-transform: var(--type-heading-case);
+}
+@utility type-subheading {
+	font-family: var(--type-subheading-family);
+	font-size: var(--type-subheading-size);
+	line-height: var(--type-subheading-leading);
+	font-weight: var(--type-subheading-weight);
+	letter-spacing: var(--type-subheading-tracking);
+	text-transform: var(--type-subheading-case);
+}
+@utility type-body {
+	font-family: var(--type-body-family);
+	font-size: var(--type-body-size);
+	line-height: var(--type-body-leading);
+	font-weight: var(--type-body-weight);
+	letter-spacing: var(--type-body-tracking);
+	text-transform: var(--type-body-case);
+}
+@utility type-label {
+	font-family: var(--type-label-family);
+	font-size: var(--type-label-size);
+	line-height: var(--type-label-leading);
+	font-weight: var(--type-label-weight);
+	letter-spacing: var(--type-label-tracking);
+	text-transform: var(--type-label-case);
+}
+@utility type-caption {
+	font-family: var(--type-caption-family);
+	font-size: var(--type-caption-size);
+	line-height: var(--type-caption-leading);
+	font-weight: var(--type-caption-weight);
+	letter-spacing: var(--type-caption-tracking);
+	text-transform: var(--type-caption-case);
+}
+@utility type-metric {
+	font-family: var(--type-metric-family);
+	font-size: var(--type-metric-size);
+	line-height: var(--type-metric-leading);
+	font-weight: var(--type-metric-weight);
+	letter-spacing: var(--type-metric-tracking);
+	text-transform: var(--type-metric-case);
+}
+
+@utility type-button {
+	font-family: var(--type-button-family);
+	font-size: var(--type-button-size);
+	line-height: var(--type-button-leading);
+	font-weight: var(--type-button-weight);
+	letter-spacing: var(--type-button-tracking);
+	text-transform: var(--type-button-case);
+}
+
+@utility type-column {
+	font-family: var(--type-column-family);
+	font-size: var(--type-column-size);
+	line-height: var(--type-column-leading);
+	font-weight: var(--type-column-weight);
+	letter-spacing: var(--type-column-tracking);
+	text-transform: var(--type-column-case);
+}
+
+:root[data-density='compact'] {
+	--spacing: 0.225rem;
+}
+:root[data-density='spacious'] {
+	--spacing: 0.275rem;
+}
+
+/*
+ * Layout regions (`components/layout/composed`). A region's `tone` sets these; its
+ * blocks only use the `region-*` colours, so they read well in any region.
+ * `default` is the chrome colours a theme sets with the `sidebar*` tokens.
+ */
+.tone-default {
+	--region: var(--sidebar);
+	--region-foreground: var(--sidebar-foreground);
+	--region-muted-foreground: color-mix(in oklab, var(--sidebar-foreground) 72%, transparent);
+	--region-hover: var(--sidebar-accent);
+	--region-hover-foreground: var(--sidebar-accent-foreground);
+	--region-active: var(--sidebar-accent);
+	--region-primary: var(--sidebar-primary);
+	--region-border: var(--sidebar-border);
+	--region-ring: var(--sidebar-ring);
+}
+.tone-muted {
+	--region: var(--muted);
+	--region-foreground: var(--foreground);
+	--region-muted-foreground: var(--muted-foreground);
+	--region-hover: color-mix(in oklab, var(--foreground) 7%, transparent);
+	--region-hover-foreground: var(--foreground);
+	--region-active: color-mix(in oklab, var(--foreground) 9%, transparent);
+	--region-primary: var(--primary);
+	--region-border: var(--border);
+	--region-ring: var(--ring);
+}
+.tone-primary {
+	--region: var(--primary);
+	--region-foreground: var(--primary-foreground);
+	--region-muted-foreground: color-mix(in oklab, var(--primary-foreground) 78%, transparent);
+	--region-hover: color-mix(in oklab, var(--primary-foreground) 14%, transparent);
+	--region-hover-foreground: var(--primary-foreground);
+	--region-active: color-mix(in oklab, var(--primary-foreground) 18%, transparent);
+	--region-primary: var(--primary-foreground);
+	--region-border: color-mix(in oklab, var(--primary-foreground) 16%, transparent);
+	--region-ring: var(--primary-foreground);
+}
+.tone-inverted {
+	--region: var(--foreground);
+	--region-foreground: var(--background);
+	--region-muted-foreground: color-mix(in oklab, var(--background) 70%, transparent);
+	--region-hover: color-mix(in oklab, var(--background) 12%, transparent);
+	--region-hover-foreground: var(--background);
+	--region-active: color-mix(in oklab, var(--background) 16%, transparent);
+	--region-primary: var(--background);
+	--region-border: color-mix(in oklab, var(--background) 14%, transparent);
+	--region-ring: var(--background);
+}
+
+@theme inline {
+	--font-sans: var(--font-sans);
+	--font-mono: var(--font-mono);
+	--font-heading: var(--font-heading);
+	--color-region: var(--region);
+	--color-region-foreground: var(--region-foreground);
+	--color-region-muted-foreground: var(--region-muted-foreground);
+	--color-region-hover: var(--region-hover);
+	--color-region-hover-foreground: var(--region-hover-foreground);
+	--color-region-active: var(--region-active);
+	--color-region-primary: var(--region-primary);
+	--color-region-border: var(--region-border);
+	--color-region-ring: var(--region-ring);
+	--color-canvas: var(--canvas);
+	--color-field: var(--field);
+	--color-field-hover: var(--field-hover);
+	--color-layer-hover: var(--layer-hover);
+	--color-border-strong: var(--border-strong);
+	--color-primary-hover: var(--primary-hover);
+	--color-secondary-hover: var(--secondary-hover);
+	/* Elevation: values live in `:root` (`--elevation-*`) so a theme can replace them. */
+	--shadow-2xs: var(--elevation-2xs);
+	--shadow-xs: var(--elevation-xs);
+	--shadow-sm: var(--elevation-sm);
+	--shadow-md: var(--elevation-md);
+	--shadow-lg: var(--elevation-lg);
+	--shadow-xl: var(--elevation-xl);
+	--shadow-2xl: var(--elevation-2xl);
+	--default-transition-duration: var(--motion-duration-short);
+	--default-transition-timing-function: var(--motion-easing-standard);
+	--color-highlight: var(--highlight);
+	--color-success: var(--success);
+	--color-success-foreground: var(--success-foreground);
+	--color-warning: var(--warning);
+	--color-warning-foreground: var(--warning-foreground);
+	--color-info: var(--info);
+	--color-info-foreground: var(--info-foreground);
+	--color-highlight-foreground: var(--highlight-foreground);
+	--color-sidebar-ring: var(--sidebar-ring);
+	--color-sidebar-border: var(--sidebar-border);
+	--color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+	--color-sidebar-accent: var(--sidebar-accent);
+	--color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+	--color-sidebar-primary: var(--sidebar-primary);
+	--color-sidebar-foreground: var(--sidebar-foreground);
+	--color-sidebar: var(--sidebar);
+	--color-chart-5: var(--chart-5);
+	--color-chart-4: var(--chart-4);
+	--color-chart-3: var(--chart-3);
+	--color-chart-2: var(--chart-2);
+	--color-chart-1: var(--chart-1);
+	--color-ring: var(--ring);
+	--color-input: var(--input);
+	--color-border: var(--border);
+	--color-destructive: var(--destructive);
+	--color-accent-foreground: var(--accent-foreground);
+	--color-accent: var(--accent);
+	--color-muted-foreground: var(--muted-foreground);
+	--color-muted: var(--muted);
+	--color-secondary-foreground: var(--secondary-foreground);
+	--color-secondary: var(--secondary);
+	--color-primary-foreground: var(--primary-foreground);
+	--color-primary: var(--primary);
+	--color-popover-foreground: var(--popover-foreground);
+	--color-popover: var(--popover);
+	--color-card-foreground: var(--card-foreground);
+	--color-card: var(--card);
+	--color-foreground: var(--foreground);
+	--color-background: var(--background);
+	/* `rounded-<step>` and `rounded-<role>` read the `--shape-*` variables below, which a
+	   theme's `shape` overrides at runtime (applyTheme.ts). `@theme inline` copies these
+	   values into the utilities, so they must stay plain `var()` references. */
+	--radius-xs: var(--shape-xs);
+	--radius-sm: var(--shape-sm);
+	--radius-md: var(--shape-md);
+	--radius-lg: var(--shape-lg);
+	--radius-xl: var(--shape-xl);
+	--radius-2xl: var(--shape-2xl);
+	--radius-3xl: var(--shape-3xl);
+	--radius-4xl: var(--shape-4xl);
+	--radius-button: var(--shape-button);
+	--radius-field: var(--shape-field);
+	--radius-card: var(--shape-card);
+	--radius-chip: var(--shape-chip);
+	--radius-menu: var(--shape-menu);
+	--radius-dialog: var(--shape-dialog);
+	--radius-tooltip: var(--shape-tooltip);
+	--radius-tile: var(--shape-tile);
+	--radius-avatar: var(--shape-avatar);
+}
+
+@layer base {
+	* {
+		@apply border-border outline-ring/50;
+	}
+	body {
+		@apply bg-background text-foreground antialiased;
+		/* The body role: Carbon body-01, 14px / 20px with 0.16px tracking, by default. */
+		font-family: var(--type-body-family);
+		font-size: var(--type-body-size);
+		line-height: var(--type-body-leading);
+		font-weight: var(--type-body-weight);
+		letter-spacing: var(--type-body-tracking);
+		text-rendering: optimizeLegibility;
+	}
+	html {
+		@apply font-sans;
+		scrollbar-gutter: stable;
+	}
+	::selection {
+		background: color-mix(in oklch, var(--primary) 22%, transparent);
+	}
+	/* Carbon focus: a 2px ring drawn inside the element. */
+	:focus-visible {
+		outline: 2px solid var(--ring);
+		outline-offset: -2px;
+	}
+	h1,
+	h2,
+	h3 {
+		font-family: var(--font-heading);
+		letter-spacing: 0;
+	}
+	/* Headings without a size class of their own: h1 is the display role, h2 the headline,
+	   h3 the subheading. */
+	h1:not([class*='text-']):not([class*='type-']) {
+		@apply type-display;
+	}
+	h2:not([class*='text-']):not([class*='type-']) {
+		@apply type-headline;
+	}
+	h3:not([class*='text-']):not([class*='type-']) {
+		@apply type-subheading;
+	}
+}
+
+@keyframes loading {
+	0% {
+		transform: translateX(-100%);
+	}
+	100% {
+		transform: translateX(300%);
+	}
+}
+
+@utility duration-short {
+	transition-duration: var(--motion-duration-short);
+}
+@utility duration-medium {
+	transition-duration: var(--motion-duration-medium);
+}
+@utility ease-standard {
+	transition-timing-function: var(--motion-easing-standard);
+}
+@utility ease-emphasized {
+	transition-timing-function: var(--motion-easing-emphasized);
+}
+
+/*
+ * Field and table looks a theme can pick (`field`, `table` in the theme file; applyTheme sets
+ * data-field, data-table-header, data-table-rows and data-table-density on the root). Carbon's
+ * own look, the bottom line and filled header, is what the components draw when none is set.
+ * These rules are unlayered so they beat the components' utility classes.
+ */
+:root[data-field='outline'] :is([data-slot='input'], [data-slot='textarea'], [data-slot='native-select'], [data-slot='date-picker'], [class*='border-border-strong'][class*='bg-field']) {
+	border: 1px solid var(--border-strong);
+	background-color: var(--card);
+}
+:root[data-field='outline'] :is([data-slot='input'], [data-slot='textarea'], [data-slot='native-select'], [data-slot='date-picker'], [class*='border-border-strong'][class*='bg-field']):hover {
+	border-color: var(--foreground);
+	background-color: var(--card);
+}
+:root[data-field='outline'] :is([data-slot='input'], [data-slot='textarea'], [data-slot='native-select'], [data-slot='date-picker'], [class*='border-border-strong'][class*='bg-field']):is(:focus, :focus-within) {
+	border-color: var(--primary);
+	box-shadow: inset 0 -1px 0 var(--primary);
+	outline: none;
+}
+:root[data-field='filled'] :is([data-slot='input'], [data-slot='textarea'], [data-slot='native-select'], [data-slot='date-picker'], [class*='border-border-strong'][class*='bg-field']) {
+	border: 0;
+	border-bottom: 2px solid transparent;
+	background-color: var(--muted);
+}
+:root[data-field='filled'] :is([data-slot='input'], [data-slot='textarea'], [data-slot='native-select'], [data-slot='date-picker'], [class*='border-border-strong'][class*='bg-field']):is(:focus, :focus-within) {
+	border-bottom-color: var(--primary);
+	outline: none;
+}
+
+:root[data-table-header='plain'] [data-slot='table-head'] {
+	background-color: transparent;
+	border-bottom: 1px solid var(--border-strong);
+}
+:root[data-table-header='bold'] [data-slot='table-head'] {
+	background-color: transparent;
+	border-bottom: 2px solid var(--foreground);
+}
+:root[data-table-rows='zebra'] [data-slot='table-body'] > tr:nth-child(even) {
+	background-color: color-mix(in oklab, var(--foreground) 4%, transparent);
+}
+:root[data-table-rows='plain'] [data-slot='table-row'] {
+	border-bottom-color: transparent;
+}
+:root[data-table-density='compact'] [data-slot='table-cell'] {
+	padding-block: 0.375rem;
+}
+:root[data-table-density='compact'] [data-slot='table-head'] {
+	height: 2.25rem;
+}
+:root[data-table-density='relaxed'] [data-slot='table-cell'] {
+	padding-block: 1.25rem;
+}
+
+/*
+ * A sidebar in `rail` mode (or folded to a rail): each link is its icon with a short label
+ * under it, and groups show only their links' icons.
+ */
+[data-rail='true'] [data-part='nav.link'] {
+	flex-direction: column;
+	justify-content: center;
+	gap: 0.125rem;
+	padding-inline: 0.125rem;
+	font-size: 0.625rem;
+	line-height: 1.1;
+	text-align: center;
+	white-space: normal;
+}
+[data-rail='true'] [data-part='nav.link'] svg {
+	width: 1.25rem;
+	height: 1.25rem;
+}
+[data-rail='true'] [data-part='nav.link'] > span {
+	max-width: 100%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+[data-rail='true'] [data-slot='collapsible-content'] {
+	display: none;
+}

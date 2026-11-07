@@ -1,0 +1,44 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>sfu dev</title>
+<style>body{font:14px sans-serif;margin:1rem}video{width:240px;height:180px;background:#222;margin:4px}</style>
+<h3 id="state">starting</h3>
+<div id="local"></div>
+<div id="remote"></div>
+<script type="module">
+// The real browser client (web/src/lib/call/client.ts), served as /call-client.js by the dev server.
+import { CallClient } from '/call-client.js';
+const q = new URLSearchParams(location.search);
+const room = q.get('room') || 'dev', user = q.get('user') || 'u' + Math.random().toString(36).slice(2, 6);
+const peers = [];
+const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: { width: { ideal: 960 }, height: { ideal: 540 } } });
+const mine = document.createElement('video'); mine.srcObject = stream; mine.autoplay = true; mine.muted = true;
+document.getElementById('local').appendChild(mine);
+const draw = () => {
+  document.getElementById('state').textContent = client.state;
+  const box = document.getElementById('remote');
+  for (const [sid, s] of client.streams) {
+    if (box.querySelector(`[data-sid="${sid}"]`)) continue;
+    const el = document.createElement('video'); el.dataset.sid = sid; el.autoplay = true; el.muted = true; el.srcObject = s;
+    box.appendChild(el);
+  }
+  for (const el of [...box.children]) if (!client.streams.has(el.dataset.sid)) el.remove();
+};
+const client = new CallClient({
+  url: `ws://${location.host}/ws?room=${encodeURIComponent(room)}&user=${encodeURIComponent(user)}`,
+  stream,
+  peer: (config) => { const p = new RTCPeerConnection(config); peers.push(p); return p; },
+  onChange: draw
+});
+window.client = client;
+// What this page is receiving, for the test: packets per kind, and whether pictures are decoding.
+window.received = async () => {
+  const out = { audio: 0, video: 0, frames: 0, tracks: peers[1] ? peers[1].getReceivers().length : 0 };
+  if (peers[1]) (await peers[1].getStats()).forEach((s) => {
+    if (s.type === 'inbound-rtp') { out[s.kind] += s.packetsReceived || 0; if (s.kind === 'video') out.frames += s.framesDecoded || 0; }
+  });
+  return out;
+};
+window.roster = () => client.roster.map((p) => p.user).sort();
+client.start();
+</script>

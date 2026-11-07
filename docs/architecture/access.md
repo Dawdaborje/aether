@@ -1,0 +1,200 @@
+---
+title: "Visitors, public pages and the audit trail"
+description: "Plugins can serve pages and functions to people who are not logged in. Anonymous access is opt-in per page and per function, every anonymous caller has an identity, and everything they do is recorded."
+section: architecture
+status: stable
+order: 20
+---
+# Visitors, public pages and the audit trail
+
+Plugins can serve pages and functions to people who are not logged in. Anonymous
+access is opt-in per page and per function, every anonymous caller has an
+identity, and everything they do is recorded.
+
+## Declaring public pages
+
+A page is an XML file under the plugin's `pages/` folder. Its root element
+declares the route and who may open it:
+
+```xml
+<page route="/messages" public="true" title="Messages" model="message">
+  <view type="list" model="message"> ... </view>
+</page>
+```
+
+- `route` is required: absolute, with segments of letters, digits and `- _ .`.
+  `/` is a valid route.
+- A segment written `{name}` is a parameter that matches one non-empty path
+  segment: `route="/chat/{channel}"` serves `/chat/general` with
+  `params = { channel: "general" }` (returned by the page API and passed to the
+  page as `page.params`). Names are lowercase letters, digits and `_`, and there
+  are no catch-all parameters. Treat parameter values as untrusted input.
+- When several pages match a URL, an exact route beats a pattern, and among
+  patterns the one with more literal segments wins (`/chat/new` over
+  `/chat/{channel}`).
+- Two pages cannot match the same URLs. Routes with the same *shape* conflict,
+  so `/chat/{channel}` and `/chat/{room}` do; `/chat/new` and `/chat/{channel}`
+  do not. The check covers one plugin when it is loaded, and the plugins already
+  installed when you install another into an organization.
+- `public` is `"true"` or `"false"`. Anything else is an error, and the default
+  is `false`: **private**.
+- There is no page table in `plugin.toml`. A `[[pages]]` table is rejected.
+- Every model a page names (`model="..."`) must be declared by the plugin, in
+  `[[models]]` or an access list. Pages are validated when the plugin is loaded.
+
+## What an anonymous visitor can do
+
+By default: read the models that the plugin's public pages show, and nothing
+else. Anything more is declared in `plugin.toml`:
+
+```toml
+[plugin]
+capabilities        = ["db::query", "db::mutate"]
+public_functions    = ["post_guestbook"]            # callable by anonymous visitors
+public_capabilities = ["db::mutate"]                # subset of `capabilities`
+public_access_models = [{ name = "guestbook", permissions = ["write"] }]
+```
+
+- Public pages grant read access (`db::query`) to the models they name.
+- `public_functions` lists the functions anonymous callers may invoke; the check
+  happens before any WASM is compiled.
+- Writing needs both a `public_capabilities` entry (`db::mutate`) and a model
+  entry with `write`. A model listed with `write` is writable by anyone.
+- A model in `public_access_models` is opened to visitors on purpose, so its record rules
+  (`rules/<model>.json`) do not apply to anonymous calls: a visitor holds no role a rule could name.
+  The plugin's public functions must do their own check of what a visitor may reach (a token, an
+  owner). A model that a public page only shows keeps its rules.
+- There is no raw SurQL for anyone: plugins reach the database only through the
+  structured `db::*` commands, on the models they were granted.
+
+## Visitors
+
+The first request to a public page (or public function) creates a `visitors`
+row in the organization database and sets an HttpOnly `aether_visitor` cookie
+(`Secure` unless `is_development_mode`). The row's id is the actor in the audit
+trail, so everything one browser did can be followed. When that browser logs in,
+the visitor is linked to the user (`visitors.linked_user`).
+
+A logged-in user from a different
+organization is treated as a visitor on public pages and gets `403` on private
+ones.
+
+Anonymous requests have no session to name an organization, so it is always the installation's
+one organization.
+
+## Rate limits
+
+Two per-client-address limits apply to anyone who is not a logged-in user, over
+a one-minute window held in memory (per server process):
+
+- `[public] max_requests_per_ip_per_minute` (default 300): page and plugin-call
+  requests. Over the limit the answer is `429` with `Retry-After: 60`. Requests
+  without a session cookie are refused before any database work. Logged-in
+  users are not limited.
+- `[public] max_new_visitors_per_ip_per_minute` (default 30): new visitor
+  identities, since each is a stored row.
+- `[public] max_login_attempts_per_ip_per_minute` (default 20): sign-in attempts
+  (password, magic link, OAuth start and callback) from one address, whether they
+  succeed or not. Over the limit: `429` with `Retry-After`.
+- `[public] max_failed_logins_per_user_per_minute` (default 10): failed passwords
+  for one username, from any address. Further attempts for that name get `429`
+  for the rest of the minute. Only failures count, so successful sign-ins never
+  lock anyone out. Names are compared without case or surrounding spaces.
+
+A refused sign-in never says why beyond "invalid credentials": an unknown
+username, a missing password and a wrong password all take one password hash and
+give the same answer, and a switched-off account is only reported to someone who
+knew its password. The typed username is not written to the log.
+
+Refused requests are not written to the audit trail, so a flood cannot also
+become a flood of audit rows. The client address is the TCP peer unless the peer
+is listed in `[server] trusted_proxies`; put a proxy's address there if one sits
+in front of Aether, or every visitor shares one budget.
+
+## The audit trail
+
+Written to the organization database, append-only, by the kernel only:
+
+| Table | Records |
+|---|---|
+| `page_visits` | actor, plugin, route (the page as declared, e.g. `/chat/{channel}`), path (what was requested, e.g. `/chat/general`), status (including 401/403/404/429 refusals), IP, user agent |
+| `plugin_calls` | actor, plugin, function, status, IP |
+| `data_access` | actor, plugin, function, model, table, operation (`read`/`create`/`update`/`delete`), **record ids**, count, IP |
+
+Rows for one request share a `request_id`. Every `db::*` command writes its
+`data_access` row in the same transaction as the work, so there is never an
+access without a record. **If an audit row cannot be written, the request fails**
+and the change is rolled back. `db::find` returns at most 1000 rows.
+
+Plugins cannot map a model onto the audit tables (or other kernel tables). Field and
+order names must be plain identifiers and values are always bound as values, so a
+plugin cannot shape a query beyond what the structured commands allow.
+
+### Configuration (`aether.toml`)
+
+```toml
+[server]
+trusted_proxies = ["10.0.0.1"]   # only these may set X-Forwarded-For
+request_timeout_secs = 30        # answer 504 after this long (default 30; 0 = no limit)
+# csrf_trusted_origins = ["http://localhost:5173"]  # Vite / other non-same-origin UIs
+
+[audit]
+ip = "full"                      # "full" | "truncated" | "hashed"
+ip_hash_key = "..."              # required for "hashed" (16+ characters)
+retention_days = 365             # omit to keep forever
+
+[public]
+max_requests_per_ip_per_minute = 300
+max_new_visitors_per_ip_per_minute = 30
+max_login_attempts_per_ip_per_minute = 20
+max_failed_logins_per_user_per_minute = 10
+```
+
+- `truncated` keeps the IPv4 `/24` or IPv6 `/48`; `hashed` stores a keyed hash
+  (rows from one address still match each other, the address cannot be read back).
+- `retention_days` deletes older audit rows (for a chained table, up to a checkpoint, see [Audit chain](audit_chain.md)) and long-unseen visitors, hourly while
+  the server runs. `aether --purge-audit` does it once and exits.
+- Without `trusted_proxies`, the TCP peer is the client address, so the header
+  cannot be used to forge audit entries.
+
+## CSRF protection
+
+Browser calls that can change state use cookie sessions, so mutating `/api`
+requests are gated:
+
+1. **Double-submit token** — a readable `aether_csrf` cookie must match the
+   `X-CSRF-Token` request header. The cookie is issued on `/api` responses when
+   missing, and rotated on login, logout, OAuth success, and organization switch.
+2. **Origin / Sec-Fetch-Site** — cross-site unsafe methods are rejected. The
+   allowlist is the request's own origin (from `Host`, or forwarded host/proto
+   only through `trusted_proxies`) plus `[server] csrf_trusted_origins` (needed
+   when Vite proxies `/api` from another port).
+3. **OAuth** — `GET /api/auth/oauth/{provider}/start` stores an HttpOnly
+   `aether_oauth_state` cookie; the callback must present the same `state` query
+   value or the session is not created. A `redirect_uri` the caller names must be
+   on this server's origin or one of `csrf_trusted_origins`; anything else is
+   refused with `400`, so a crafted link cannot send the authorization code to
+   another site.
+
+`GET` / `HEAD` / `OPTIONS` (including notification SSE streams) are not checked
+for the CSRF header. The session cookie `aether_session` is `HttpOnly`,
+`SameSite=Lax`, and `Secure` unless `is_development_mode`.
+
+## Response headers
+
+Every response carries `X-Content-Type-Options: nosniff`, `X-Frame-Options: SAMEORIGIN`,
+`Referrer-Policy: strict-origin-when-cross-origin` and a narrow
+`Content-Security-Policy` (`frame-ancestors 'self'; base-uri 'none'; form-action 'self'`),
+so another site cannot frame the server. `Strict-Transport-Security` is added unless
+`is_development_mode` is on. A header an endpoint sets itself wins: uploaded media and
+plugin files are served with `sandbox`, so a file opened on its own cannot run as the
+signed-in person. The policy says nothing about scripts, because the web app may be
+served from another origin; whoever serves the web app sets its script policy.
+
+The web app shows an amber "Development mode · not for production" strip along the bottom of every
+screen, the login page included, while `is_development_mode` is on. It reads the flag from the public
+`GET /api/ui/branding` answer (`development_mode`), which also tells a stranger the server is in that mode.
+
+At start-up the server warns when the database user is `root` with the password `root`
+while the server or the database is reachable from the network, and when
+`is_development_mode` is on while the server listens on a network address.

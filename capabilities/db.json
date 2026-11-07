@@ -1,0 +1,42 @@
+{
+  "code": "db",
+  "name": "Database",
+  "description": "SurrealDB access mediated by the kernel. Plugins never open a DB connection or send queries of their own; the kernel scopes every call to the active org and the plugin's allowed models.",
+  "capabilities": [
+    {
+      "code": "query",
+      "name": "Query",
+      "description": "Structured reads: get / find by model name. The kernel builds parameterized queries, and only for models the plugin was granted."
+    },
+    {
+      "code": "mutate",
+      "name": "Mutate",
+      "description": "Structured writes: create, update, upsert, delete and increment by model name. This is the capability the kernel checks for db::create, db::update, db::upsert, db::delete and db::increment."
+    },
+    {
+      "code": "create",
+      "name": "Create",
+      "description": "Structured write."
+    },
+    {
+      "code": "update",
+      "name": "Update",
+      "description": "Structured Update."
+    },
+    {
+      "code": "delete",
+      "name": "Mutate",
+      "description": "Structured Delete."
+    },
+    {
+      "code": "bulk_mutation",
+      "name": "Bulk Mutation",
+      "description": "Capability for running multiple create, update or delete at once."
+    },
+    {
+      "code": "transaction",
+      "name": "Transaction",
+      "description": "Run a batch of structured db::* ops inscodee a single transaction."
+    }
+  ]
+}

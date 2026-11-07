@@ -1,0 +1,46 @@
+[plugin]
+name = "chatplug"
+label = "Chat test"
+version = "0.6.0"
+description = "A tiny chat, to try the realtime WebSocket end to end."
+authors = [{ name = "Test", email = "test@example.com" }]
+dependencies = []
+capabilities = ["db::query", "db::mutate", "realtime::publish", "realtime::drop", "realtime::presence", "org::members"]
+access_models = [{ name = "channel", permissions = ["read", "write"] }, { name = "member", permissions = ["read", "write"] }, { name = "message", permissions = ["read", "write"] }, { name = "cursor", permissions = ["read", "write"] }]
+is_builtin = false
+script = "main.lua"
+
+[plugin.api]
+version = "0.1"
+
+[plugin.meta]
+kind = "addon"
+
+# A page needs a role of its own plugin when the plugin offers any; bob is given this one.
+[[roles]]
+name = "chatter"
+label = "Chat user"
+
+# A channel's topic: `chatplug:channel.<channel key>`. Joining is decided by `can_join`.
+[[realtime]]
+topic = "channel.{channel}"
+subscribe = "can_join"
+presence = true
+client_events = ["typing"]
+history = 5
+
+# Everyone hears "something happened in a channel" here: the rail uses it to refresh its unread counts.
+[[realtime]]
+topic = "inbox"
+subscribe = "can_inbox"
+
+# Everyone on a page with a rail of people joins this one: being connected to it is being online.
+[[realtime]]
+topic = "online"
+subscribe = "can_online"
+presence = true
+
+# A topic nobody may join, to see a refusal.
+[[realtime]]
+topic = "locked"
+subscribe = "never"

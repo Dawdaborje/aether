@@ -1,0 +1,37 @@
+{
+  "groups": [
+    {
+      "id": "audit",
+      "label": "Audit trail",
+      "color": "slate",
+      "icon": "shield-check",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "audit_chain",
+          "label": "Tamper-evident audit",
+          "s_key": "audit.chain",
+          "s_value": true,
+          "description": "Seal the audit trail in a hash chain, so changing or removing rows is detected.",
+          "long_description": "A background task numbers new audit rows and links each to the one before, and signs a checkpoint now and then. Verify with `aether --audit-verify --org <database>`. Organizations can override the global default."
+        },
+        {
+          "id": "audit_checkpoint_rows",
+          "label": "Checkpoint every (rows)",
+          "s_key": "audit.checkpoint_rows",
+          "s_value": 10000,
+          "description": "A signed checkpoint is made after this many sealed rows.",
+          "long_description": "Also made when the last one is older than the time below. Organizations can override the global default."
+        },
+        {
+          "id": "audit_checkpoint_secs",
+          "label": "Checkpoint every (seconds)",
+          "s_key": "audit.checkpoint_secs",
+          "s_value": 3600,
+          "description": "A signed checkpoint is made when the last one is this old.",
+          "long_description": "Only when rows have been sealed since. Organizations can override the global default."
+        }
+      ]
+    }
+  ]
+}

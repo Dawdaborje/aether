@@ -1,0 +1,20 @@
+{
+  "model_id": "mdl_ibsstjhwkt",
+  "name": "member",
+  "label": "Member",
+  "title_field": "user",
+  "fields": [
+    {
+      "id": "fld_mlt4qdbo3q",
+      "name": "channel",
+      "type": "string",
+      "required": true
+    },
+    {
+      "id": "fld_he5sw2tl63",
+      "name": "user",
+      "type": "string",
+      "required": true
+    }
+  ]
+}

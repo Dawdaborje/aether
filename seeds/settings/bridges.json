@@ -1,0 +1,352 @@
+{
+  "groups": [
+    {
+      "id": "bridge_paystack",
+      "label": "Paystack",
+      "color": "cyan",
+      "icon": "credit-card",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "bridge_paystack_secret_key",
+          "label": "Paystack secret key",
+          "s_key": "bridge.paystack.secret_key",
+          "s_value": "",
+          "description": "From the Paystack dashboard (starts with sk_). Stored encrypted; it is never shown again.",
+          "secret": true
+        },
+        {
+          "id": "bridge_paystack_base_url",
+          "label": "Paystack API address",
+          "s_key": "bridge.paystack.base_url",
+          "s_value": "https://api.paystack.co",
+          "description": "Leave as it is unless you test against another server."
+        }
+      ]
+    },
+    {
+      "id": "bridge_open_street_map",
+      "label": "OpenStreetMap",
+      "color": "green",
+      "icon": "map-pin",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "bridge_open_street_map_base_url",
+          "label": "OpenStreetMap Nominatim address",
+          "s_key": "bridge.open_street_map.base_url",
+          "s_value": "https://nominatim.openstreetmap.org",
+          "description": "The public server allows about one request a second; run your own Nominatim for real use."
+        },
+        {
+          "id": "bridge_open_street_map_contact",
+          "label": "OpenStreetMap contact",
+          "s_key": "bridge.open_street_map.contact",
+          "s_value": "",
+          "description": "An email address or website that identifies you to the map server, as its usage policy asks."
+        }
+      ]
+    },
+    {
+      "id": "bridge_jitsi",
+      "label": "Jitsi Meet",
+      "color": "blue",
+      "icon": "video",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "bridge_jitsi_base_url",
+          "label": "Jitsi server address",
+          "s_key": "bridge.jitsi.base_url",
+          "s_value": "https://meet.jit.si",
+          "description": "The public server needs nothing else. For your own server, also set the two fields below."
+        },
+        {
+          "id": "bridge_jitsi_app_id",
+          "label": "Jitsi application id",
+          "s_key": "bridge.jitsi.app_id",
+          "s_value": "",
+          "description": "The application id of your server's token authentication. Leave empty for a public server."
+        },
+        {
+          "id": "bridge_jitsi_signing_key",
+          "label": "Jitsi shared secret",
+          "s_key": "bridge.jitsi.signing_key",
+          "s_value": "",
+          "secret": true,
+          "description": "The shared secret of your server's token authentication. Links are signed with it so each opens one room, for a short time."
+        }
+      ]
+    },
+    {
+      "id": "bridge_collabora",
+      "label": "Collabora Online",
+      "color": "green",
+      "icon": "file-pen-line",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "bridge_collabora_base_url",
+          "label": "Editor server address",
+          "s_key": "bridge.collabora.base_url",
+          "s_value": "",
+          "description": "Where Collabora Online (or another WOPI editor) runs, such as https://office.example.com."
+        },
+        {
+          "id": "bridge_collabora_wopi_host_url",
+          "label": "This server, as the editor reaches it",
+          "s_key": "bridge.collabora.wopi_host_url",
+          "s_value": "",
+          "description": "The public address of this Aether, such as https://aether.example.com. The editor must be able to open it, and must be allowed to (its WOPI host list)."
+        },
+        {
+          "id": "bridge_collabora_signing_key",
+          "label": "Secret for the editor's access tokens",
+          "s_key": "bridge.collabora.signing_key",
+          "s_value": "",
+          "secret": true,
+          "description": "At least 16 random characters. Each token names one file and one person and is signed with it."
+        }
+      ]
+    },
+    {
+      "id": "bridge_jmap",
+      "label": "Mailbox (JMAP)",
+      "color": "slate",
+      "icon": "mail",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "bridge_jmap_session_url",
+          "label": "JMAP session address",
+          "s_key": "bridge.jmap.session_url",
+          "s_value": "",
+          "description": "The mail server's JMAP address, such as https://mail.example.com/.well-known/jmap. Each person connects their own mailbox with their own login."
+        }
+      ]
+    },
+    {
+      "id": "bridge_imap",
+      "label": "Mailbox (IMAP)",
+      "color": "slate",
+      "icon": "mail",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "bridge_imap_host",
+          "label": "IMAP server",
+          "s_key": "bridge.imap.host",
+          "s_value": "",
+          "description": "The mail server's name, such as imap.example.com. Each person connects their own mailbox with their own login."
+        },
+        {
+          "id": "bridge_imap_port",
+          "label": "IMAP port",
+          "s_key": "bridge.imap.port",
+          "s_value": "",
+          "description": "993 for tls (the default), 143 for starttls. Leave empty for the usual one."
+        },
+        {
+          "id": "bridge_imap_security",
+          "label": "IMAP security",
+          "s_key": "bridge.imap.security",
+          "s_value": "tls",
+          "description": "tls, starttls or none. Use none only for a server on the same machine."
+        },
+        {
+          "id": "bridge_imap_smtp_host",
+          "label": "SMTP server (for sending)",
+          "s_key": "bridge.imap.smtp_host",
+          "s_value": "",
+          "description": "The server that sends the mail, such as smtp.example.com. Each person's own login is used."
+        },
+        {
+          "id": "bridge_imap_smtp_port",
+          "label": "Mailbox SMTP port",
+          "s_key": "bridge.imap.smtp_port",
+          "s_value": "",
+          "description": "587 for starttls (the default), 465 for tls, 25 for none. Leave empty for the usual one."
+        },
+        {
+          "id": "bridge_imap_smtp_security",
+          "label": "Mailbox SMTP security",
+          "s_key": "bridge.imap.smtp_security",
+          "s_value": "starttls",
+          "description": "starttls, tls or none."
+        },
+        {
+          "id": "bridge_imap_domain",
+          "label": "Domain for logins that are not an address",
+          "s_key": "bridge.imap.domain",
+          "s_value": "",
+          "description": "A login such as ann becomes ann@domain when mail is sent. Leave empty if logins are addresses."
+        }
+      ]
+    },
+    {
+      "id": "bridge_liteparse",
+      "label": "LiteParse",
+      "color": "amber",
+      "icon": "scan-text",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "bridge_liteparse_binary_path",
+          "label": "LiteParse program",
+          "s_key": "bridge.liteparse.binary_path",
+          "s_value": "liteparse",
+          "description": "The command that runs LiteParse. Some systems have another program called lit: use the full path to be sure."
+        },
+        {
+          "id": "bridge_liteparse_default_language",
+          "label": "LiteParse OCR language",
+          "s_key": "bridge.liteparse.default_language",
+          "s_value": "eng",
+          "description": "Tesseract language code, such as eng or eng+fra."
+        },
+        {
+          "id": "bridge_liteparse_tessdata_path",
+          "label": "LiteParse language data folder",
+          "s_key": "bridge.liteparse.tessdata_path",
+          "s_value": "",
+          "description": "Folder with Tesseract language files, for offline use."
+        },
+        {
+          "id": "bridge_liteparse_ocr_server_url",
+          "label": "LiteParse HTTP OCR server",
+          "s_key": "bridge.liteparse.ocr_server_url",
+          "s_value": "",
+          "description": "Use an EasyOCR or PaddleOCR server instead of the built-in Tesseract."
+        },
+        {
+          "id": "bridge_liteparse_ocr_server_token",
+          "label": "LiteParse OCR server token",
+          "s_key": "bridge.liteparse.ocr_server_token",
+          "s_value": "",
+          "description": "Sent as a bearer token to the HTTP OCR server.",
+          "secret": true
+        },
+        {
+          "id": "bridge_liteparse_dpi",
+          "label": "LiteParse OCR resolution (DPI)",
+          "s_key": "bridge.liteparse.dpi",
+          "s_value": "150",
+          "description": "72 to 400. Higher reads small print better and is slower."
+        },
+        {
+          "id": "bridge_liteparse_max_pages",
+          "label": "LiteParse most pages per file",
+          "s_key": "bridge.liteparse.max_pages",
+          "s_value": "100",
+          "description": "This engine's own limit; the kernel's ocr.max_pages can only lower it."
+        },
+        {
+          "id": "bridge_liteparse_timeout_secs",
+          "label": "LiteParse time allowed per file (seconds)",
+          "s_key": "bridge.liteparse.timeout_secs",
+          "s_value": "60",
+          "description": "5 to 600. The process is stopped, with anything it started, when this passes."
+        }
+      ]
+    },
+    {
+      "id": "bridge_ollama",
+      "label": "Ollama",
+      "color": "violet",
+      "icon": "bot",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "bridge_ollama_base_url",
+          "label": "Ollama address",
+          "s_key": "bridge.ollama.base_url",
+          "s_value": "http://localhost:11434",
+          "description": "Where Ollama runs. Requests never leave that network."
+        },
+        {
+          "id": "bridge_ollama_default_model",
+          "label": "Ollama default model",
+          "s_key": "bridge.ollama.default_model",
+          "s_value": "",
+          "description": "Used when no model is named here or in the AI settings, such as llama3.2."
+        },
+        {
+          "id": "bridge_ollama_default_embed_model",
+          "label": "Ollama embedding model",
+          "s_key": "bridge.ollama.default_embed_model",
+          "s_value": "",
+          "description": "Used for embeddings when none is named, such as nomic-embed-text."
+        }
+      ]
+    },
+    {
+      "id": "bridge_openai_compatible",
+      "label": "OpenAI-compatible",
+      "color": "violet",
+      "icon": "bot",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "bridge_openai_compatible_api_key",
+          "label": "OpenAI-compatible API key",
+          "s_key": "bridge.openai_compatible.api_key",
+          "s_value": "",
+          "description": "The key of OpenAI, OpenRouter, Groq or your own server; empty for a local server that needs none. Stored encrypted; it is never shown again.",
+          "secret": true
+        },
+        {
+          "id": "bridge_openai_compatible_base_url",
+          "label": "OpenAI-compatible API address",
+          "s_key": "bridge.openai_compatible.base_url",
+          "s_value": "https://api.openai.com/v1",
+          "description": "The API root with its version. Change it to use vLLM, LM Studio, OpenRouter and the like."
+        },
+        {
+          "id": "bridge_openai_compatible_default_model",
+          "label": "OpenAI-compatible default model",
+          "s_key": "bridge.openai_compatible.default_model",
+          "s_value": "",
+          "description": "Used when no model is named here or in the AI settings."
+        },
+        {
+          "id": "bridge_openai_compatible_default_embed_model",
+          "label": "OpenAI-compatible embedding model",
+          "s_key": "bridge.openai_compatible.default_embed_model",
+          "s_value": "",
+          "description": "Used for embeddings when none is named, such as text-embedding-3-small."
+        }
+      ]
+    },
+    {
+      "id": "bridge_anthropic",
+      "label": "Anthropic",
+      "color": "violet",
+      "icon": "bot",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "bridge_anthropic_api_key",
+          "label": "Anthropic API key",
+          "s_key": "bridge.anthropic.api_key",
+          "s_value": "",
+          "description": "From the Anthropic console. Stored encrypted; it is never shown again.",
+          "secret": true
+        },
+        {
+          "id": "bridge_anthropic_base_url",
+          "label": "Anthropic API address",
+          "s_key": "bridge.anthropic.base_url",
+          "s_value": "https://api.anthropic.com",
+          "description": "Leave as it is unless you go through a gateway."
+        },
+        {
+          "id": "bridge_anthropic_default_model",
+          "label": "Anthropic default model",
+          "s_key": "bridge.anthropic.default_model",
+          "s_value": "",
+          "description": "Used when no model is named here or in the AI settings."
+        }
+      ]
+    }
+  ]
+}

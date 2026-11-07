@@ -1,0 +1,37 @@
+{
+  "groups": [
+    {
+      "id": "history",
+      "label": "Record history",
+      "color": "slate",
+      "icon": "history",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "history_undo_window_secs",
+          "label": "Undo window (seconds)",
+          "s_key": "history.undo_window_secs",
+          "s_value": 120,
+          "description": "How long after a change its author may undo it.",
+          "long_description": "history::undo takes back the caller's own last change to a record while it is still the last one and no older than this. Organizations can override the global default."
+        },
+        {
+          "id": "history_keep_days",
+          "label": "Keep history (days)",
+          "s_key": "history.keep_days",
+          "s_value": 0,
+          "description": "How long record versions are kept; 0 keeps them forever.",
+          "long_description": "Applies to models that do not set their own history.keep_days. Old versions are folded into a snapshot, so the record can still be read as it was from the cut-off on. Organizations can override the global default."
+        },
+        {
+          "id": "history_max_as_of_rows",
+          "label": "Most records searched as of a time",
+          "s_key": "history.max_as_of_rows",
+          "s_value": 1000,
+          "description": "db::find with as_of refuses a model with more records than this.",
+          "long_description": "Searching the past rebuilds every record that existed then, so it is bounded. Use a saved report snapshot for larger models. Organizations can override the global default."
+        }
+      ]
+    }
+  ]
+}

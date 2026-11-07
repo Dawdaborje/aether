@@ -1,0 +1,17 @@
+{
+  "code": "report",
+  "name": "Reports",
+  "description": "Grouped figures over models the plugin may read, including models of its dependencies, plus a table export of those rows.",
+  "capabilities": [
+    {
+      "code": "query",
+      "name": "Query",
+      "description": "Aggregate one granted model: dimensions, measures, filters, and optional empty-group fill. Read only."
+    },
+    {
+      "code": "export",
+      "name": "Export",
+      "description": "Turn report rows the plugin already has into an Excel or PDF table. Does not read the database."
+    }
+  ]
+}

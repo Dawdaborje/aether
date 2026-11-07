@@ -1,0 +1,70 @@
+{
+  "groups": [
+    {
+      "id": "meetings",
+      "label": "Meetings",
+      "color": "teal",
+      "icon": "video",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "meetings_enabled",
+          "label": "Video meetings",
+          "s_key": "meetings.enabled",
+          "s_value": true,
+          "description": "Whether built-in video meetings can be joined.",
+          "long_description": "Switch off globally to stop all meetings, or for one organization to stop only its meetings. The media server itself is started by `[sfu] enabled = true` in aether.toml; this setting cannot start it."
+        },
+        {
+          "id": "meetings_max_participants",
+          "label": "People per meeting",
+          "s_key": "meetings.max_participants",
+          "s_value": 0,
+          "description": "The most people in one meeting. 0 uses the server's own limit.",
+          "long_description": "An organization can set a lower limit than the global one for its own meetings. A meeting a plugin limits further keeps the smaller number. The global value is the ceiling for the whole server."
+        },
+        {
+          "id": "meetings_max_rooms",
+          "label": "Meetings open at once",
+          "s_key": "meetings.max_rooms",
+          "s_value": 0,
+          "description": "Server-wide: how many meetings may be open at once. 0 uses the server's own limit.",
+          "long_description": "Only the global value is used; an organization's value for this setting has no effect."
+        },
+        {
+          "id": "meetings_public_ips",
+          "label": "Public addresses",
+          "s_key": "meetings.public_ips",
+          "s_value": "",
+          "description": "Server-wide: the addresses browsers send media to, separated by commas. Blank uses aether.toml.",
+          "long_description": "The server's public or LAN IP addresses (the media port is added). Needed when people are not on the server's own machine. Applies to meetings joined after the change. Only the global value is used."
+        },
+        {
+          "id": "meetings_turn_urls",
+          "label": "TURN servers",
+          "s_key": "meetings.turn_urls",
+          "s_value": "",
+          "description": "Server-wide: TURN relays handed to browsers behind strict firewalls, separated by commas, such as turn:turn.example.com:3478. Blank uses aether.toml.",
+          "long_description": "Only the global value is used."
+        },
+        {
+          "id": "meetings_turn_secret",
+          "label": "TURN shared secret",
+          "s_key": "meetings.turn_secret",
+          "s_value": "",
+          "description": "Server-wide: the secret shared with the TURN server (coturn `use-auth-secret`). Blank uses aether.toml.",
+          "long_description": "Used to make short-lived credentials for each person. Only the global value is used.",
+          "secret": true
+        },
+        {
+          "id": "meetings_credential_ttl",
+          "label": "TURN credential lifetime (seconds)",
+          "s_key": "meetings.credential_ttl_secs",
+          "s_value": 0,
+          "description": "Server-wide: how long a person's TURN credentials last. 0 uses the server's own value (4 hours).",
+          "long_description": "Only the global value is used."
+        }
+      ]
+    }
+  ]
+}

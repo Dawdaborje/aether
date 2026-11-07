@@ -1,0 +1,52 @@
+{
+  "model_id": "mdl_6fgvgfvmck",
+  "name": "lead",
+  "label": "Lead",
+  "title_field": "title",
+  "fields": [
+    {
+      "id": "fld_wxzf6iman6",
+      "name": "title",
+      "type": "string",
+      "required": true,
+      "max_length": 80
+    },
+    {
+      "id": "fld_zkhylowaja",
+      "name": "status",
+      "type": "select",
+      "default": "new",
+      "options": [
+        {
+          "id": "opt_ffjuwrd2ig",
+          "value": "new"
+        },
+        {
+          "id": "opt_72q66xwdzq",
+          "value": "won"
+        },
+        {
+          "id": "opt_i2pcufksbt",
+          "value": "lost"
+        }
+      ]
+    },
+    {
+      "id": "fld_fz5d65e3a6",
+      "name": "amount",
+      "type": "decimal",
+      "scale": 2
+    },
+    {
+      "id": "fld_cqxzdqu7cc",
+      "name": "owner",
+      "type": "string",
+      "required": true
+    },
+    {
+      "id": "fld_u43x7bnik3",
+      "name": "secret",
+      "type": "string"
+    }
+  ]
+}

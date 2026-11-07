@@ -1,0 +1,20 @@
+{
+  "model_id": "mdl_sfvsocnpwi",
+  "name": "channel",
+  "label": "Channel",
+  "title_field": "name",
+  "fields": [
+    {
+      "id": "fld_ixdovfsnt3",
+      "name": "name",
+      "type": "string",
+      "required": true
+    },
+    {
+      "id": "fld_qlnwppgu3z",
+      "name": "private",
+      "type": "bool",
+      "default": false
+    }
+  ]
+}

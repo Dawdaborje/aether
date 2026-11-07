@@ -1,0 +1,12 @@
+{
+	"code": "meetings",
+	"name": "Meetings",
+	"description": "Video meeting servers",
+	"icon": "video",
+	"icon_type": "lucide",
+	"color": "blue",
+	"color_type": "lucide",
+	"items": [
+		{ "feature_key": "jitsi", "name": "Jitsi Meet", "label": "Jitsi Meet", "description": "Meeting links on a Jitsi Meet server", "version": null, "is_builtin": true, "enabled_globally": false, "config_schema": null }
+	]
+}

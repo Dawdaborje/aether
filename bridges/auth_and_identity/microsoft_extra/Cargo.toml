@@ -1,0 +1,9 @@
+[package]
+name = "microsoft_extra"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+aether_auth_bridge = { path = "../auth_bridge" }
+async-trait = "0.1"
+url = "2"

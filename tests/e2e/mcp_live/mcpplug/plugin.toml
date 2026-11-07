@@ -1,0 +1,37 @@
+[plugin]
+name = "mcpplug"
+label = "MCP live test"
+version = "0.1.0"
+description = "A model and two commands, to try the live tools of aether --mcp."
+authors = [{ name = "Test", email = "test@example.com" }]
+dependencies = []
+capabilities = ["db::query", "db::mutate"]
+access_models = [{ name = "note", permissions = ["read", "write"] }]
+is_builtin = false
+script = "main.lua"
+
+[plugin.api]
+version = "0.1"
+
+[plugin.meta]
+kind = "addon"
+
+[[command]]
+name = "greet"
+function = "greet"
+help = "Say hello and keep a note of it"
+args = [
+  { name = "name", required = true, help = "who to greet" },
+  { name = "times", type = "int", default = 1 },
+]
+
+[[command]]
+name = "boom"
+function = "boom"
+help = "Always fails"
+
+[[command]]
+name = "seed"
+function = "seed"
+help = "Create the first note"
+on_install = true

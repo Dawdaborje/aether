@@ -1,0 +1,65 @@
+{
+  "model_id": "mdl_2bqw65x7ec",
+  "name": "contact",
+  "label": "Contact",
+  "title_field": "name",
+  "fields": [
+    {
+      "id": "fld_yxub73woyv",
+      "name": "name",
+      "type": "string",
+      "required": true
+    },
+    {
+      "id": "fld_2f2ox4htub",
+      "name": "email",
+      "type": "string",
+      "index": "unique"
+    },
+    {
+      "id": "fld_7vivp6ssv2",
+      "name": "amount",
+      "type": "decimal",
+      "scale": 2
+    },
+    {
+      "id": "fld_cwiulqjrvi",
+      "name": "status",
+      "type": "select",
+      "default": "new",
+      "options": [
+        {
+          "id": "opt_rynbkdekzu",
+          "value": "new"
+        },
+        {
+          "id": "opt_vdp4dv777u",
+          "value": "won"
+        },
+        {
+          "id": "opt_rtgntj6tiy",
+          "value": "lost"
+        }
+      ]
+    },
+    {
+      "id": "fld_hczlz5kbuu",
+      "name": "joined",
+      "type": "date"
+    },
+    {
+      "id": "fld_p3xtwj5lhv",
+      "name": "active",
+      "type": "bool"
+    },
+    {
+      "id": "fld_3di4mfrod3",
+      "name": "owner",
+      "type": "string",
+      "required": true
+    }
+  ],
+  "chatter": {
+    "enabled": true
+  }
+}

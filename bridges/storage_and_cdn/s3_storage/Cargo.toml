@@ -1,0 +1,9 @@
+[package]
+name = "s3_storage"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+aether_storage = { path = "../../../facets/storage" }
+object_store = { workspace = true, features = ["aws"] }
+serde = { version = "1.0.229", features = ["derive"] }

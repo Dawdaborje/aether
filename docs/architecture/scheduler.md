@@ -1,0 +1,246 @@
+---
+title: "The scheduler: background jobs and recurring tasks"
+description: "Anything that should not make a person wait (sending an email, building a report, calling a slow API) or should happen on a timetable (a nightly export, a sweep every 15 minutes) is the scheduler's…"
+section: architecture
+status: stable
+order: 390
+---
+# The scheduler: background jobs and recurring tasks
+
+Anything that should not make a person wait (sending an email, building a report, calling a slow
+API) or should happen on a timetable (a nightly export, a sweep every 15 minutes) is the
+scheduler's job. It does what Celery does in a Django project: a plugin puts work on a queue and
+returns at once, a worker picks it up, and failures are retried. It also runs cron.
+
+## What it runs
+
+A **job** is one of:
+
+| Kind | What it is | Made by |
+|---|---|---|
+| `plugin` | a call to one of the plugin's own functions, with a JSON payload | `scheduler::enqueue`, or a recurring task when it is due |
+| `communication` | one email or SMS to one recipient, delivered through the configured bridge | `communication::send` (see [Communication](communication.md)) |
+
+Jobs run as the kernel (`system:scheduler`), not as whoever started them, with the plugin's own
+capabilities and model grants. They are recorded in the plugin call audit under the request id
+`job-<id>`. A **recurring task** does nothing itself: when it is due it enqueues a job, so
+scheduled work gets the same retries, queues and limits as everything else.
+
+## For plugin authors
+
+```toml
+# plugin.toml: tasks that always exist
+[[schedule]]
+name = "nightly-report"
+title = "Nightly report"       # optional: the label shown in lists (the name is the key)
+description = "Emails the day's totals to the managers."   # optional
+function = "send_report"
+cron = "0 2 * * *"              # five fields: minute hour day month weekday
+timezone = "Africa/Lagos"        # optional; UTC otherwise
+payload = { kind = "daily" }     # optional input for the function
+# every = "15m"                  # instead of cron: 30s, 15m, 6h, 1d (at least 10 s)
+# queue = "slow"                 # default: "default"
+# max_attempts = 3
+# catch_up = "once" | "skip"     # after downtime: run once for what was missed (default), or wait
+```
+
+```rhai
+// from a function: run `export` in the background, in an hour, at most once per invoice
+scheduler::enqueue("export", #{ invoice: id }, #{ delay_secs: 3600, unique_key: "export-" + id });
+scheduler::register(#{ name: "sweep", function: "sweep_stale", every: "30m" });
+```
+
+| Command | Capability | What it does |
+|---|---|---|
+| `scheduler::enqueue { function, payload?, delay_secs?, queue?, max_attempts?, unique_key?, run_as? }` | `scheduler::enqueue` (`scheduler::run_as` as well when `run_as` is set) | queue a job; answers `{ id, created }` |
+| `scheduler::job { id }` | `scheduler::enqueue` | the job's state (`queued`, `running`, `succeeded`, `failed`, `cancelled`), attempts and last error |
+| `scheduler::cancel_job { id }` | `scheduler::enqueue` | cancel a job that has not started |
+| `scheduler::enqueue_many { jobs: [ … ] }` | `scheduler::enqueue` | queue up to 10 000 jobs (each as `scheduler::enqueue` takes it) with one count and one transaction per 500; answers `{ jobs: [ { id, created } ] }` |
+| `scheduler::register { name, function, title?, description?, cron \| every, timezone?, payload?, queue?, max_attempts?, catch_up? }` | `scheduler::register` | add or update a recurring task (up to 100 per plugin) |
+| `scheduler::cancel { name }` | `scheduler::cancel` | remove a task registered while running; manifest tasks cannot be removed this way |
+
+A job calls one of **the plugin's own** functions. To involve another plugin, that function calls
+it with `plugins::call`. A payload is a JSON object of at most 64 KiB. A plugin may have 10 000 jobs
+waiting at once.
+
+## Running a job as a person
+
+A job runs as the kernel, so it sees what the plugin's own grants see. Work that must show a person only what
+they may see (a scheduled report of *their* numbers) names them in `run_as`:
+
+```rhai
+scheduler::enqueue("send_digest", #{ alert: id }, #{ run_as: owner, unique_key: "digest-" + id });
+```
+
+The job then runs as that account, through the same checks as a call from their browser: their roles, model
+grants and record rules, audited under them. A person who has since lost the role, or left the organization, gets
+the refusal they would get in the browser, and the job fails for good rather than retrying.
+
+`run_as` needs the separate capability `scheduler::run_as`, because it lets the plugin choose whom to act as.
+Grant it only to a plugin that takes the person from a record they own (an alert's owner) and never from input.
+Only plugin jobs can run as a person. Recurring `[[schedule]]` tasks cannot: the task enqueues a job, and that
+job names the person.
+
+## Running one function over many calls at once (fan-out)
+
+A plugin's WebAssembly runs on one thread, and each call gets its own instance (up to
+`plugin_runtime.max_concurrent_calls`, default 64) on its own thread with a fixed budget of **50 million
+instructions** by default (`plugin_runtime.call_fuel`; `call_timeout_secs`, default 10, bounds its wall time) and `instance_memory_mb` of memory. To use
+more than one core, split the work into chunks and run one job per chunk: the scheduler runs them
+`scheduler.concurrency` at a time, in as many workers and processes as are started.
+
+The Rust SDK's `aether_sdk::parallel` does the splitting and the waiting on top of `scheduler::enqueue` and
+`scheduler::job`:
+
+* `parallel::fan_out("work").group("payroll-2026-10").queue("payroll").shared(&json!({..})).chunk_size(200).send(&ids)?`
+  queues one job per chunk (cut by count and by serialized size, so each payload stays under 64 KiB). The job's
+  `unique_key` is `<group>:<index>`, so sending it twice while its jobs wait or run queues nothing twice.
+* Each job receives a `Chunk<T>`: `group`, `index`, `count`, `items`, `shared`.
+* `parallel::join("finish", &launched).payload(..).send()?` queues `finish`; its input is a `Join`, and
+  `join.poll()?` says `Waiting` (it has queued itself again, every 10 s by default), `Finished(progress)` or `GaveUp`.
+  `Progress` counts queued, running, succeeded, failed, cancelled and missing jobs and names the chunks that failed.
+
+Limits to design around: a chunk must finish inside its **fuel budget** and the lease; chunks carry ids, not
+data; a job may run twice, so a chunk must be safe to repeat; queueing costs about 20 ms per chunk (one host
+call each); a plugin may have 10 000 jobs waiting. Measured on a scratch server (in-memory database, 60 chunks of
+150 database reads each): 25.7 s with `scheduler.concurrency = 1`, 7.9 s with 8.
+
+## Delivery guarantee: at least once
+
+A job that finishes is recorded as finished. A job whose worker dies (the process is killed, the
+machine goes away) is not lost: the worker only *leases* a job (120 s by default), and when the lease
+runs out another worker takes the job and runs it again. The price is that a job can run **more than
+once**, for example if the worker dies just after sending an email but before recording it.
+
+So write background functions to be safe to repeat, and use `unique_key` to stop the same work being
+queued twice (`"welcome-email-user-42"`). The kernel's own email and SMS jobs are one recipient each,
+so a retry only repeats the one message that did not complete.
+
+A worker that comes back after its lease ran out and reports success or failure is ignored: the job
+belongs to whoever holds it now.
+
+## Retries
+
+A failing job is tried again after a delay that doubles each time, from `scheduler.retry_backoff_secs`
+(30 s) up to six hours, for `scheduler.max_attempts` attempts (3), then it is marked `failed` and
+kept for `scheduler.failed_job_retention_days` (30). A failure that cannot be fixed by trying again
+(the plugin or function does not exist; a provider rejected the message or the credentials) fails at
+once. Successful jobs are deleted after `scheduler.job_retention_days` (7).
+
+## Where it runs
+
+The scheduler is one engine that can run in two places.
+
+**Inside the server (the default).** `aether --serve` starts a scheduler in the same process. Nothing
+else is needed. `aether --serve --no-scheduling`, or `embedded = false` under `[scheduler]`, turns it off.
+
+**On its own, for scale.** `aether --start-scheduler` runs only the scheduler, with the same code. You
+can run several, on several machines, and give each its own queues (`queues = ["email"]`). They share
+jobs safely. It needs:
+
+* the same database;
+* the same `app_dir` (the plugin files live there; mount it, or share it as a volume);
+* the same secret key (below);
+* the **Redis cache backend** if plugins use `cache::*` from background jobs and from requests: the
+  default in-process cache is private to each process, so a value a job caches is not seen by the
+  HTTP server.
+
+**How the two find each other.** Every scheduler keeps a row in the core table `scheduler_nodes` and
+refreshes it every sweep. The HTTP server reads that table and learns where a standalone scheduler's
+control API is, so nothing about it is written in `aether.toml`.
+
+* The server sends it small hints: `wake` right after a job is enqueued, `reload` when plugins change,
+  so work starts in milliseconds instead of at the next look.
+* Hints are an optimization. A scheduler that never receives one finds everything on its next sweep
+  (`poll_secs`, 5 s by default), because **the database is the source of truth**: an install made with
+  the command line while the scheduler was down is picked up the same way.
+* An embedded scheduler **stands down** while a standalone one is alive and **takes over** within one
+  sweep after it stops (a standalone scheduler that stops cleanly removes its row at once; one that
+  crashes is considered gone 30 s after its last heartbeat). Even a brief overlap cannot run a job
+  twice at the same time, because claiming is atomic.
+
+### The control API
+
+A standalone scheduler listens on `[scheduler] bind` (default `127.0.0.1:7895`, or the address given
+to `--start-scheduler`). Every request needs `Authorization: Bearer <token>`; the token is the
+secret setting `scheduler.control_token`, created automatically, so every process that shares the
+database and the secret key knows it. If the API must be reachable from other machines, bind it to a
+private network address; the server is told the address through the database.
+
+| Request | Effect |
+|---|---|
+| `GET /control/status` | the live scheduler nodes and job counts per organization |
+| `POST /control/wake {"org": "…"}` | look at this organization's queue now |
+| `POST /control/reload` | look at everything now (plugins or schedules changed) |
+| `POST /control/pause`, `POST /control/resume` | stop or resume claiming work in this process |
+| `POST /control/run {"org","plugin","task"}` | run a recurring task now, in addition to its schedule |
+
+## How claiming works
+
+Each organization's database has a `jobs` table. A worker claims jobs in a single transaction that
+selects the due ones (`queued` and past `run_at`, or `running` with an expired lease and attempts
+left) and updates them to `running` with its own name and a lease, re-checking each job's state in the
+update. Two workers racing for the same job cannot both win; the loser's transaction is refused and it
+asks again. A test starts two workers against 30 jobs and checks that none is taken twice.
+
+A recurring task is moved to its next slot only if it is still at the slot that was fired, and the job
+it enqueues has the key `task:<name>:<slot>`, so even if two schedulers fire the same slot, one job
+exists.
+
+After downtime, `catch_up = "once"` runs a task one time for everything it missed and then resumes
+from the present; `"skip"` runs nothing for slots that are more than a few minutes late.
+
+## Settings and configuration
+
+Behaviour that an administrator tunes is in the **settings** (global, with an organization override),
+group *Scheduler*:
+
+| Setting | Default | |
+|---|---|---|
+| `scheduler.enabled` | on | an organization can turn it off to pause its jobs and tasks; they wait |
+| `scheduler.max_attempts` | 3 | attempts before a job fails |
+| `scheduler.retry_backoff_secs` | 30 | first retry delay; doubles each time |
+| `scheduler.job_retention_days` | 7 | keep successful jobs |
+| `scheduler.failed_job_retention_days` | 30 | keep failed and cancelled jobs |
+
+How a *process* runs is in `aether.toml`:
+
+```toml
+[scheduler]
+embedded = true            # run the scheduler inside `aether --serve`
+concurrency = 16           # jobs this process runs at once; default: one per core (4 to 64)
+poll_secs = 5              # how often it looks for due work without being told
+lease_secs = 120           # how long a worker holds a job before another may take it
+queues = []                # queues to serve; empty means all
+bind = "127.0.0.1:7895"    # where a standalone scheduler's control API listens
+```
+
+A job is stopped if it runs longer than `lease_secs` minus a few seconds; plugin calls are also bound
+by the plugin runtime's own limits (10 s and 2 million operations for Rhai scripts).
+
+## Desk: inspect and control schedules
+
+Developers can open **Desk → Schedules** (or **Organizations → [org] → Schedules**) to see the
+`scheduled_tasks` for plugins installed on one organization. Cron and interval tasks are listed
+separately, and a **Jobs** section below them lists every job in the organization, including
+one-off `scheduler::enqueue` jobs and email/SMS jobs that no schedule made. Jobs are paged on the
+server (25 per page) and can be filtered by type (plugin function or email/SMS), origin (from a
+schedule or one-off), result, creation time and text (`GET …/schedules/jobs` takes `limit`, `offset`,
+`state`, `kind`, `origin`, `q` and `since_secs`, and answers `total`). From a schedule you can **stop** it (`enabled = false`), **restart** it (enable again and
+recompute `next_run`), or **run now** (enqueue a job immediately, same idea as
+`POST /control/run`).
+
+Opening a schedule lists its **runs** (the `jobs` rows for that task): start time, end time,
+duration and state. Opening a run shows the outcome and the audit trail for `request_id =
+job-<id>` (`plugin_calls` and `data_access`). The HTTP API is under
+`/api/ui/organizations/{db}/schedules/…` and is developer-only; it always takes an explicit org
+database name so lists never mix organizations.
+
+## Tables
+
+In every organization database (migration `018_scheduler`): `scheduled_tasks` and `jobs`. In the core
+database (migration `023_scheduler_nodes`): `scheduler_nodes`. The plugin catalog stores each
+plugin's `[[schedule]]` entries in `plugins.schedules`, and installing or upgrading a plugin in an
+organization copies them into that organization's `scheduled_tasks` (removing ones the new version
+dropped; tasks a plugin registered while running are left alone). Plugins cannot name these tables as
+models.

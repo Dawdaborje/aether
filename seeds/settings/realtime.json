@@ -1,0 +1,45 @@
+{
+  "groups": [
+    {
+      "id": "realtime",
+      "label": "Realtime",
+      "color": "slate",
+      "icon": "radio",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "realtime_max_connections",
+          "label": "Open connections per person",
+          "s_key": "realtime.max_connections",
+          "s_value": 8,
+          "description": "How many live connections (browser tabs) one person may have open at once.",
+          "long_description": "A tab that is closed frees its place. Organizations can override the global default."
+        },
+        {
+          "id": "realtime_max_topics",
+          "label": "Live topics per connection",
+          "s_key": "realtime.max_topics",
+          "s_value": 100,
+          "description": "How many live topics (channels, inboxes) one connection may be on at once.",
+          "long_description": "Organizations can override the global default."
+        },
+        {
+          "id": "realtime_client_rate",
+          "label": "Events per second from a browser",
+          "s_key": "realtime.client_rate",
+          "s_value": 10,
+          "description": "How many small signals (such as \"is typing\") one connection may send each second; more are dropped.",
+          "long_description": "Organizations can override the global default."
+        },
+        {
+          "id": "realtime_idle_secs",
+          "label": "Close a silent connection after (seconds)",
+          "s_key": "realtime.idle_secs",
+          "s_value": 60,
+          "description": "A connection that answers neither messages nor the server's checks for this long is closed; the browser reconnects.",
+          "long_description": "Between 10 and 3600. Organizations can override the global default."
+        }
+      ]
+    }
+  ]
+}

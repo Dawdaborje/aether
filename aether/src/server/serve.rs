@@ -1,0 +1,382 @@
+use aether_authentication::routes::routes as auth_routes;
+use aether_core::config_manager::models::{self, ServerConfig};
+use aether_core_api::routes::routes as core_routes;
+use aether_core::state::AppState;
+use axum::Router;
+use std::error::Error;
+use std::net::UdpSocket;
+use surrealdb::Surreal;
+use surrealdb::engine::remote::ws::Client as SurrealClient;
+
+mod error {
+    use axum::Json;
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    use axum::response::Response;
+    use thiserror::Error;
+
+    #[derive(Error, Debug)]
+    #[allow(dead_code)]
+    pub enum Error {
+        #[error("database error")]
+        Db,
+    }
+
+    impl IntoResponse for Error {
+        fn into_response(self) -> Response {
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(self.to_string())).into_response()
+        }
+    }
+
+    impl From<surrealdb::Error> for Error {
+        fn from(error: surrealdb::Error) -> Self {
+            log::error!("{error}");
+            Self::Db
+        }
+    }
+}
+
+pub(crate) fn get_local_ip() -> String {
+    UdpSocket::bind("0.0.0.0:0")
+        .ok()
+        .and_then(|s| s.connect("8.8.8.8:80").ok().map(|_| s))
+        .and_then(|s| s.local_addr().ok())
+        .map(|a| a.ip().to_string())
+        .unwrap_or_else(|| "127.0.0.1".to_string())
+}
+
+pub fn get_server_host(conf: Option<ServerConfig>, port: Option<u16>) -> String {
+    if let Some(port) = port {
+        return format!("0.0.0.0:{port}");
+    }
+    if let Some(server_config) = conf {
+        return format!("{}:{}", server_config.host, server_config.port);
+    }
+    "0.0.0.0:7890".to_string()
+}
+
+pub async fn run_server(
+    config: models::AetherConfig,
+    http_port: Option<u16>,
+    db_conn: &'static Surreal<SurrealClient>,
+    scheduling: bool,
+    dev_watch: bool,
+    config_path: Option<std::path::PathBuf>,
+) -> Result<(), Box<dyn Error + Send + Sync + '_>> {
+    let namespace = config
+        .database
+        .as_ref()
+        .map(|d| d.namespace.clone())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "aether".into());
+
+    let server_config = config.server.clone();
+    let docs_mount = config.docs.enabled.then(|| config.docs.mount_path()).flatten();
+
+    let state = match AppState::new(
+        db_conn.clone(),
+        config.clone(),
+        namespace,
+        "core",
+        config_path,
+    )
+    .await
+    {
+        Ok(state) => state,
+        Err(err) => {
+            log::error!("Failed to initialize application state: {err}");
+            return Err(Box::new(err));
+        }
+    };
+
+    let core = match state.core().await {
+        Ok(core) => core,
+        Err(err) => {
+            log::error!("Failed to select core database: {err}");
+            return Err(Box::new(err));
+        }
+    };
+
+    {
+        let name = state.config.tenancy.single_org_db_name.clone();
+        let existing = core
+            .query("SELECT VALUE db_name FROM org_databases ORDER BY db_name;")
+            .await
+            .and_then(|r| r.check())
+            .and_then(|mut r| r.take::<Vec<String>>(0));
+        let existing = match existing {
+            Ok(names) => names,
+            Err(err) => {
+                log::error!("Failed to check the organization: {err}");
+                return Err(Box::new(err));
+            }
+        };
+        if !existing.contains(&name) {
+            // An installation that already has other organizations is told how to adopt one, instead of just being told the configured one is missing.
+            let message = match existing.as_slice() {
+                [] => format!(
+                    "`[tenancy] mode = \"single\"` needs the organization `{name}`, which does not exist. \
+                     Run `aether --init` to create it."
+                ),
+                [only] => format!(
+                    "`[tenancy] mode = \"single\"` expects the organization `{name}`, but this installation \
+                     has `{only}`. Set `single_org_db_name = \"{only}\"` to use it."
+                ),
+                many => format!(
+                    "`[tenancy] mode = \"single\"` expects the organization `{name}`, but this installation has {} \
+                     organizations ({}). Set `single_org_db_name` to the one to serve.",
+                    many.len(),
+                    many.join(", ")
+                ),
+            };
+            log::error!("{message}");
+            return Err(message.into());
+        }
+        if existing.len() > 1 {
+            log::warn!(
+                "`[tenancy] mode = \"single\"` serves only `{name}`; these organizations exist but are not reachable: {}",
+                existing.iter().filter(|n| **n != name).cloned().collect::<Vec<_>>().join(", ")
+            );
+        }
+    }
+
+    if let Err(err) = state.plugin_runtime.load_catalog(&core).await {
+        log::error!("Failed to load and compile active plugins: {err}");
+        return Err(Box::new(err));
+    }
+
+    let retention_task = aether_core::access::audit::spawn_retention_task(&state);
+    let notification_cleanup = aether_core::notifications::spawn_cleanup(&state);
+    let chatter_cleanup = aether_core::chatter::spawn_cleanup(&state);
+    let media_cleanup = aether_core::media_cleanup::spawn_cleanup(&state);
+    let history_cleanup = aether_core_api::history_retention::spawn_cleanup(&state);
+    let webhook_cleanup = aether_core::webhooks::spawn_cleanup(&state);
+    let mail_cleanup = aether_core::mail::service::spawn_cleanup(&state);
+    let audit_sealer = aether_core::access::chain_service::spawn_sealer(&state);
+    let audit_verifier = aether_core::access::chain_service::spawn_verifier(&state);
+    let notification_hub = state.notifications.clone();
+
+    // Background jobs. The scheduler runs here unless it was turned off or a standalone one
+    // is running; either way this server finds a standalone one (to wake it) through the database.
+    let discovery = aether_core::scheduler::control::spawn_discovery(&state);
+    let dev_reload = dev_watch.then(|| super::dev_watch::spawn(state.clone(), state.namespace.clone()));
+    let (scheduler_stop, scheduler_stopping) = tokio::sync::watch::channel(false);
+    let scheduler_task = if scheduling && state.config.scheduler.embedded {
+        let settings = state.config.scheduler.clone();
+        let options = aether_core::scheduler::worker::WorkerOptions {
+            node_id: aether_core::scheduler::worker::new_node_id(aether_core::scheduler::nodes::NodeKind::Embedded),
+            kind: aether_core::scheduler::nodes::NodeKind::Embedded,
+            address: None,
+            queues: settings.queues,
+            concurrency: settings.concurrency,
+            poll: std::time::Duration::from_secs(settings.poll_secs),
+            lease_secs: settings.lease_secs,
+        };
+        Some(tokio::spawn(aether_core::scheduler::worker::run(state.clone(), options, scheduler_stopping)))
+    } else {
+        log::info!("Background jobs are not run by this server (use `aether --start-scheduler` to run them)");
+        None
+    };
+
+    // Base64 JSON uploads: avatars/logos are small; catalog plugin zips may be up to
+    // 50 MB decoded (~67 MB as base64). Keep one limit for the whole API.
+    const MAX_UPLOAD_BODY: usize = 70 * 1024 * 1024;
+
+    let mut app = Router::new()
+        .merge(core_routes())
+        .nest("/api/auth", auth_routes(state.clone()));
+    // The documentation site, rendered from pages compiled into the binary (no database, no files).
+    if let Some(path) = &docs_mount {
+        let provider: std::sync::Arc<dyn aether_docs::PluginDocsProvider> = std::sync::Arc::new(aether_core_api::docs_provider::CatalogDocs::new(state.clone()));
+        app = app.nest_service(path, aether_docs::router_with(path, Some(provider)));
+        log::info!("Documentation is served at {path}");
+    }
+    let database_for_warnings = state.config.database.clone();
+    let development_for_warnings = state.config.configuration.as_ref().is_some_and(|core| core.is_development_mode);
+    let app = app
+        .fallback(aether_core::error_pages::not_found)
+        .layer(axum::extract::DefaultBodyLimit::max(MAX_UPLOAD_BODY))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            aether_authentication::csrf::csrf_protect,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            aether_core::request_log::log_requests,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            super::headers::HeaderPolicy {
+                hsts: !state
+                    .config
+                    .configuration
+                    .as_ref()
+                    .is_some_and(|core| core.is_development_mode),
+            },
+            super::headers::add_security_headers,
+        ))
+        .with_state(state);
+
+    let bind_addr = get_server_host(server_config, http_port);
+    for warning in super::headers::setup_warnings(
+        database_for_warnings.as_ref(),
+        development_for_warnings,
+        &bind_addr,
+    ) {
+        log::warn!("security: {warning}");
+    }
+
+    let listener = match tokio::net::TcpListener::bind(&bind_addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            log::error!("Failed to bind TCP listener: {e}");
+            return Err(Box::new(e));
+        }
+    };
+
+    let actual_addr = listener.local_addr()?;
+    let port = actual_addr.port();
+
+    if actual_addr.ip().is_unspecified() {
+        let local_ip = get_local_ip();
+        log::info!("Starting server: http://localhost:{port}");
+        log::info!("Starting server: http://{local_ip}:{port}");
+        log::info!("Starting server: http://localhost:{port}/web");
+        log::info!("Starting server: http://{local_ip}:{port}/web");
+    } else {
+        log::info!("Starting server: http://{actual_addr}");
+        log::info!("Starting server: http://{actual_addr}/web");
+    }
+
+    // Ctrl+C or SIGTERM starts a graceful shutdown: stop accepting connections
+    // and let in-flight requests finish, but only for `SHUTDOWN_GRACE`; open
+    // connections such as the notifications event stream (SSE) would otherwise keep the
+    // server alive forever.
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(async move {
+        wait_for_shutdown_signal().await;
+        log::info!("Shutdown requested: no longer accepting connections, draining in-flight requests");
+        // Event streams would otherwise hold the server up until the grace period ends.
+        notification_hub.close_all();
+        // Ignored: there is no receiver left only if the server already ended.
+        let _ = shutdown_tx.send(true);
+        // A second interrupt means "now": a hung database must not make the process unkillable.
+        wait_for_shutdown_signal().await;
+        log::warn!("Second interrupt received; exiting without waiting");
+        std::process::exit(130);
+    });
+
+    let mut drain_rx = shutdown_rx.clone();
+    let server = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        // Resolves when the flag flips, or when the sender is gone.
+        let _ = drain_rx.wait_for(|stopping| *stopping).await;
+    });
+
+    let outcome = tokio::select! {
+        result = server => result.map_err(|error| {
+            log::error!("Server error: {error}");
+            error
+        }),
+        () = async {
+            let _ = shutdown_rx.wait_for(|stopping| *stopping).await;
+            tokio::time::sleep(SHUTDOWN_GRACE).await;
+        } => {
+            log::warn!(
+                "Some connections were still open after {}s; closing them",
+                SHUTDOWN_GRACE.as_secs()
+            );
+            Ok(())
+        }
+    };
+
+    // Let running jobs finish; the scheduler waits for them (up to 30 s) before it returns.
+    let _ = scheduler_stop.send(true);
+    if let Some(mut task) = scheduler_task {
+        // The worker finishes running jobs for up to 30 s, but its loop can also be stuck inside a database
+        // call; bound the wait so shutdown always ends.
+        match tokio::time::timeout(SCHEDULER_STOP_TIMEOUT, &mut task).await {
+            Ok(_) => {}
+            Err(_) => {
+                log::warn!(
+                    "The scheduler did not stop within {}s (is the database reachable?); abandoning it",
+                    SCHEDULER_STOP_TIMEOUT.as_secs()
+                );
+                task.abort();
+            }
+        }
+    }
+    discovery.abort();
+    if let Some(task) = dev_reload {
+        task.abort();
+    }
+    if let Some(task) = retention_task {
+        task.abort();
+    }
+    notification_cleanup.abort();
+    chatter_cleanup.abort();
+    media_cleanup.abort();
+    history_cleanup.abort();
+    webhook_cleanup.abort();
+    mail_cleanup.abort();
+    if let Some(task) = audit_sealer {
+        task.abort();
+    }
+    audit_verifier.abort();
+    // End the database session cleanly. The connection itself closes when the
+    // process exits, which follows immediately.
+    // Bounded: with the database already gone the client keeps trying to
+    // reconnect, and this call would otherwise wait on it forever.
+    match tokio::time::timeout(DB_CLOSE_TIMEOUT, db_conn.invalidate()).await {
+        Ok(Ok(())) => log::info!("Database session closed"),
+        Ok(Err(error)) => log::warn!("Could not sign out of the database cleanly: {error}"),
+        Err(_) => log::warn!(
+            "Database did not answer within {}s (is it still running?); skipping sign-out",
+            DB_CLOSE_TIMEOUT.as_secs()
+        ),
+    }
+    log::info!("Aether stopped");
+
+    outcome.map_err(|error| Box::new(error) as Box<dyn Error + Send + Sync>)
+}
+
+/// How long in-flight requests get to finish after a shutdown request.
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How long shutdown waits for the embedded scheduler (its own job drain is 30 s).
+const SCHEDULER_STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(35);
+
+/// How long to wait for the database to acknowledge the closing sign-out.
+const DB_CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Resolves on Ctrl+C, or on SIGTERM on Unix (what service managers send).
+pub(crate) async fn wait_for_shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            log::error!("Could not listen for Ctrl+C: {error}");
+            std::future::pending::<()>().await;
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(error) => {
+                log::error!("Could not listen for SIGTERM: {error}");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => {}
+        () = terminate => {}
+    }
+}

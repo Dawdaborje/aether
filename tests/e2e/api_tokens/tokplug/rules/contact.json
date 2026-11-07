@@ -1,0 +1,6 @@
+{
+  "model": "contact",
+  "access": [
+    { "name": "own", "operations": ["read", "create", "write", "delete"], "when": { "owner": "$user" } }
+  ]
+}

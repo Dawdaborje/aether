@@ -1,0 +1,22 @@
+{
+  "code": "org",
+  "name": "Organization",
+  "description": "Read and add the people who can sign in to the organization the plugin is serving.",
+  "capabilities": [
+    {
+      "code": "members",
+      "name": "List login accounts",
+      "description": "List active members of this organization (id and display name). Maps to kernel command org::members."
+    },
+    {
+      "code": "create_member",
+      "name": "Create a login",
+      "description": "Create an account with a generated password, or add an existing account, in this organization. Maps to kernel command org::create_member. The plugin cannot choose the password."
+    },
+    {
+      "code": "invite",
+      "name": "Invite someone to create an account",
+      "description": "Email a one-time link so a new person sets their own password, or add an existing account to this organization. Maps to kernel command org::invite."
+    }
+  ]
+}

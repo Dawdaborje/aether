@@ -1,0 +1,1252 @@
+//! `GET /api/ui/apps`: the apps the caller can open: the Apps launcher.
+//!
+//! An app is an installed plugin that declares `[app]` in its manifest. The list
+//! is for logged-in members of the organization; the launcher is the home
+//! screen of everyone who is not a developer. Each tile includes `menus` built
+//! from that plugin's main pages for the sidebar when the theme has no nav match.
+//!
+//! An `[app] nav = true` plugin is not a tile: it comes back in `nav_links`, shown
+//! beside Users and Settings.
+//!
+//! Workspace `launcher = "folder"` (default) groups remaining tiles under the
+//! workspace label; `launcher = "flat"` (Base) lists each member as its own
+//! tile and does not fold modules into a host. Plugins may also set `[app]
+//! folder = "…"` to create or join a named folder within the same workspace
+//! category. In a folder workspace, sibling plugins without `[app]`, and
+//! `[app]` modules with at most one sidebar menu (unless `standalone = true` or
+//! `also_in_host = true`),
+//! fold into the workspace host tile (shortest plugin name — e.g. `hr`),
+//! grouped by `menu_group`.
+
+use std::collections::HashMap;
+use std::net::SocketAddr;
+
+use axum::{
+    Extension, Json, Router,
+    extract::{ConnectInfo, State},
+    http::{HeaderMap, StatusCode, Uri},
+    response::{IntoResponse, Response},
+    routing::get,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use surrealdb::types::SurrealValue;
+
+use crate::plugin_assets;
+use aether_core::access::{
+    audit::Actor,
+    identity::{Identity, IdentityError, identify, with_retry_after},
+};
+use aether_core::app_dir::AppDir;
+use aether_core::pages_api::{locale_chain, translator};
+use aether_core::plugin_manager::installed;
+use aether_core::plugin_manager::revisions;
+use aether_core::roles;
+use aether_core::state::AppState;
+
+pub fn routes() -> Router<AppState> {
+    Router::new().route("/api/ui/apps", get(list_apps))
+}
+
+#[derive(Debug, Deserialize, SurrealValue)]
+struct InstalledRow {
+    plugin_name: String,
+    version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
+struct AppRow {
+    label: String,
+    icon: Option<String>,
+    route: String,
+    description: Option<String>,
+    #[serde(default)]
+    standalone: Option<bool>,
+    #[serde(default)]
+    also_in_host: Option<bool>,
+    #[serde(default)]
+    folder: Option<String>,
+    /// Roles that may see this tile (OR). Empty = anyone holding a role of the plugin.
+    #[serde(default)]
+    roles: Option<Vec<String>>,
+    /// A link in the Navigate section instead of a launcher tile.
+    #[serde(default)]
+    nav: Option<bool>,
+    /// `[[app.palette]]`, checked when the plugin was loaded.
+    #[serde(default)]
+    palette: Option<Vec<serde_json::Value>>,
+    /// `[app.tile]`, checked when the plugin was loaded.
+    #[serde(default)]
+    tile: Option<serde_json::Value>,
+}
+
+/// The live number on a launcher tile.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct TileNumber {
+    /// `plugin.function`; the web app asks it for the number.
+    function: String,
+    label: Option<String>,
+    unit: Option<String>,
+}
+
+/// One `[[app.palette]]` entry as the catalog keeps it.
+#[derive(Debug, Clone, Deserialize)]
+struct PaletteRow {
+    label: String,
+    #[serde(default)]
+    href: Option<String>,
+    #[serde(default)]
+    function: Option<String>,
+    #[serde(default)]
+    search: Option<String>,
+    #[serde(default)]
+    icon: Option<String>,
+    #[serde(default)]
+    keywords: Option<String>,
+    #[serde(default)]
+    shortcut: Option<String>,
+    #[serde(default)]
+    roles: Vec<String>,
+    #[serde(default)]
+    create: bool,
+}
+
+/// A command palette entry the caller may use (`palette` in the response).
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct PaletteCommand {
+    plugin: String,
+    /// The app it belongs to, shown beside the label.
+    app: String,
+    label: String,
+    /// What the entry opens, or `None` for a function or a record search.
+    href: Option<String>,
+    /// `plugin.function` the entry runs.
+    function: Option<String>,
+    /// `plugin.function` that finds records for what is typed.
+    search: Option<String>,
+    icon: Option<String>,
+    keywords: Option<String>,
+    shortcut: Option<String>,
+    /// Listed under the shell's "New" button.
+    create: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
+struct PluginAppRow {
+    name: String,
+    version: String,
+    workspace: Option<String>,
+    icon_path: Option<String>,
+    revision: Option<String>,
+    app: AppRow,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
+struct MenuPageRow {
+    route: String,
+    title: String,
+    icon: Option<String>,
+    menu_group: Option<String>,
+    menu_group_icon: Option<String>,
+    sort_order: Option<i64>,
+    is_menu_visible: Option<bool>,
+    is_pattern: bool,
+    #[serde(default)]
+    required_roles: Option<Vec<String>>,
+    /// `menu_when="<function>"` on the page: the entry is shown only when that function of the
+    /// plugin answers something (a record, `true`, a non-empty list) for the person asking.
+    #[serde(default)]
+    menu_when: Option<String>,
+    /// `menu_badge="<function>"` on the page: the web app calls it for a count beside the entry.
+    #[serde(default)]
+    menu_badge: Option<String>,
+    /// `menu_description="…"` on the page: a line under the entry (the `mega` nav variant).
+    #[serde(default)]
+    menu_description: Option<String>,
+    plugin_name: String,
+    plugin_version: String,
+    workspace: Option<String>,
+}
+
+/// One top-bar / sidebar menu entry for an installed app.
+#[derive(Debug, Serialize, PartialEq, Eq, Clone)]
+struct AppMenuItem {
+    label: String,
+    href: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    icon: Option<String>,
+    /// Sidebar section (collapsible); from the page's `menu_group`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    group: Option<String>,
+    /// Lucide icon for that section; from the page's `menu_group_icon`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    group_icon: Option<String>,
+    /// `plugin.function` whose answer is shown as a count; from the page's `menu_badge`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    badge: Option<String>,
+    /// A line under the entry; from the page's `menu_description`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    /// From the page's `sort` attribute; not sent to the client.
+    #[serde(skip)]
+    sort_order: i64,
+}
+
+/// One tile of the launcher.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct AppTile {
+    plugin: String,
+    /// The plugin's workspace, which groups apps into categories.
+    category: Option<String>,
+    label: String,
+    icon: Option<String>,
+    /// `/api/ui/plugins/{name}/logo` when the revision ships a logo file.
+    logo_url: Option<String>,
+    route: String,
+    description: Option<String>,
+    /// Named Apps-home folder (`[app] folder`); same workspace category for install.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    folder: Option<String>,
+    /// Main pages of this plugin for the navbar when theme nav does not match.
+    menus: Vec<AppMenuItem>,
+    /// A live number to show on the tile (`[app.tile]`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tile: Option<TileNumber>,
+    /// Not sent to the client; used when folding thin workspace modules.
+    #[serde(skip)]
+    standalone: bool,
+    /// Not sent to the client; the tile stays and its menus are also listed in the host.
+    #[serde(skip)]
+    also_in_host: bool,
+}
+
+/// An `[app] nav = true` plugin: a link beside Users / Settings, not a launcher tile.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct NavLink {
+    plugin: String,
+    label: String,
+    icon: Option<String>,
+    href: String,
+}
+
+/// One workspace group on the Apps launcher (a folder of related apps).
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct AppCategory {
+    /// Workspace name (`base`, `crm`, …); matches `AppTile.category`.
+    id: String,
+    label: String,
+    /// Lucide icon id when `group_icon` is not a file path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    icon: Option<String>,
+    /// `/api/ui/workspaces/{id}/logo` when the workspace staged a logo file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    logo_url: Option<String>,
+    /// `folder` (default) or `flat` — flat lists each member on the home grid.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    launcher: Option<String>,
+    /// The workspace's description, shown under its folder tile.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
+struct WorkspaceRow {
+    name: String,
+    label: Option<String>,
+    group_label: Option<String>,
+    group_icon: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    logo_file: Option<String>,
+    #[serde(default)]
+    launcher: Option<String>,
+}
+
+/// Pre-role catalog for the Apps launcher (Mantle Tier B).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LauncherCatalog {
+    apps: Vec<PluginAppRow>,
+    menus: Vec<MenuPageRow>,
+    workspaces: Vec<WorkspaceRow>,
+}
+
+async fn launcher_catalog(
+    state: &AppState,
+    org: &str,
+    installed_pairs: &[(String, String)],
+) -> Result<LauncherCatalog, surrealdb::Error> {
+    if let Ok(Some(json)) = state.cache.warm_get_apps_launcher_json(org)
+        && let Ok(catalog) = serde_json::from_value::<LauncherCatalog>(json)
+    {
+        return Ok(catalog);
+    }
+    let core = state.core().await?;
+    let mut apps_resp = core
+        .query(
+            "SELECT name, version, workspace, icon_path, revision, app \
+             FROM plugins WHERE app != NONE AND is_active = true;",
+        )
+        .await?
+        .check()?;
+    let apps: Vec<PluginAppRow> = apps_resp
+        .take::<Vec<PluginAppRow>>(0)?
+        .into_iter()
+        .filter(|row| {
+            installed_pairs
+                .iter()
+                .any(|(name, version)| name == &row.name && version == &row.version)
+        })
+        .collect();
+    let mut menus = Vec::new();
+    if !installed_pairs.is_empty() {
+        let mut pages_resp = core
+            .query(
+                "SELECT route, title, icon, menu_group, menu_group_icon, sort_order, is_menu_visible, is_pattern, \
+                 required_roles, component_tree.menu_when AS menu_when, \
+                 component_tree.menu_badge AS menu_badge, \
+                 component_tree.menu_description AS menu_description, \
+                 plugin.name AS plugin_name, plugin.version AS plugin_version, \
+                 plugin.workspace AS workspace \
+                 FROM plugin_ui_pages \
+                 WHERE (is_pattern = false OR string::ends_with(route, '?}')) \
+                   AND (is_menu_visible = true OR is_menu_visible = NONE);",
+            )
+            .await?
+            .check()?;
+        let pages: Vec<MenuPageRow> = pages_resp.take(0)?;
+        menus = pages
+            .into_iter()
+            .filter(|row| {
+                is_menu_page(row)
+                    && installed_pairs.iter().any(|(name, version)| {
+                        name == &row.plugin_name && version == &row.plugin_version
+                    })
+            })
+            .collect();
+    }
+    let mut ws_resp = core
+        .query(
+            "SELECT name, label, group_label, group_icon, description, logo_file, launcher FROM plugin_workspaces;",
+        )
+        .await?
+        .check()?;
+    let workspaces: Vec<WorkspaceRow> = ws_resp.take(0)?;
+    let catalog = LauncherCatalog {
+        apps,
+        menus,
+        workspaces,
+    };
+    if let Ok(json) = serde_json::to_value(&catalog) {
+        let _ = state.cache.warm_set_apps_launcher_json(org, &json);
+    }
+    Ok(catalog)
+}
+
+/// A page that asks to be shown on the Apps page while something is not set up:
+/// `<page setup_when="<function>" setup_text="…">`.
+#[derive(Debug, Clone, Deserialize, SurrealValue)]
+struct SetupPageRow {
+    route: String,
+    title: String,
+    #[serde(default)]
+    required_roles: Option<Vec<String>>,
+    setup_when: Option<String>,
+    #[serde(default)]
+    setup_text: Option<String>,
+    /// `setup_modal="true"`: the Apps page opens the page's form in a dialog instead of going to it.
+    #[serde(default)]
+    setup_modal: Option<String>,
+    plugin_name: String,
+    plugin_version: String,
+}
+
+/// The setup pages of installed plugins that still apply to this person: the page's `setup_when`
+/// function of its plugin answers something other than null, false or an empty list. Never cached,
+/// since the answer changes the moment the setup is done. A failing function hides its step.
+async fn setup_steps(
+    state: &AppState,
+    identity: &Identity,
+    installed_pairs: &[(String, String)],
+    is_developer: bool,
+    user_roles: &[String],
+    org_roles: &[String],
+) -> Vec<Value> {
+    let rows: Vec<SetupPageRow> = match async {
+        let core = state.core().await?;
+        let mut response = core
+            .query(
+                "SELECT route, title, required_roles, \
+                 component_tree.setup_when AS setup_when, component_tree.setup_text AS setup_text, \
+                 <string> (component_tree.setup_modal ?? '') AS setup_modal, \
+                 plugin.name AS plugin_name, plugin.version AS plugin_version \
+                 FROM plugin_ui_pages WHERE component_tree.setup_when != NONE AND is_pattern = false;",
+            )
+            .await?
+            .check()?;
+        response.take::<Vec<SetupPageRow>>(0)
+    }
+    .await
+    {
+        Ok(rows) => rows,
+        Err(error) => {
+            log::warn!("apps: setup pages: {error}");
+            return Vec::new();
+        }
+    };
+    let mut steps = Vec::new();
+    for row in rows {
+        if !installed_pairs
+            .iter()
+            .any(|(name, version)| name == &row.plugin_name && version == &row.plugin_version)
+        {
+            continue;
+        }
+        // Only people who may open the page are told to.
+        if !is_developer
+            && !roles::allows_in_plugin(
+                user_roles,
+                row.required_roles.as_deref().unwrap_or(&[]),
+                &row.plugin_name,
+                org_roles,
+            )
+        {
+            continue;
+        }
+        let Some(function) = row
+            .setup_when
+            .as_deref()
+            .map(str::trim)
+            .filter(|f| !f.is_empty())
+        else {
+            continue;
+        };
+        if !menu_applies(state, identity, &row.plugin_name, function).await {
+            continue;
+        }
+        steps.push(json!({
+            "plugin": row.plugin_name,
+            "title": row.title,
+            "description": row.setup_text,
+            "href": row.route,
+            "modal": row.setup_modal.as_deref().map(str::trim).is_some_and(|v| v.eq_ignore_ascii_case("true")),
+        }));
+    }
+    steps.sort_by_key(|step| step["title"].as_str().unwrap_or_default().to_lowercase());
+    steps
+}
+
+/// Whether a `menu_when` function says the entry applies to this person. A function that fails
+/// hides the entry (and is logged): showing a link that leads nowhere is worse than a missing one.
+async fn menu_applies(state: &AppState, identity: &Identity, plugin: &str, function: &str) -> bool {
+    match aether_core::plugin_manager::api::call_as_identity(
+        state,
+        identity,
+        plugin,
+        function,
+        json!({}),
+    )
+    .await
+    {
+        Ok(Value::Null) | Ok(Value::Bool(false)) => false,
+        Ok(Value::Array(items)) => !items.is_empty(),
+        Ok(_) => true,
+        Err(error) => {
+            log::warn!("apps: menu_when `{plugin}.{function}` failed: {error}");
+            false
+        }
+    }
+}
+
+fn failure(status: StatusCode, message: &str) -> Response {
+    (status, Json(json!({ "error": message }))).into_response()
+}
+
+/// The address a menu entry for this page opens: the route itself, or for `/chat/{channel?}` just `/chat`.
+fn menu_route(row: &MenuPageRow) -> Option<String> {
+    if !row.is_pattern {
+        return Some(row.route.clone());
+    }
+    aether_core::plugin_manager::pages::RoutePattern::parse(&row.route)
+        .ok()?
+        .menu_route()
+}
+
+fn is_menu_page(row: &MenuPageRow) -> bool {
+    if row.is_pattern && menu_route(row).is_none() {
+        return false;
+    }
+    if row.is_menu_visible == Some(false) {
+        return false;
+    }
+    // Create / hire forms are opened from list "New" actions, not the sidebar.
+    let route = menu_route(row).unwrap_or_default();
+    !(route.ends_with("/new") || route.ends_with("/hire"))
+}
+
+/// Shortest installed `[app]` tile in a workspace hosts menus from sibling plugins without `[app]`.
+fn workspace_host_index(tiles: &[AppTile], workspace: &str) -> Option<usize> {
+    tiles
+        .iter()
+        .enumerate()
+        .filter(|(_, tile)| tile.category.as_deref() == Some(workspace))
+        .min_by_key(|(_, tile)| (tile.plugin.len(), tile.route.len(), tile.plugin.as_str()))
+        .map(|(index, _)| index)
+}
+
+/// `hr_recruitment` → `Recruitment` when a contributed page has no `menu_group`.
+fn humanize_plugin_group(plugin: &str) -> String {
+    let trimmed = plugin
+        .strip_prefix("hr_")
+        .or_else(|| plugin.strip_prefix("erp_"))
+        .or_else(|| plugin.strip_prefix("crm_"))
+        .unwrap_or(plugin);
+    humanize_workspace(trimmed)
+}
+
+fn merge_menus_into(host: &mut AppTile, menus: &mut Vec<AppMenuItem>, default_group: &str) {
+    for item in menus.iter_mut() {
+        if item.group.is_none() {
+            item.group = Some(default_group.to_string());
+        }
+    }
+    host.menus.append(menus);
+    host.menus.sort_by(|a, b| {
+        a.group
+            .as_deref()
+            .unwrap_or("")
+            .cmp(b.group.as_deref().unwrap_or(""))
+            .then(a.sort_order.cmp(&b.sort_order))
+            .then_with(|| a.label.to_lowercase().cmp(&b.label.to_lowercase()))
+    });
+}
+
+/// Drop folder-workspace tiles that only expose one (or zero) menu links; their
+/// menus join the host sidebar. The host itself, `standalone` apps, and every
+/// member of a `launcher = "flat"` workspace are kept. An `also_in_host` app is
+/// kept too, and its menus are copied into the host sidebar as well.
+fn fold_thin_workspace_apps(
+    tiles: &mut Vec<AppTile>,
+    flat_workspaces: &std::collections::HashSet<String>,
+) {
+    let workspaces: Vec<String> = tiles
+        .iter()
+        .filter_map(|tile| tile.category.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    for workspace in workspaces {
+        if flat_workspaces.contains(&workspace) {
+            continue;
+        }
+        let Some(host_idx) = workspace_host_index(tiles, &workspace) else {
+            continue;
+        };
+        let host_plugin = tiles[host_idx].plugin.clone();
+        // Apps that keep their tile but also list their menus in the host sidebar.
+        let shared: Vec<(String, Vec<AppMenuItem>)> = tiles
+            .iter()
+            .enumerate()
+            .filter(|(index, tile)| {
+                *index != host_idx
+                    && tile.category.as_deref() == Some(workspace.as_str())
+                    && tile.also_in_host
+            })
+            .map(|(_, tile)| (tile.label.clone(), tile.menus.clone()))
+            .collect();
+        for (label, mut menus) in shared {
+            merge_menus_into(&mut tiles[host_idx], &mut menus, &label);
+        }
+        let mut fold_idxs: Vec<usize> = tiles
+            .iter()
+            .enumerate()
+            .filter(|(index, tile)| {
+                *index != host_idx
+                    && tile.category.as_deref() == Some(workspace.as_str())
+                    && !tile.standalone
+                    && !tile.also_in_host
+                    && tile.menus.len() <= 1
+            })
+            .map(|(index, _)| index)
+            .collect();
+        fold_idxs.sort_unstable();
+        fold_idxs.reverse();
+        for index in fold_idxs {
+            let mut tile = tiles.remove(index);
+            let host_idx = workspace_host_index(tiles, &workspace).unwrap_or_else(|| {
+                // Host may have shifted after removals; fall back by plugin name.
+                tiles
+                    .iter()
+                    .position(|t| t.plugin == host_plugin)
+                    .unwrap_or(0)
+            });
+            let group = tile.label.clone();
+            merge_menus_into(&mut tiles[host_idx], &mut tile.menus, &group);
+        }
+    }
+}
+
+async fn list_apps(
+    State(state): State<AppState>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> Response {
+    let peer_ip = peer.map(|Extension(ConnectInfo(address))| address.ip());
+    let identity = match identify(&state, &headers, peer_ip, &uri).await {
+        Ok(identity) => identity,
+        Err(error) => {
+            if matches!(error, IdentityError::Database(_) | IdentityError::Audit(_)) {
+                log::error!("apps request identity: {error}");
+            }
+            let (status, message) = error.http();
+            return with_retry_after(failure(status, message));
+        }
+    };
+
+    // The launcher is for people who are logged in and belong here.
+    let Actor::User(user_id) = &identity.actor else {
+        return failure(
+            if identity.foreign_user {
+                StatusCode::FORBIDDEN
+            } else {
+                StatusCode::UNAUTHORIZED
+            },
+            if identity.foreign_user {
+                "not a member of this organization"
+            } else {
+                "not authenticated"
+            },
+        );
+    };
+    let is_developer = identity
+        .session
+        .as_ref()
+        .map(|session| session.user.is_super_user)
+        .unwrap_or(false);
+
+    // `identify` leaves the connection on the organization's database.
+    let org_db = match state.org(&identity.org_db).await {
+        Ok(db) => db,
+        Err(error) => {
+            log::error!("apps: organization `{}`: {error}", identity.org_db);
+            return failure(StatusCode::INTERNAL_SERVER_ERROR, "database error");
+        }
+    };
+    let user_roles = if is_developer {
+        Vec::new()
+    } else {
+        match roles::roles_of_cached(&state.cache, &identity.org_db, &org_db, user_id).await {
+            Ok(names) => names,
+            Err(error) => {
+                log::error!(
+                    "apps: roles of `{user_id}` in `{}`: {error}",
+                    identity.org_db
+                );
+                return failure(StatusCode::INTERNAL_SERVER_ERROR, "database error");
+            }
+        }
+    };
+    // Every role defined here: a page or app that names no roles is gated on its own plugin's roles.
+    let org_roles = if is_developer {
+        Vec::new()
+    } else {
+        match roles::all_names(&org_db).await {
+            Ok(names) => names,
+            Err(error) => {
+                log::error!("apps: roles of `{}`: {error}", identity.org_db);
+                return failure(StatusCode::INTERNAL_SERVER_ERROR, "database error");
+            }
+        }
+    };
+    log::debug!(
+        "apps: `{user_id}` in `{}`: developer={is_developer}, roles={user_roles:?}",
+        identity.org_db
+    );
+    let installed = match installed::list_cached(&state.cache, &identity.org_db, &org_db).await {
+        Ok(rows) => rows
+            .into_iter()
+            .filter(|row| row.is_enabled)
+            .map(|row| InstalledRow {
+                plugin_name: row.plugin_name,
+                version: row.version,
+            })
+            .collect::<Vec<_>>(),
+        Err(error) => {
+            log::error!("apps: installed plugins of `{}`: {error}", identity.org_db);
+            return failure(StatusCode::INTERNAL_SERVER_ERROR, "database error");
+        }
+    };
+
+    let installed_pairs: Vec<(String, String)> = installed
+        .iter()
+        .map(|row| (row.plugin_name.clone(), row.version.clone()))
+        .collect();
+    let catalog = match launcher_catalog(&state, &identity.org_db, &installed_pairs).await {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            log::error!("apps: catalog lookup: {error}");
+            return failure(StatusCode::INTERNAL_SERVER_ERROR, "database error");
+        }
+    };
+
+    let mut menus_by_plugin: HashMap<(String, String), Vec<AppMenuItem>> = HashMap::new();
+    let mut workspace_by_plugin: HashMap<(String, String), Option<String>> = HashMap::new();
+    if !catalog.menus.is_empty() {
+        let chain = locale_chain(&state.config, &identity, &headers);
+        let loc = translator(&state, &identity).await.ok();
+        let mut grouped: HashMap<(String, String), Vec<MenuPageRow>> = HashMap::new();
+        // The answer of each `menu_when` function, asked once per request.
+        let mut applies: HashMap<(String, String), bool> = HashMap::new();
+        for row in catalog.menus {
+            if !is_developer
+                && !roles::allows_in_plugin(
+                    &user_roles,
+                    row.required_roles.as_deref().unwrap_or(&[]),
+                    &row.plugin_name,
+                    &org_roles,
+                )
+            {
+                continue;
+            }
+            if let Some(function) = row
+                .menu_when
+                .as_deref()
+                .map(str::trim)
+                .filter(|f| !f.is_empty())
+            {
+                let key = (row.plugin_name.clone(), function.to_string());
+                let shown = match applies.get(&key) {
+                    Some(shown) => *shown,
+                    None => {
+                        let shown =
+                            menu_applies(&state, &identity, &row.plugin_name, function).await;
+                        applies.insert(key, shown);
+                        shown
+                    }
+                };
+                if !shown {
+                    continue;
+                }
+            }
+            grouped
+                .entry((row.plugin_name.clone(), row.plugin_version.clone()))
+                .or_default()
+                .push(row);
+        }
+        for ((name, version), mut rows) in grouped {
+            // Ungrouped links (e.g. Home) before collapsible sections, then sort_order.
+            rows.sort_by(|a, b| {
+                let a_grouped = a
+                    .menu_group
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|g| !g.is_empty())
+                    .is_some();
+                let b_grouped = b
+                    .menu_group
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|g| !g.is_empty())
+                    .is_some();
+                a_grouped
+                    .cmp(&b_grouped)
+                    .then(a.sort_order.unwrap_or(0).cmp(&b.sort_order.unwrap_or(0)))
+                    .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
+            });
+            let workspace = rows.first().and_then(|row| row.workspace.clone());
+            workspace_by_plugin.insert((name.clone(), version.clone()), workspace);
+            let mut menus = Vec::with_capacity(rows.len());
+            for row in rows {
+                let href = menu_route(&row).unwrap_or_else(|| row.route.clone());
+                let mut title = Value::String(row.title);
+                if let Some(translator) = &loc {
+                    aether_localization::resolve_tree(&mut title, &name, translator, &chain);
+                }
+                let label = title.as_str().unwrap_or_default().to_string();
+                let group = row
+                    .menu_group
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|g| !g.is_empty())
+                    .map(str::to_string);
+                let group_icon = row
+                    .menu_group_icon
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|icon| !icon.is_empty())
+                    .map(str::to_string);
+                // A bare function name belongs to the page's own plugin.
+                let badge = row
+                    .menu_badge
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|f| !f.is_empty())
+                    .map(|f| {
+                        if f.contains('.') {
+                            f.to_string()
+                        } else {
+                            format!("{}.{f}", row.plugin_name)
+                        }
+                    });
+                menus.push(AppMenuItem {
+                    label,
+                    href,
+                    icon: row.icon,
+                    group,
+                    group_icon,
+                    badge,
+                    description: row
+                        .menu_description
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|text| !text.is_empty())
+                        .map(str::to_string),
+                    sort_order: row.sort_order.unwrap_or(0),
+                });
+            }
+            menus_by_plugin.insert((name, version), menus);
+        }
+    }
+
+    let layout = AppDir::new(&state.config.app_dir);
+    let mut member_tiles: Vec<AppTile> = Vec::new();
+    let mut nav_links: Vec<NavLink> = Vec::new();
+    let mut palette: Vec<PaletteCommand> = Vec::new();
+    for row in catalog.apps {
+        let logo_url = {
+            let folder = row.revision.as_deref().unwrap_or(row.version.as_str());
+            match revisions::read_index(&layout, &row.name, folder).await {
+                // A new revision is a new URL, so a changed logo is never served from the cache.
+                Ok(Some(index)) => {
+                    plugin_assets::logo_url(&row.name, &index, row.icon_path.as_deref())
+                        .map(|url| format!("{url}?v={folder}"))
+                }
+                Ok(None) => None,
+                Err(error) => {
+                    log::warn!("apps logo index `{}`: {error}", row.name);
+                    None
+                }
+            }
+        };
+        let app_roles = row.app.roles.clone().unwrap_or_default();
+        if !is_developer && !roles::allows_in_plugin(&user_roles, &app_roles, &row.name, &org_roles)
+        {
+            // Drop menus so they are not folded into a host the caller cannot open.
+            menus_by_plugin.remove(&(row.name.clone(), row.version.clone()));
+            continue;
+        }
+        let menus = menus_by_plugin
+            .remove(&(row.name.clone(), row.version.clone()))
+            .unwrap_or_default();
+        for value in row.app.palette.iter().flatten() {
+            let Ok(entry) = serde_json::from_value::<PaletteRow>(value.clone()) else {
+                log::warn!("apps: a palette entry of `{}` could not be read", row.name);
+                continue;
+            };
+            // An entry without roles goes to whoever sees the app (checked above).
+            if !is_developer
+                && !entry.roles.is_empty()
+                && !roles::allows_in_plugin(&user_roles, &entry.roles, &row.name, &org_roles)
+            {
+                continue;
+            }
+            palette.push(PaletteCommand {
+                plugin: row.name.clone(),
+                app: row.app.label.clone(),
+                label: entry.label,
+                href: entry.href,
+                function: entry.function.map(|f| format!("{}.{f}", row.name)),
+                search: entry.search.map(|f| format!("{}.{f}", row.name)),
+                icon: entry.icon,
+                keywords: entry.keywords,
+                shortcut: entry.shortcut,
+                create: entry.create,
+            });
+        }
+        if row.app.nav.unwrap_or(false) {
+            nav_links.push(NavLink {
+                plugin: row.name,
+                label: row.app.label,
+                icon: row.app.icon,
+                href: row.app.route,
+            });
+            continue;
+        }
+        let folder = row
+            .app
+            .folder
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string);
+        let tile = row
+            .app
+            .tile
+            .as_ref()
+            .and_then(|value| serde_json::from_value::<TileNumber>(value.clone()).ok())
+            .map(|tile| TileNumber {
+                function: format!("{}.{}", row.name, tile.function),
+                ..tile
+            });
+        member_tiles.push(AppTile {
+            plugin: row.name,
+            category: row.workspace,
+            label: row.app.label,
+            icon: row.app.icon,
+            logo_url,
+            route: row.app.route,
+            description: row.app.description,
+            folder,
+            menus,
+            tile,
+            standalone: row.app.standalone.unwrap_or(false),
+            also_in_host: row.app.also_in_host.unwrap_or(false),
+        });
+    }
+
+    // `launcher = "flat"` (Base) keeps every member as its own tile. Folding
+    // would hide Companies inside whichever plugin name is shortest (`uom`).
+    let flat_workspaces: std::collections::HashSet<String> = catalog
+        .workspaces
+        .iter()
+        .filter(|row| {
+            row.launcher
+                .as_deref()
+                .is_some_and(|launcher| launcher.trim().eq_ignore_ascii_case("flat"))
+        })
+        .map(|row| row.name.clone())
+        .collect();
+
+    // Plugins without `[app]` (e.g. recruitment under HRMS) fold into the workspace host tile.
+    for ((name, version), mut menus) in menus_by_plugin {
+        let Some(workspace) = workspace_by_plugin
+            .remove(&(name.clone(), version))
+            .flatten()
+            .map(|w| w.trim().to_string())
+            .filter(|w| !w.is_empty())
+        else {
+            continue;
+        };
+        if flat_workspaces.contains(&workspace) {
+            continue;
+        }
+        let Some(host) = workspace_host_index(&member_tiles, &workspace) else {
+            continue;
+        };
+        let default_group = humanize_plugin_group(&name);
+        merge_menus_into(&mut member_tiles[host], &mut menus, &default_group);
+    }
+
+    // Thin `[app]` modules (≤1 menu) fold into the host unless `standalone = true`
+    // or the workspace lists members flat.
+    fold_thin_workspace_apps(&mut member_tiles, &flat_workspaces);
+    // After role filtering and folding, drop tiles with nothing left to open.
+    member_tiles.retain(|tile| !tile.menus.is_empty());
+
+    let by_name: HashMap<String, WorkspaceRow> = catalog
+        .workspaces
+        .into_iter()
+        .map(|row| (row.name.clone(), row))
+        .collect();
+
+    // Each `[app]` is its own tile; workspace metadata only labels the folder.
+    let tiles = member_tiles;
+    let mut tiles = tiles;
+    tiles.sort_by_key(|tile| tile.label.to_lowercase());
+
+    let mut categories: Vec<AppCategory> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for tile in &tiles {
+        let id = tile
+            .category
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .unwrap_or("other");
+        if !seen.insert(id.to_string()) {
+            continue;
+        }
+        let meta = by_name.get(id);
+        let label = meta
+            .and_then(|row| {
+                row.group_label
+                    .as_deref()
+                    .or(row.label.as_deref())
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| humanize_workspace(id));
+        let icon = meta.and_then(|row| {
+            row.group_icon.as_deref().and_then(|icon| {
+                let trimmed = icon.trim();
+                if trimmed.is_empty()
+                    || aether_core::plugin_manager::workspaces::is_asset_icon(trimmed)
+                {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            })
+        });
+        let mut logo_url = meta.and_then(|row| {
+            aether_core::plugin_manager::workspaces::logo_url_for_workspace(
+                &row.name,
+                row.logo_file.as_deref(),
+                row.group_icon.as_deref(),
+            )
+        });
+        // The logo URL is stable, so tag it with the staged file's age: a new logo is a new URL
+        // and the browser cannot keep showing the old one.
+        if let (Some(url), Some(row)) = (logo_url.as_mut(), meta) {
+            let staged = aether_core::plugin_manager::workspaces::staged_logo_path(
+                &layout,
+                &row.name,
+                row.logo_file.as_deref(),
+            )
+            .await;
+            let modified = match staged {
+                Some(path) => tokio::fs::metadata(path)
+                    .await
+                    .and_then(|m| m.modified())
+                    .ok(),
+                None => None,
+            };
+            if let Some(secs) = modified
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|age| age.as_secs())
+            {
+                url.push_str(&format!("?v={secs}"));
+            }
+        }
+        // A group shows its workspace's own logo or icon, never a member app's logo.
+        let launcher = meta
+            .and_then(|row| {
+                row.launcher
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+            })
+            .map(|v| {
+                if v == "flat" {
+                    "flat".to_string()
+                } else {
+                    "folder".to_string()
+                }
+            });
+        categories.push(AppCategory {
+            id: id.to_string(),
+            label,
+            icon,
+            logo_url,
+            launcher,
+            description: meta
+                .and_then(|row| row.description.as_deref())
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string),
+        });
+    }
+    categories.sort_by(|a, b| a.label.to_lowercase().cmp(&b.label.to_lowercase()));
+
+    log::info!(
+        "{} apps for organization `{}`: {} tile(s), {} group(s)",
+        identity.audit.request_id,
+        identity.org_db,
+        tiles.len(),
+        categories.len()
+    );
+    nav_links.sort_by_key(|link| link.label.to_lowercase());
+    let setup = setup_steps(
+        &state,
+        &identity,
+        &installed_pairs,
+        is_developer,
+        &user_roles,
+        &org_roles,
+    )
+    .await;
+    palette.sort_by(|a, b| {
+        (a.app.to_lowercase(), a.label.to_lowercase())
+            .cmp(&(b.app.to_lowercase(), b.label.to_lowercase()))
+    });
+    Json(json!({ "apps": tiles, "categories": categories, "nav_links": nav_links, "setup": setup, "palette": palette })).into_response()
+}
+
+/// `erp_sales` → `ERP Sales` (fallback when the workspace is not in the catalog yet).
+fn humanize_workspace(name: &str) -> String {
+    const ACRONYMS: &[&str] = &["api", "crm", "erp", "hr", "hrms", "pos", "ui", "uom"];
+    if name == "other" {
+        return "Other".into();
+    }
+    name.split([' ', '_', '-'])
+        .filter(|part| !part.is_empty())
+        .map(|word| {
+            let lower = word.to_ascii_lowercase();
+            if ACRONYMS.contains(&lower.as_str()) {
+                lower.to_ascii_uppercase()
+            } else {
+                let mut chars = lower.chars();
+                match chars.next() {
+                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                    None => String::new(),
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn humanizes_workspace_ids_for_folder_labels() {
+        assert_eq!(humanize_workspace("crm"), "CRM");
+        assert_eq!(humanize_workspace("hrms"), "HRMS");
+        assert_eq!(humanize_workspace("erp_sales"), "ERP Sales");
+        assert_eq!(humanize_workspace("other"), "Other");
+    }
+
+    #[test]
+    fn menu_pages_skip_create_and_hire_routes() {
+        let base = MenuPageRow {
+            route: "/hr/employees".into(),
+            title: "Employees".into(),
+            icon: None,
+            menu_group: None,
+            menu_group_icon: None,
+            sort_order: Some(0),
+            is_menu_visible: Some(true),
+            is_pattern: false,
+            required_roles: None,
+            menu_when: None,
+            menu_badge: None,
+            menu_description: None,
+            plugin_name: "hr".into(),
+            plugin_version: "0.1.0".into(),
+            workspace: Some("hrms".into()),
+        };
+        assert!(is_menu_page(&base));
+        assert!(!is_menu_page(&MenuPageRow {
+            route: "/hr/employees/hire".into(),
+            ..base.clone()
+        }));
+        assert!(!is_menu_page(&MenuPageRow {
+            route: "/hr/departments/new".into(),
+            ..base.clone()
+        }));
+        // `/chat/{channel?}` is a menu entry that opens `/chat`; a required parameter is not.
+        let optional = MenuPageRow {
+            route: "/chat/{channel?}".into(),
+            is_pattern: true,
+            ..base.clone()
+        };
+        assert!(is_menu_page(&optional));
+        assert_eq!(menu_route(&optional).as_deref(), Some("/chat"));
+        assert!(!is_menu_page(&MenuPageRow {
+            route: "/chat/{channel}".into(),
+            is_pattern: true,
+            ..base.clone()
+        }));
+        assert!(!is_menu_page(&MenuPageRow {
+            is_menu_visible: Some(false),
+            ..base
+        }));
+    }
+
+    fn sample_tile(plugin: &str, label: &str, menus: usize, standalone: bool) -> AppTile {
+        AppTile {
+            plugin: plugin.into(),
+            category: Some("hrms".into()),
+            label: label.into(),
+            icon: None,
+            logo_url: None,
+            route: format!("/hr/{plugin}"),
+            description: None,
+            folder: None,
+            tile: None,
+            menus: (0..menus)
+                .map(|i| AppMenuItem {
+                    label: format!("Menu {i}"),
+                    href: format!("/hr/{plugin}/{i}"),
+                    icon: None,
+                    group: None,
+                    group_icon: None,
+                    badge: None,
+                    description: None,
+                    sort_order: i as i64,
+                })
+                .collect(),
+            standalone,
+            also_in_host: false,
+        }
+    }
+
+    #[test]
+    fn picks_shortest_plugin_as_workspace_host() {
+        let tiles = vec![
+            sample_tile("hr_attendance", "Attendance", 1, false),
+            sample_tile("hr", "Human Resources", 2, false),
+        ];
+        assert_eq!(workspace_host_index(&tiles, "hrms"), Some(1));
+        assert_eq!(humanize_plugin_group("hr_recruitment"), "Recruitment");
+    }
+
+    #[test]
+    fn folds_single_menu_workspace_apps_into_host() {
+        let mut tiles = vec![
+            sample_tile("hr_attendance", "Attendance", 1, false),
+            sample_tile("hr", "Human Resources", 2, false),
+            sample_tile("hr_leave", "Leave", 2, false),
+            sample_tile("hr_payroll", "Payroll", 1, true),
+        ];
+        fold_thin_workspace_apps(&mut tiles, &std::collections::HashSet::new());
+        let names: Vec<_> = tiles.iter().map(|t| t.plugin.as_str()).collect();
+        assert_eq!(names, ["hr", "hr_leave", "hr_payroll"]);
+        let hr = tiles.iter().find(|t| t.plugin == "hr").unwrap();
+        assert!(
+            hr.menus
+                .iter()
+                .any(|m| m.group.as_deref() == Some("Attendance"))
+        );
+        assert_eq!(hr.menus.len(), 3); // 2 own + 1 folded
+    }
+
+    #[test]
+    fn also_in_host_keeps_the_tile_and_lists_its_menu_in_the_host() {
+        let mut shared = sample_tile("hr_enrollment", "Employee Enrollment", 1, false);
+        shared.also_in_host = true;
+        let mut tiles = vec![sample_tile("hr", "Human Resources", 2, false), shared];
+        fold_thin_workspace_apps(&mut tiles, &std::collections::HashSet::new());
+        let names: Vec<_> = tiles.iter().map(|t| t.plugin.as_str()).collect();
+        assert_eq!(names, ["hr", "hr_enrollment"]);
+        let hr = tiles.iter().find(|t| t.plugin == "hr").unwrap();
+        assert_eq!(hr.menus.len(), 3);
+        assert!(
+            hr.menus
+                .iter()
+                .any(|m| m.group.as_deref() == Some("Employee Enrollment"))
+        );
+        let own = tiles.iter().find(|t| t.plugin == "hr_enrollment").unwrap();
+        assert_eq!(own.menus.len(), 1);
+    }
+
+    #[test]
+    fn flat_launcher_keeps_single_menu_apps() {
+        let mut tiles = vec![
+            sample_tile("uom", "Units of measure", 1, false),
+            sample_tile("company", "Companies", 1, false),
+            sample_tile("country", "Countries", 1, false),
+        ];
+        for tile in &mut tiles {
+            tile.category = Some("base".into());
+        }
+        let flat = std::collections::HashSet::from(["base".to_string()]);
+        fold_thin_workspace_apps(&mut tiles, &flat);
+        let names: Vec<_> = tiles.iter().map(|t| t.plugin.as_str()).collect();
+        assert_eq!(names, ["uom", "company", "country"]);
+        assert!(tiles.iter().all(|tile| tile.menus.len() == 1));
+    }
+}

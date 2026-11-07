@@ -1,0 +1,12 @@
+{
+  "code": "http",
+  "name": "HTTP Egress",
+  "description": "Allowlisted outbound HTTP through the kernel proxy. Plugins never open raw sockets; the kernel enforces host allowlists and timeouts.",
+  "capabilities": [
+    {
+      "code": "request",
+      "name": "HTTP Request",
+      "description": "Perform an allowlisted HTTP request (method + URL constrained by kernel policy)."
+    }
+  ]
+}

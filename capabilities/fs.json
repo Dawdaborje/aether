@@ -1,0 +1,11 @@
+{
+  "code": "fs",
+  "name": "Plugin folder",
+  "description": "Files in the plugin's own folder on disk for the organization (orgs/<organization>/plugins/<plugin>/), the folder a [[watch]] listens to. Paths are relative to that folder; a plugin can never reach anything outside it.",
+  "capabilities": [
+    { "code": "read", "name": "Read", "description": "Read a file or look at its size and date. Maps to kernel commands fs::read and fs::stat." },
+    { "code": "list", "name": "List", "description": "List the files in a folder. Maps to kernel command fs::list." },
+    { "code": "write", "name": "Write", "description": "Create or replace a file, or move one inside the folder. Maps to kernel commands fs::write and fs::rename." },
+    { "code": "delete", "name": "Delete", "description": "Delete a file or an empty folder. Maps to kernel command fs::delete." }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "groups": [
+    {
+      "id": "chatter",
+      "label": "Chatter",
+      "color": "teal",
+      "icon": "message-square",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "chatter_enabled",
+          "label": "Enable chatter",
+          "s_key": "chatter.enabled",
+          "s_value": true,
+          "description": "Records can have a conversation and history.",
+          "long_description": "A model still has to switch chatter on in its definition. Turning this off hides it everywhere in the organization without touching what was written."
+        },
+        {
+          "id": "chatter_trash_retention_days",
+          "label": "Keep deleted messages (days)",
+          "s_key": "chatter.trash_retention_days",
+          "s_value": 30,
+          "description": "How long deleted messages wait in the trash before cleanup removes them.",
+          "long_description": "Deleting a message, or a record, only moves its chatter to the trash, where developers can restore it. Cleanup removes it for good after this many days. An organization can set its own value."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "model_id": "mdl_ts7kv2db5w",
+  "name": "memo",
+  "label": "Memo",
+  "title_field": "body",
+  "fields": [
+    {
+      "id": "fld_65ydx6yomf",
+      "name": "body",
+      "type": "string",
+      "required": true
+    }
+  ]
+}

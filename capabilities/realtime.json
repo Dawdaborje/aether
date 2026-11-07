@@ -1,0 +1,22 @@
+{
+  "code": "realtime",
+  "name": "Realtime",
+  "description": "Live topics over the WebSocket: publish to the people on a topic, end someone's membership, ask who is connected.",
+  "capabilities": [
+    {
+      "code": "publish",
+      "name": "Publish to a topic",
+      "description": "Send a message to everyone on one of the plugin's declared topics. Maps to kernel command realtime::publish."
+    },
+    {
+      "code": "drop",
+      "name": "Drop a member from a topic",
+      "description": "End one person's membership of a topic at once (they left the channel). Maps to kernel command realtime::drop."
+    },
+    {
+      "code": "presence",
+      "name": "Read presence",
+      "description": "List who is connected to a topic now. Maps to kernel command realtime::presence."
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "code": "export",
+  "name": "Export records to a file",
+  "description": "Write the records of a model the caller may see to a CSV or JSON file in the plugin's own storage, under the same record and field rules as a read.",
+  "capabilities": [
+    {
+      "code": "run",
+      "name": "Export to a file",
+      "description": "Write matching records to a file (export::run). At most export.max_rows records (50 000)."
+    }
+  ]
+}

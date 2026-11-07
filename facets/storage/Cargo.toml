@@ -1,0 +1,17 @@
+[package]
+name = "aether_storage"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+async-trait.workspace = true
+bytes.workspace = true
+futures.workspace = true
+log = "0.4.33"
+object_store.workspace = true
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["time"] }
+
+[dev-dependencies]
+object_store = { workspace = true }
+tokio = { version = "1.53.1", features = ["macros", "rt", "time"] }

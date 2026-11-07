@@ -1,0 +1,164 @@
+[workspace]
+members = [
+    "aether",
+    # bridges
+    "bridges/auth_and_identity/auth_bridge",
+    "bridges/auth_and_identity/auth0",
+    "bridges/auth_and_identity/authentik",
+    "bridges/auth_and_identity/keycloak",
+    "bridges/auth_and_identity/ldap",
+    "bridges/auth_and_identity/microsoft_extra",
+    "bridges/communications/africas_talking",
+    "bridges/communications/bravo",
+    "bridges/communications/mailgun",
+    "bridges/communications/postmark",
+    "bridges/communications/resend",
+    "bridges/communications/smtp",
+    "bridges/communications/termii",
+    "bridges/communications/twilio",
+    "bridges/communications/whatsapp",
+    "bridges/document_management/collabora",
+    "bridges/document_management/docusign",
+    "bridges/ai/anthropic",
+    "bridges/ai/ollama",
+    "bridges/ai/openai_compatible",
+    "bridges/document_management/google_drive",
+    "bridges/document_management/mayan_edms",
+    "bridges/document_management/nextcloud",
+    "bridges/document_parsing/liteparse",
+    "bridges/maps_and_locations/google_map",
+    "bridges/mailboxes/imap",
+    "bridges/mailboxes/jmap",
+    "bridges/meetings/jitsi",
+    "bridges/maps_and_locations/open_street_map",
+    "bridges/payments/flutterwave",
+    "bridges/payments/paystack",
+    "bridges/payments/stripe",
+    "bridges/payrolls/payroll_engine",
+    "bridges/payrolls/swift_payroll",
+    "bridges/storage_and_cdn/local_storage",
+    "bridges/storage_and_cdn/s3_storage",
+    # facets
+    "facets/core",
+    "facets/core_base",
+    "facets/kernel",
+    "facets/core_api",
+    "facets/authentication",
+    "facets/security",
+    "facets/communication",
+    "facets/ocr",
+    "facets/docs",
+    "facets/ai",
+    "facets/event_bus",
+    "facets/localization",
+    "facets/organization",
+    "facets/orm",
+    "facets/payroll",
+    "facets/report",
+    "facets/storage",
+    "facets/web",
+    "facets/document",
+    "facets/sfu",
+    "facets/payment_integration",
+    "bridges/payments/modem_pay",
+]
+resolver = "2"
+
+[workspace.dependencies]
+extism = "1.30.0"
+moka = { version = "0.12.16", features = ["sync", "future"] }
+surrealdb = "3.2.4"
+axum = { version = "0.8.9", features = ["tokio", "macros", "ws"] }
+axum-extra = { version = "0.12", features = ["cookie"] }
+sha2 = "0.11"
+quick-xml = "0.38"
+object_store = { version = "0.13", default-features = false }
+async-trait = "0.1"
+bytes = "1"
+futures = "0.3"
+tempfile = "3"
+
+# Development builds. Dependencies keep only line tables (the full debug info of a dependency
+# tree this size made a 1.6 GB binary and slow links); our own crates keep full debug info.
+[profile.dev]
+split-debuginfo = "unpacked"
+
+[profile.dev.package."*"]
+debug = "line-tables-only"
+
+# The plugin engine and password hashing are optimized even in development: unoptimized, every
+# plugin took seconds to compile and every login about a second.
+[profile.dev.package.cranelift-codegen]
+opt-level = 3
+[profile.dev.package.cranelift-frontend]
+opt-level = 3
+[profile.dev.package.cranelift-entity]
+opt-level = 3
+[profile.dev.package.cranelift-bforest]
+opt-level = 3
+[profile.dev.package.cranelift-control]
+opt-level = 3
+[profile.dev.package.cranelift-assembler-x64]
+opt-level = 3
+[profile.dev.package.regalloc2]
+opt-level = 3
+[profile.dev.package.wasmparser]
+opt-level = 3
+[profile.dev.package.wasmtime]
+opt-level = 3
+[profile.dev.package.wasmtime-environ]
+opt-level = 3
+[profile.dev.package.wasmtime-internal-cranelift]
+opt-level = 3
+[profile.dev.package.zstd-sys]
+opt-level = 3
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3
+
+# With debug assertions on, wasmtime names its compile cache folder after the executable's
+# modification time, so every rebuild started with an empty cache and recompiled every plugin.
+# Without them it uses the wasmtime version, which is what the compiled code depends on.
+[profile.dev.package.wasmtime-internal-cache]
+opt-level = 3
+debug-assertions = false
+
+# Release builds. The default profile keeps symbols (about 44 MB of the binary), uses 16
+# codegen units and no LTO, so the executable was 170 MB.
+[profile.release]
+strip = "symbols"     # no runtime cost; backtraces show addresses instead of names
+lto = "thin"          # "fat" is a little smaller but needs much more memory to link
+codegen-units = 1     # smaller and better optimized, slower to compile
+# Not panic = "abort": a panic in one request handler would then stop the whole server.
+# Our own request-handling crates are optimized for size: they are glue (routing, queries,
+# serialization), not hot loops, and they are the largest block of code in the binary.
+# Dependencies (wasmtime and cranelift for plugins, image, the TLS stack) and the SFU, which
+# moves media in real time, stay at opt-level 3.
+[profile.release.package.aether]
+opt-level = "s"
+# The final executable is this crate. A package override starts from Cargo's defaults for
+# `strip`, which leaves the symbol table in, so the profile's setting is repeated here.
+strip = "symbols"
+[profile.release.package.aether_kernel]
+opt-level = "s"
+[profile.release.package.aether_core]
+opt-level = "s"
+[profile.release.package.aether_core_base]
+opt-level = "s"
+[profile.release.package.aether_core_api]
+opt-level = "s"
+[profile.release.package.aether_authentication]
+opt-level = "s"
+[profile.release.package.aether_orm]
+opt-level = "s"
+[profile.release.package.aether_report]
+opt-level = "s"
+[profile.release.package.aether_security]
+opt-level = "s"
+[profile.release.package.aether_web]
+opt-level = "s"
+[profile.release.package.aether_docs]
+opt-level = "s"

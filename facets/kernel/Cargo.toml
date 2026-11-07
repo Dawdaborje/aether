@@ -1,0 +1,91 @@
+[package]
+name = "aether_kernel"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+# JSON Schemas of plugin.toml, models and rules (used by `aether --mcp`).
+schemars = ["dep:schemars", "aether_docs/schemars", "aether_core_base/schemars"]
+
+[dependencies]
+schemars = { version = "1", optional = true }
+# facets
+aether_core_base = { path = "../core_base" }
+aether_sfu = { path = "../sfu" }
+aether_organization = { path = "../organization" }
+aether_orm = { path = "../orm" }
+aether_security = { path = "../security" }
+aether_report = { path = "../report" }
+aether_web = { path = "../web" }
+aether_event_bus = { path = "../event_bus" }
+aether_storage = { path = "../storage" }
+aether_localization = { path = "../localization" }
+local_storage = { path = "../../bridges/storage_and_cdn/local_storage" }
+s3_storage = { path = "../../bridges/storage_and_cdn/s3_storage" }
+aether_communication = { path = "../communication" }
+smtp = { path = "../../bridges/communications/smtp" }
+resend = { path = "../../bridges/communications/resend" }
+twilio = { path = "../../bridges/communications/twilio" }
+termii = { path = "../../bridges/communications/termii" }
+africas_talking = { path = "../../bridges/communications/africas_talking" }
+aether_paystack_integration = { path = "../../bridges/payments/paystack" }
+open_street_map = { path = "../../bridges/maps_and_locations/open_street_map" }
+collabora = { path = "../../bridges/document_management/collabora" }
+jmap = { path = "../../bridges/mailboxes/jmap" }
+imap = { path = "../../bridges/mailboxes/imap" }
+jitsi = { path = "../../bridges/meetings/jitsi" }
+liteparse = { path = "../../bridges/document_parsing/liteparse" }
+aether_ocr = { path = "../ocr" }
+aether_payroll = { path = "../payroll" }
+aether_ai = { path = "../ai" }
+aether_docs = { path = "../docs" }
+ollama = { path = "../../bridges/ai/ollama" }
+openai_compatible = { path = "../../bridges/ai/openai_compatible" }
+anthropic = { path = "../../bridges/ai/anthropic" }
+# deps
+extism.workspace = true
+axum.workspace = true
+axum-extra.workspace = true
+futures.workspace = true
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1"
+sha2.workspace = true
+quick-xml.workspace = true
+tokio = { version = "1.53.1", features = ["full"] }
+toml = "1.1.4"
+thiserror = "2.0.20"
+log = "0.4.33"
+directories = "6.0.0"
+redis = { version = "1.6", default-features = true }
+moka.workspace = true
+surrealdb.workspace = true
+rand = "0.10"
+bytes.workspace = true
+hmac = "0.13"
+time = "0.3"
+rhai = { version = "1.26.1", features = ["serde", "sync"] }
+mlua = { version = "0.12", features = ["luau", "vendored", "serialize"] }
+base64 = "0.22"
+ammonia = "4"
+async-trait.workspace = true
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+url = "2"
+croner = "2"
+chrono = "0.4"
+regex = "1"
+chrono-tz = "0.10"
+aes-gcm = "0.10"
+ed25519-dalek = "2"
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1", "tokio1-rustls-tls", "hostname"] }
+notify = "8"
+globset = "0.4"
+flate2 = "1"
+# Uploaded pictures are checked, shrunk and stripped of metadata (`media_image.rs`).
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+aether_core_api = { path = "../core_api" }
+wat = "1"
+tempfile = "3"
+object_store.workspace = true

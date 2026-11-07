@@ -1,0 +1,27 @@
+{
+  "code": "scheduler",
+  "name": "Scheduler",
+  "description": "Cron and deferred tasks registered with the kernel scheduler.",
+  "capabilities": [
+    {
+      "code": "register",
+      "name": "Register Task",
+      "description": "Register a cron or deferred task defined by the plugin."
+    },
+    {
+      "code": "cancel",
+      "name": "Cancel Task",
+      "description": "Cancel a previously registered task."
+    },
+    {
+      "code": "enqueue",
+      "name": "Enqueue",
+      "description": "Run one of the plugin's own functions in the background, now or later, with retries; check on or cancel those jobs. Maps to kernel commands scheduler::enqueue, scheduler::job and scheduler::cancel_job."
+    },
+    {
+      "code": "run_as",
+      "name": "Run Jobs As A Person",
+      "description": "Let a background job run as a named account, under that person's roles and record rules, instead of as the kernel. Sensitive: the plugin chooses whom to act as. Used by `scheduler::enqueue { run_as }`."
+    }
+  ]
+}

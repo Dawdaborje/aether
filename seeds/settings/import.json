@@ -1,0 +1,53 @@
+{
+  "groups": [
+    {
+      "id": "import",
+      "label": "Import and export",
+      "color": "slate",
+      "icon": "file-spreadsheet",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "import_max_mb",
+          "label": "Largest import file (MB)",
+          "s_key": "import.max_mb",
+          "s_value": 50,
+          "description": "A larger CSV or XLSX file is not imported.",
+          "long_description": "An XLSX also may not unpack to more than 256 MB. Organizations can override the global default."
+        },
+        {
+          "id": "import_max_rows",
+          "label": "Most rows in an import",
+          "s_key": "import.max_rows",
+          "s_value": 1000000,
+          "description": "A file with more rows is refused.",
+          "long_description": "Organizations can override the global default."
+        },
+        {
+          "id": "import_batch_size",
+          "label": "Import batch size",
+          "s_key": "import.batch_size",
+          "s_value": 500,
+          "description": "Rows applied between two saves of an import's progress.",
+          "long_description": "1 to 5000. A restarted import carries on from the last saved batch. Organizations can override the global default."
+        },
+        {
+          "id": "import_dry_run_required",
+          "label": "Require a clean dry run before an import",
+          "s_key": "import.dry_run_required",
+          "s_value": false,
+          "description": "A real import needs a dry run of the same file, without errors, in the last day.",
+          "long_description": "Organizations can override the global default."
+        },
+        {
+          "id": "export_max_rows",
+          "label": "Most records in an export",
+          "s_key": "export.max_rows",
+          "s_value": 50000,
+          "description": "An export that matches more records is refused; narrow the filter.",
+          "long_description": "Organizations can override the global default."
+        }
+      ]
+    }
+  ]
+}

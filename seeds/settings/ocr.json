@@ -1,0 +1,77 @@
+{
+  "groups": [
+    {
+      "id": "ocr",
+      "label": "Document parsing (OCR)",
+      "color": "amber",
+      "icon": "scan-text",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "ocr_enabled",
+          "label": "Document parsing on",
+          "s_key": "ocr.enabled",
+          "s_value": true,
+          "description": "Let plugins read text out of uploaded files.",
+          "long_description": "When off, ocr::parse refuses. Organizations can override the global default."
+        },
+        {
+          "id": "ocr_max_input_mb",
+          "label": "Largest file parsed (MB)",
+          "s_key": "ocr.max_input_mb",
+          "s_value": 25,
+          "description": "Files larger than this are not parsed.",
+          "long_description": "From 1 to 100. Uploads themselves are limited to 25 MB. Organizations can override the global default."
+        },
+        {
+          "id": "ocr_max_pages",
+          "label": "Most pages read per file",
+          "s_key": "ocr.max_pages",
+          "s_value": 100,
+          "description": "Pages after this many are ignored and the result says so.",
+          "long_description": "From 1 to 1000. The engine's own setting (bridge.liteparse.max_pages) can only lower it further."
+        },
+        {
+          "id": "ocr_max_text_kb",
+          "label": "Most text kept per file (KB)",
+          "s_key": "ocr.max_text_kb",
+          "s_value": 2048,
+          "description": "Longer text is cut and the result is marked truncated.",
+          "long_description": "From 16 to 16384."
+        },
+        {
+          "id": "ocr_sync_ceiling_secs",
+          "label": "Seconds a plugin waits for a parse",
+          "s_key": "ocr.sync_ceiling_secs",
+          "s_value": 8,
+          "description": "A file that takes longer is refused for a direct call.",
+          "long_description": "From 1 to 9: a plugin call is cut off after ten seconds, so this cannot be higher."
+        },
+        {
+          "id": "ocr_max_concurrent",
+          "label": "Parses running at once",
+          "s_key": "ocr.max_concurrent",
+          "s_value": 2,
+          "description": "More are made to wait, then told the reader is busy.",
+          "long_description": "From 1 to 8. Each parse can use a lot of memory; raise it only on a machine with room."
+        },
+        {
+          "id": "ocr_engine",
+          "label": "Parsing engine",
+          "s_key": "ocr.engine",
+          "s_value": "liteparse",
+          "description": "Which engine reads the files.",
+          "long_description": "liteparse is the only engine so far."
+        },
+        {
+          "id": "ocr_max_queued",
+          "label": "Most parses waiting or running",
+          "s_key": "ocr.max_queued",
+          "s_value": 50,
+          "description": "More are refused until some finish.",
+          "long_description": "From 1 to 1000. Protects the job queue when many files are submitted at once."
+        }
+      ]
+    }
+  ]
+}

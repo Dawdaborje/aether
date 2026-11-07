@@ -1,0 +1,12 @@
+{
+  "code": "communication",
+  "name": "Communication",
+  "description": "Send messages (email, SMS, \u2026) through the bridge the organization configured. A plugin names the type of message and what to send; the kernel routes it. Sending also needs the capability of the message type (email::send, sms::send).",
+  "capabilities": [
+    {
+      "code": "send",
+      "name": "Send",
+      "description": "Queue a message for delivery. Maps to kernel command communication::send."
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "groups": [
+    {
+      "id": "viewers",
+      "label": "Document viewers",
+      "color": "slate",
+      "icon": "file-search",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "viewers_plugin_enabled",
+          "label": "Allow viewers from plugins",
+          "s_key": "viewers.plugin_enabled",
+          "s_value": true,
+          "description": "Let plugins add their own viewers for file types the app does not know.",
+          "long_description": "A plugin viewer is JavaScript that runs in a sandboxed frame with no access to the app or its data, and only receives the file being opened. Switch this off to use only the built-in viewers. Organizations can override the global default."
+        }
+      ]
+    }
+  ]
+}

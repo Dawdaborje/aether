@@ -1,0 +1,175 @@
+use std::path::PathBuf;
+use std::process::exit;
+use surrealdb::{Surreal, engine::remote::ws::Client};
+
+use crate::plugin_manager::models::plugin_db_def::PluginDbDefinition;
+use crate::plugin_manager::models::plugin_def::{PluginDefinition, PluginManifest};
+use tokio::fs;
+
+/// Fetch one active catalog version. Caller must already be on the core database.
+pub async fn fetch_active_plugin_version(
+    db: &Surreal<Client>,
+    name: &str,
+    version: &str,
+) -> Result<Option<PluginDbDefinition>, surrealdb::Error> {
+    let mut response = db
+        .query(
+            "SELECT * FROM plugins WHERE name = $name AND version = $version AND is_active = true LIMIT 1;",
+        )
+        .bind(("name", name.to_string()))
+        .bind(("version", version.to_string()))
+        .await?
+        .check()?;
+    let records: Vec<PluginDbDefinition> = response.take(0)?;
+    Ok(records.into_iter().next())
+}
+
+pub fn get_core_plugins() {}
+
+/// Parse a `plugin.toml` into a full manifest (pages, hooks, events, …).
+/// Unknown keys are ignored so the contract can grow without breaking older addons.
+pub async fn load_plugin_manifest(file_path: PathBuf) -> Result<PluginManifest, String> {
+    let file_content = fs::read_to_string(&file_path)
+        .await
+        .map_err(|err| format!("Failed to read {}: {err}", file_path.display()))?;
+
+    PluginManifest::parse(&file_content)
+        .map_err(|err| format!("Failed to parse {}: {err}", file_path.display()))
+}
+
+pub async fn gen_plugins_from_conf(file_path: PathBuf) -> PluginDefinition {
+    match load_plugin_manifest(file_path).await {
+        Ok(manifest) => manifest.plugin,
+        Err(err) => {
+            log::error!("{err}");
+            exit(1);
+        }
+    }
+}
+
+pub async fn get_plugins_from_config_file(file_paths: Vec<PathBuf>) -> Vec<PluginDefinition> {
+    let mut plugins: Vec<PluginDefinition> = Vec::new();
+
+    for file_path in file_paths {
+        plugins.push(gen_plugins_from_conf(file_path).await);
+    }
+
+    plugins
+}
+
+pub async fn get_manifests_from_config_files(file_paths: Vec<PathBuf>) -> Vec<PluginManifest> {
+    let mut manifests = Vec::new();
+    for file_path in file_paths {
+        match load_plugin_manifest(file_path).await {
+            Ok(m) => manifests.push(m),
+            Err(err) => {
+                log::error!("{err}");
+                exit(1);
+            }
+        }
+    }
+    manifests
+}
+
+pub async fn reload_plugins(_plugins: Vec<PluginDefinition>) {}
+
+pub async fn get_plugins_from_db(db: &Surreal<Client>) -> Vec<PluginDefinition> {
+    match db.use_db("core").await {
+        Ok(_value) => {
+            log::info!("Successfully selected core database");
+        }
+        Err(err) => {
+            log::error!("Failed to select core database: {err}");
+            return Vec::new();
+        }
+    };
+
+    let db_plugins: Vec<PluginDbDefinition> = match db.select("plugins").await {
+        Ok(plugins) => plugins,
+        Err(err) => {
+            log::error!("Failed to query plugins from database: {err}");
+            return Vec::new();
+        }
+    };
+
+    let plugins = db_plugins.into_iter().map(Into::into).collect::<Vec<_>>();
+
+    log::info!("Loaded {} plugins from the database", plugins.len());
+    plugins
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_forward_compatible_manifest()
+    -> Result<(), crate::plugin_manager::models::plugin_def::ManifestError> {
+        let toml = r#"
+[plugin]
+name = "partner"
+label = "Partners"
+version = "0.1.0"
+dependencies = ["currency"]
+capabilities = ["db::query"]
+is_builtin = true
+
+[plugin.api]
+version = "0.1"
+
+[plugin.meta]
+kind = "addon"
+workspace = "base"
+
+[communication]
+channels = ["events"]
+
+[[hooks]]
+name = "on_install"
+phase = "install"
+handler = "hooks.on_install"
+
+# Future keys must not break loaders
+[plugin.future_thing]
+enabled = true
+"#;
+        let manifest = PluginManifest::parse(toml)?;
+        assert_eq!(manifest.plugin.name, "partner");
+        assert_eq!(manifest.plugin.api_version(), "0.1");
+        assert_eq!(manifest.plugin.kind.as_deref(), Some("addon"));
+        assert_eq!(manifest.plugin.workspace.as_deref(), Some("base"));
+        assert_eq!(manifest.hooks.len(), 1);
+        assert_eq!(manifest.communication.channels, vec!["events"]);
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_the_removed_pages_table() {
+        use crate::plugin_manager::models::plugin_def::ManifestError;
+        let result = PluginManifest::parse(
+            "[plugin]\nname = \"x\"\n\n[[pages]]\nroute = \"/x\"\nfile = \"./pages/x.xml\"\n",
+        );
+        assert!(matches!(result, Err(ManifestError::LegacyPages)));
+    }
+
+    #[test]
+    fn reads_the_public_declarations()
+    -> Result<(), crate::plugin_manager::models::plugin_def::ManifestError> {
+        let manifest = PluginManifest::parse(
+            r#"
+[plugin]
+name = "chat"
+capabilities = ["db::query", "db::mutate"]
+public_functions = ["list_messages"]
+public_capabilities = ["db::query"]
+public_access_models = [{ name = "message", permissions = ["read"] }]
+"#,
+        )?;
+        assert_eq!(manifest.plugin.public_functions, ["list_messages"]);
+        assert_eq!(manifest.plugin.public_capabilities, ["db::query"]);
+        assert_eq!(manifest.plugin.public_access_models[0].name, "message");
+        Ok(())
+    }
+}
+
+pub async fn build_plugin_paths_conf() {}

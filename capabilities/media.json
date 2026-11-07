@@ -1,0 +1,27 @@
+{
+  "code": "media",
+  "name": "Media",
+  "description": "Put stored files under the plugin's own permissions, and hand it files it holds.",
+  "capabilities": [
+    {
+      "code": "protect",
+      "name": "Guard a file",
+      "description": "Make a stored file readable only as the plugin's media guard function allows. Maps to kernel command media::protect."
+    },
+    {
+      "code": "release",
+      "name": "Release a file",
+      "description": "Take a file the plugin guards out of its guard again. Maps to kernel command media::release."
+    },
+    {
+      "code": "store",
+      "name": "Store a file",
+      "description": "Put a file the plugin holds (an attachment fetched from a mail server) into the organization's media, readable only by the person it runs for until the plugin protects it. Maps to kernel command media::store."
+    },
+    {
+      "code": "read",
+      "name": "Read a guarded file",
+      "description": "Read the bytes of a stored file the plugin guards. Maps to kernel command media::read."
+    }
+  ]
+}

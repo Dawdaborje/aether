@@ -1,0 +1,12 @@
+{
+  "code": "mail",
+  "name": "Mail threads",
+  "description": "Tie mail to records so that a reply to a message a plugin sent finds its record again.",
+  "capabilities": [
+    {
+      "code": "thread",
+      "name": "Mail token of a record",
+      "description": "Get the token and the Reply-To address that make replies land in a record's chatter (mail::thread). Needs read access to the record."
+    }
+  ]
+}

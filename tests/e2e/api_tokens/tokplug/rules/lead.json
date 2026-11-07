@@ -1,0 +1,30 @@
+{
+  "model": "lead",
+  "access": [
+    {
+      "name": "own",
+      "operations": [
+        "read",
+        "create",
+        "write",
+        "delete"
+      ],
+      "when": {
+        "owner": "$user"
+      }
+    }
+  ],
+  "fields": [
+    {
+      "fields": [
+        "secret"
+      ],
+      "read_roles": [
+        "tokplug.boss"
+      ],
+      "write_roles": [
+        "tokplug.boss"
+      ]
+    }
+  ]
+}

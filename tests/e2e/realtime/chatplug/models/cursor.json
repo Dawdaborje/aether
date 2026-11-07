@@ -1,0 +1,26 @@
+{
+  "model_id": "mdl_fwcwn6h25c",
+  "name": "cursor",
+  "label": "Read cursor",
+  "title_field": "user",
+  "fields": [
+    {
+      "id": "fld_aummeyks62",
+      "name": "channel",
+      "type": "string",
+      "required": true
+    },
+    {
+      "id": "fld_j5smugbq2k",
+      "name": "user",
+      "type": "string",
+      "required": true
+    },
+    {
+      "id": "fld_l2uvoy4jjo",
+      "name": "n",
+      "type": "int",
+      "required": true
+    }
+  ]
+}

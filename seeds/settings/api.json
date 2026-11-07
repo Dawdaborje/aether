@@ -1,0 +1,37 @@
+{
+  "groups": [
+    {
+      "id": "api",
+      "label": "API access",
+      "color": "slate",
+      "icon": "key-round",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "api_enabled",
+          "label": "API tokens on",
+          "s_key": "api.enabled",
+          "s_value": true,
+          "description": "Let members make API tokens and use them to call plugins from scripts.",
+          "long_description": "When off, existing tokens stop working and new ones cannot be made. Organizations can override the global default."
+        },
+        {
+          "id": "api_token_max_days",
+          "label": "Longest an API token lasts (days)",
+          "s_key": "api.token_max_days",
+          "s_value": 365,
+          "description": "A token cannot be made to last longer than this; 0 allows tokens that never expire.",
+          "long_description": "A token made without a length lasts 90 days (or this, if shorter). Organizations can override the global default."
+        },
+        {
+          "id": "api_rate_per_minute",
+          "label": "Requests per token per minute",
+          "s_key": "api.rate_per_minute",
+          "s_value": 600,
+          "description": "More than this many requests in a minute with one token are refused.",
+          "long_description": "0 is no limit. The count is kept per server process. Organizations can override the global default."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+ "code": "document_parsing",
+ "name": "Document parsing",
+ "description": "Engines that read text out of documents and scans",
+ "icon": "scan-text",
+ "icon_type": "lucide",
+ "color": "amber",
+ "color_type": "lucide",
+ "items": [
+  {
+   "feature_key": "liteparse",
+   "name": "LiteParse",
+   "label": "LiteParse",
+   "description": "Open-source document parser with OCR (PDF, Office, images)",
+   "version": null,
+   "is_builtin": true,
+   "enabled_globally": false,
+   "config_schema": null
+  }
+ ]
+}

@@ -1,0 +1,14 @@
+{
+  "model_id": "mdl_mcpn0te001",
+  "name": "note",
+  "label": "Note",
+  "title_field": "body",
+  "fields": [
+    {
+      "id": "fld_mcpn0te002",
+      "name": "body",
+      "type": "string",
+      "required": true
+    }
+  ]
+}

@@ -1,0 +1,48 @@
+//! Kernel host commands callable by plugins (WASM guests / in-process SDK).
+//!
+//! Security model:
+//! - Every command checks a capability (`db::query`, `db::mutate`, …).
+//! - DB access is structured by **model name**; the kernel builds SurQL.
+//! - There is no raw SurQL: a plugin can only touch the models it was granted, through
+//!   the structured commands, so it can never reach another plugin's data.
+
+pub mod bridge_call;
+pub mod communication;
+pub mod context;
+pub mod db;
+pub mod dispatch;
+pub mod error;
+pub mod files;
+pub mod graph;
+pub mod guard;
+pub mod history;
+pub mod http;
+pub mod import;
+pub mod integrity;
+pub mod magic_link;
+pub mod mail;
+pub mod media_guard;
+pub mod ai;
+pub mod ocr;
+pub mod payroll;
+mod settings_cmd;
+pub mod settings_read;
+pub mod nested;
+pub mod org;
+pub mod outbound;
+pub mod plugin_call;
+pub mod report;
+pub mod scheduling;
+pub mod storage;
+pub mod store;
+pub mod transitions;
+
+pub use context::{
+    BridgeHandle, CallInfo, DbScope, HostServices, JobDefaults, ModelGrant, PluginCaller,
+    PluginHostContext, SchedulerHandle,
+};
+pub use dispatch::kernel_command;
+pub use error::HostError;
+
+#[cfg(test)]
+pub(crate) mod test_support;

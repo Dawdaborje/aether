@@ -1,0 +1,72 @@
+[plugin]
+name = "tokplug"
+label = "Token test"
+version = "0.6.0"
+description = "Functions, models, events and hooks, to try API tokens, the record API, webhooks, hooks and imports."
+authors = [{ name = "Test", email = "test@example.com" }]
+dependencies = []
+capabilities = ["db::query", "db::mutate", "events::emit", "import::run", "export::run", "storage::read", "mail::thread"]
+access_models = [{ name = "lead", permissions = ["read", "write"] }, { name = "memo", permissions = ["read", "write"] }, { name = "contact", permissions = ["read", "write"] }]
+is_builtin = false
+script = "main.lua"
+
+[plugin.api]
+version = "0.1"
+
+[plugin.meta]
+kind = "addon"
+
+[[roles]]
+name = "boss"
+label = "Boss"
+
+# `lead` is offered through the record API, with every operation; `memo` is not offered at all.
+[[api]]
+model = "lead"
+operations = ["list", "get", "create", "update", "delete"]
+
+# `lead_won` may be sent by webhooks, and only these fields of its payload; `internal_ping` may not.
+[[events]]
+name = "lead_won"
+direction = "emit"
+webhook = ["id", "title", "amount", "status"]
+
+[[events]]
+name = "internal_ping"
+direction = "emit"
+
+# Addresses outside systems call, one for each way of proving who is calling.
+[[inbound]]
+name = "payments"
+function = "on_payment"
+verify = "hmac-sha256"
+header = "x-signature"
+
+[[inbound]]
+name = "key"
+function = "on_key"
+verify = "token"
+header = "x-api-key"
+
+[[inbound]]
+name = "signed"
+function = "on_signed"
+verify = "aether"
+tolerance_secs = 60
+
+[[inbound]]
+name = "broken"
+function = "on_broken"
+verify = "token"
+header = "x-api-key"
+
+# Mail to support@<mail domain> calls on_mail; a reply to mail about a contact lands in the contact's chatter.
+[[mail_routes]]
+alias = "support"
+function = "on_mail"
+model = "contact"
+
+[[mail_routes]]
+alias = "secure"
+function = "on_mail"
+require = ["dkim"]

@@ -1,0 +1,17 @@
+{
+  "code": "settings",
+  "name": "Settings",
+  "description": "Read the settings of the organization the plugin is serving, and change the plugin's own.",
+  "capabilities": [
+    {
+      "code": "get",
+      "name": "Read settings",
+      "description": "Read the effective value (the organization's own, else the global one) of any setting that is not a secret. Maps to kernel command settings::get."
+    },
+    {
+      "code": "set",
+      "name": "Change the plugin's own settings",
+      "description": "Set the organization's value of a setting declared by the plugin itself with [[setting]] (its key starts with the plugin's name and a dot). Only an administrator of the organization may cause it. Maps to kernel command settings::set."
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+	"code": "mailboxes_imap",
+	"name": "Mailboxes (IMAP)",
+	"description": "Mail servers that speak IMAP, where a person reads their own mail",
+	"icon": "mail",
+	"icon_type": "lucide",
+	"color": "slate",
+	"color_type": "lucide",
+	"items": [
+		{ "feature_key": "imap", "name": "IMAP mailbox", "label": "IMAP mailbox", "description": "Personal mailboxes on an IMAP mail server; mail is sent through SMTP with the same login", "version": null, "is_builtin": true, "enabled_globally": false, "config_schema": null }
+	]
+}

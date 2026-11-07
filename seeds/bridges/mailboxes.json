@@ -1,0 +1,12 @@
+{
+	"code": "mailboxes",
+	"name": "Mailboxes",
+	"description": "Mail servers a person reads their own mail on",
+	"icon": "mail",
+	"icon_type": "lucide",
+	"color": "slate",
+	"color_type": "lucide",
+	"items": [
+		{ "feature_key": "jmap", "name": "JMAP mailbox", "label": "JMAP mailbox", "description": "Personal mailboxes on a JMAP mail server", "version": null, "is_builtin": true, "enabled_globally": false, "config_schema": null }
+	]
+}

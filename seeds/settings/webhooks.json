@@ -1,0 +1,61 @@
+{
+  "groups": [
+    {
+      "id": "webhooks",
+      "label": "Webhooks",
+      "color": "slate",
+      "icon": "webhook",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "webhooks_allow_http",
+          "label": "Allow plain http addresses",
+          "s_key": "webhooks.allow_http",
+          "s_value": false,
+          "description": "Let webhooks be sent to http:// addresses, not only https://.",
+          "long_description": "Off by default: a plain http address sends events unencrypted. Organizations can override the global default."
+        },
+        {
+          "id": "webhooks_allowed_hosts",
+          "label": "Hosts webhooks may reach on a private network",
+          "s_key": "webhooks.allowed_hosts",
+          "s_value": [],
+          "description": "Names of hosts (like intranet.example.com or *.corp.example.com) that webhooks may send to even if they are on a private network.",
+          "long_description": "A webhook address that resolves to a private, loopback or link-local address is refused unless its host is listed here. Organizations can override the global default."
+        },
+        {
+          "id": "webhooks_max_attempts",
+          "label": "Webhook attempts",
+          "s_key": "webhooks.max_attempts",
+          "s_value": 8,
+          "description": "How many times a delivery is tried before it is given up.",
+          "long_description": "Waits between tries grow from one minute, doubling each time. A given-up delivery can be sent again by hand. Organizations can override the global default."
+        },
+        {
+          "id": "webhooks_retry_base_secs",
+          "label": "Webhook first retry wait (seconds)",
+          "s_key": "webhooks.retry_base_secs",
+          "s_value": 60,
+          "description": "How long to wait before the second try of a delivery; each later wait doubles.",
+          "long_description": "Organizations can override the global default."
+        },
+        {
+          "id": "webhooks_log_days",
+          "label": "Keep webhook log (days)",
+          "s_key": "webhooks.log_days",
+          "s_value": 14,
+          "description": "How long the record of each delivery is kept; 0 keeps it forever.",
+          "long_description": "Organizations can override the global default."
+        },
+        {
+          "id": "webhooks_disable_after",
+          "label": "Switch a webhook off after (failed deliveries in a row)",
+          "s_key": "webhooks.disable_after",
+          "s_value": 20,
+          "description": "A webhook whose deliveries keep giving up is switched off after this many in a row.",
+          "long_description": "An administrator switches it on again after fixing the receiver. Organizations can override the global default."
+        }
+      ]
+    }
+  ]
+}

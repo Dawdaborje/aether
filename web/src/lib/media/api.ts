@@ -1,0 +1,233 @@
+import { apiFetch } from '$lib/api/client';
+
+/** What a record keeps for an uploaded file (see `data_model/media.rs` on the server). */
+export interface MediaFile {
+	key: string;
+	name: string;
+	mime: string;
+	size: number;
+	sha256?: string;
+}
+
+/** Largest file the server accepts. */
+export const MAX_MEDIA_BYTES = 25 * 1024 * 1024;
+
+export function isMediaFile(value: unknown): value is MediaFile {
+	return (
+		typeof value === 'object' &&
+		value !== null &&
+		typeof (value as MediaFile).key === 'string' &&
+		(value as MediaFile).key.startsWith('media/')
+	);
+}
+
+/** The files a field holds, whether it keeps one or a list. Old text values are not files. */
+export function filesOf(value: unknown): MediaFile[] {
+	if (Array.isArray(value)) return value.filter(isMediaFile);
+	return isMediaFile(value) ? [value] : [];
+}
+
+/**
+ * An image that is not an uploaded file: a data URL or web address written before the field
+ * was an image field. Shown, and replaced when the person picks a new picture.
+ */
+export function legacyImageSrc(value: unknown): string {
+	if (typeof value !== 'string') return '';
+	return value.startsWith('data:image/') || /^https?:\/\//.test(value) ? value : '';
+}
+
+export function formatSize(bytes: number): string {
+	if (bytes < 1024) return `${bytes} B`;
+	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+async function errorOf(response: Response): Promise<string> {
+	try {
+		const body = (await response.json()) as { error?: string };
+		if (body.error) return body.error;
+	} catch {
+		/* not JSON */
+	}
+	return `The upload failed (${response.status}).`;
+}
+
+/**
+ * Upload one file; the result is what a record stores in an image or file field. With `guard` (the name of a plugin
+ * that guards its files) the file is guarded from the start: only the uploader can read it until the plugin registers it.
+ */
+export async function uploadMedia(file: File, guard?: string): Promise<MediaFile> {
+	if (file.size === 0) throw new Error('That file is empty.');
+	if (file.size > MAX_MEDIA_BYTES) {
+		throw new Error(
+			`That file is ${formatSize(file.size)}; the limit is ${formatSize(MAX_MEDIA_BYTES)}.`
+		);
+	}
+	const response = await apiFetch(
+		`/api/media?name=${encodeURIComponent(file.name)}${guard ? `&guard=${encodeURIComponent(guard)}` : ''}`,
+		{
+			method: 'POST',
+			headers: { 'content-type': file.type || 'application/octet-stream' },
+			body: file
+		}
+	);
+	if (!response.ok) throw new Error(await errorOf(response));
+	return (await response.json()) as MediaFile;
+}
+
+const urls = new Map<string, Promise<string>>();
+
+/**
+ * A URL a picture can be shown from. The file is fetched with the app's own request
+ * helper (so the organization header and session go with it, which an `<img src>` cannot
+ * do) and kept for the page's life: a key never changes what it holds.
+ */
+export function mediaObjectUrl(key: string, thumb = false): Promise<string> {
+	const id = thumb ? `${key}?thumb=1` : key;
+	let url = urls.get(id);
+	if (!url) {
+		url = apiFetch(`/api/media/${id}`).then(async (response) => {
+			if (!response.ok) throw new Error(await errorOf(response));
+			return URL.createObjectURL(await response.blob());
+		});
+		// A failure is not remembered, so the next look tries again.
+		url.catch(() => urls.delete(id));
+		urls.set(id, url);
+	}
+	return url;
+}
+
+/** The full-page viewer address of a file (`/view/<key>`). */
+export function viewHref(file: Pick<MediaFile, 'key' | 'name' | 'mime' | 'size'>): string {
+	const q = new URLSearchParams({ name: file.name, mime: file.mime, size: String(file.size) });
+	return `/view/${file.key}?${q}`;
+}
+
+/** Save a file to the person's disk. */
+export async function downloadMedia(file: MediaFile): Promise<void> {
+	const response = await apiFetch(`/api/media/${file.key}?name=${encodeURIComponent(file.name)}`);
+	if (!response.ok) throw new Error(await errorOf(response));
+	const url = URL.createObjectURL(await response.blob());
+	const link = document.createElement('a');
+	link.href = url;
+	link.download = file.name;
+	document.body.appendChild(link);
+	link.click();
+	link.remove();
+	setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
+/** How a viewer should show a file: decided from its name and the type the server reports. */
+export type ViewKind =
+	| 'image'
+	| 'pdf'
+	| 'csv'
+	| 'json'
+	| 'text'
+	| 'markdown'
+	| 'html'
+	| 'email'
+	| 'office'
+	| 'audio'
+	| 'video'
+	| 'archive'
+	| 'other';
+
+export function viewKind(file: Pick<MediaFile, 'name' | 'mime'>): ViewKind {
+	const ext = file.name.toLowerCase().split('.').pop() ?? '';
+	const mime = (file.mime || '').toLowerCase();
+	if (mime.startsWith('image/')) return 'image';
+	if (mime.startsWith('audio/') || ['mp3', 'wav', 'ogg', 'oga', 'm4a', 'flac'].includes(ext))
+		return 'audio';
+	if (mime.startsWith('video/') || ['mp4', 'webm', 'ogv', 'mov', 'm4v'].includes(ext))
+		return 'video';
+	if (mime === 'application/pdf' || ext === 'pdf') return 'pdf';
+	if (ext === 'csv' || ext === 'tsv' || mime === 'text/csv') return 'csv';
+	if (ext === 'json' || mime === 'application/json') return 'json';
+	if (ext === 'md' || ext === 'markdown' || mime === 'text/markdown') return 'markdown';
+	if (ext === 'html' || ext === 'htm' || mime === 'text/html') return 'html';
+	if (ext === 'eml' || mime === 'message/rfc822') return 'email';
+	if (mime.startsWith('text/') || ['txt', 'log', 'xml', 'yml', 'yaml', 'ini'].includes(ext)) {
+		return 'text';
+	}
+	if (['docx', 'xlsx', 'pptx', 'odt', 'ods', 'odp', 'doc', 'xls', 'ppt'].includes(ext))
+		return 'office';
+	if (mime === 'application/zip' || ['zip', 'gz', 'tar', '7z'].includes(ext)) return 'archive';
+	return 'other';
+}
+
+/** The raw bytes of a stored file. */
+export async function mediaBytes(file: Pick<MediaFile, 'key' | 'name'>): Promise<ArrayBuffer> {
+	const response = await apiFetch(`/api/media/${file.key}?name=${encodeURIComponent(file.name)}`);
+	if (!response.ok) throw new Error(await errorOf(response));
+	return response.arrayBuffer();
+}
+
+/** The text of a stored file, cut at `limit` characters so a huge file cannot freeze the page. */
+export async function mediaText(
+	file: MediaFile,
+	limit = 1_000_000
+): Promise<{ text: string; cut: boolean }> {
+	const response = await apiFetch(`/api/media/${file.key}?name=${encodeURIComponent(file.name)}`);
+	if (!response.ok) throw new Error(await errorOf(response));
+	const text = await response.text();
+	return text.length > limit ? { text: text.slice(0, limit), cut: true } : { text, cut: false };
+}
+
+export interface ExtractedText {
+	text: string;
+	total_pages: number;
+	pages: { page: number; text: string }[];
+	ocr_used: boolean;
+	truncated: boolean;
+	warnings: string[];
+}
+
+/**
+ * The text the server's document reader finds in a stored PDF, Office file or image (scans are read with OCR).
+ * A scan can take a while the first time; the result is kept, so opening it again is quick.
+ */
+export async function mediaExtractedText(file: MediaFile): Promise<ExtractedText> {
+	const response = await apiFetch(
+		`/api/media-text/${file.key}?name=${encodeURIComponent(file.name)}`
+	);
+	if (!response.ok) throw new Error(await errorOf(response));
+	return (await response.json()) as ExtractedText;
+}
+
+/** Rows of a comma, semicolon or tab separated file, with quoted cells. */
+export function parseDelimited(text: string, maxRows = 500): string[][] {
+	const first = text.split('\n', 1)[0] ?? '';
+	const sep = [',', ';', '\t']
+		.map((s) => [s, first.split(s).length] as const)
+		.sort((a, b) => b[1] - a[1])[0][0];
+	const rows: string[][] = [];
+	let row: string[] = [];
+	let cell = '';
+	let quoted = false;
+	for (let i = 0; i < text.length && rows.length < maxRows; i++) {
+		const c = text[i];
+		if (quoted) {
+			if (c === '"' && text[i + 1] === '"') {
+				cell += '"';
+				i++;
+			} else if (c === '"') quoted = false;
+			else cell += c;
+		} else if (c === '"') quoted = true;
+		else if (c === sep) {
+			row.push(cell);
+			cell = '';
+		} else if (c === '\n' || c === '\r') {
+			if (c === '\r' && text[i + 1] === '\n') i++;
+			row.push(cell);
+			rows.push(row);
+			row = [];
+			cell = '';
+		} else cell += c;
+	}
+	if (rows.length < maxRows && (cell !== '' || row.length > 0)) {
+		row.push(cell);
+		rows.push(row);
+	}
+	return rows;
+}

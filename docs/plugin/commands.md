@@ -1,0 +1,299 @@
+---
+title: "Kernel commands"
+description: "A plugin has no database, file system or network of its own. Everything it does outside its own code is a kernel command: a named request such as db::create that the kernel checks and then carries…"
+section: plugin
+status: stable
+order: 30
+---
+# Kernel commands
+
+A plugin has no database, file system or network of its own. Everything it does outside its own
+code is a **kernel command**: a named request such as `db::create` that the kernel checks and then
+carries out. WebAssembly plugins send them through their SDK; [Rhai](rhai.md) and [Lua](lua.md) scripts call them as
+functions (`db::create(...)`). Both reach the same code, so the same checks apply.
+
+## How a command is checked
+
+1. **Capability.** The plugin lists what it needs in `plugin.toml` (`capabilities = ["db::query",
+   "cache::get"]`). A command whose capability is missing is refused, and a manifest naming a
+   capability that does not exist is rejected when the plugin is loaded. Anonymous visitors get
+   only the capabilities in `public_capabilities`.
+2. **Scope.** Each command is limited to what the plugin was given: models in `access_models`,
+   its own cache entries and files, the hosts in `http_hosts`, the plugins in `dependencies`.
+3. **Audit.** Database commands leave a `data_access` row; plugin calls leave a call record.
+
+The same payloads are used by WASM, Rhai and Lua; an answer is `{ "ok": true, "data": ... }`, and a
+refusal is an error with a message (a script can `try`/`catch` it).
+
+## Reference
+
+| Command | Capability | Rhai | Status |
+|---|---|---|---|
+| `db::get`, `db::find`, `db::query` | `db::query` | `db::get`, `db::find` | done; `"omit": ["field", "field.inner"]` leaves fields out of the answer (Rust SDK: `get_omitting`, `find(..).omit(..)`), so a plugin does not read a large field it does not need into its WebAssembly |
+| `report::query` | `report::query` | `report::query` | done: grouped report, see [Queries](../architecture/queries.md) |
+| `report::export` | `report::export` | `report::export` | done: Excel or PDF of rows the plugin already has |
+| `report::sources` | `report::query` | `report::sources` | done: models and visible fields a report may read |
+| `ocr::parse`, `ocr::status` | `ocr::parse` | `ocr::parse`, `ocr::status` | done: text out of a stored PDF, Office file or image; every limit is a setting, see [Document parsing](../architecture/ocr.md) |
+| `ai::complete`, `ai::submit`, `ai::result`, `ai::status` | `ai::complete` | `ai::complete`, `ai::submit`, `ai::result`, `ai::status` | done: ask a language model through the organization's provider; off until enabled, with token budgets, see [AI](../architecture/ai.md) |
+| `ai::embed`, `ai::index`, `ai::search`, `ai::forget` | `ai::embed` | same names | done: texts to vectors, and search your own indexed text by meaning (not every provider) |
+| `db::create`, `db::update`, `db::upsert`, `db::delete`, `db::increment` | `db::mutate` (`upsert` also `db::query`) | same names | done |
+| `db::mutate` | `db::mutate` | use `db::create/update/delete` | done |
+| `db::transaction` | `db::transaction` (+ `db::mutate`) | `db::transaction` | done |
+| `cache::get`, `cache::set`, `cache::invalidate`, `cache::clear` | same name | `cache::get/set/invalidate/invalidate_prefix/clear` | done |
+| `storage::read`, `storage::write`, `storage::delete`, `storage::list` | same name | `storage::read/read_base64/write/write_base64/delete/list` | done |
+| `http::request` | `http::request` (+ `http_hosts`) | `http::request/get/post` | done |
+| `plugins::call` | `plugins::call` (+ `dependencies` or `optional_dependencies`) | `plugins::invoke` | done |
+| `plugins::available` | `plugins::call` | `plugins::available` | done |
+| `notify::send` | `notify::send`, `notify::public` | `notify::send` | done |
+| `events::emit` | `events::emit` | `events::emit` | done |
+| `media::protect` | `media::protect` (+ `[media_guard]`) | `media::protect` | done: put a stored file's key under the plugin's guard; reading it then asks the guard function |
+| `media::store` | `media::store` (+ `[media_guard]`) | `media::store` | done: put a file the plugin holds into the media store; guarded for the person it runs for |
+| `media::read` | `media::read` | `media::read` | done: read the bytes of a file the plugin guards |
+| `media::release` | `media::release` | `media::release` | done: take a key out of the plugin's guard |
+| `realtime::publish` | `realtime::publish` | `realtime::publish` | done: send `{ topic, event, payload, except_user? }` to the people on one of the plugin's `[[realtime]]` topics; returns `{ seq }` |
+| `realtime::drop` | `realtime::drop` | `realtime::drop_member` | done: end `{ topic, user }`'s membership at once |
+| `realtime::presence` | `realtime::presence` | `realtime::presence` | done: `{ topic }` -> `{ users }`, who is connected |
+| `sfu::room` | `sfu::room` | `sfu::room` | done: `{ room }` -> `{ participants }`, who is in the meeting ([Meetings](../architecture/meet_sfu.md)) |
+| `sfu::mute` | `sfu::mute` | `sfu::mute` | done: `{ room, user, kind }` stops forwarding that person's `audio` or `video` |
+| `sfu::remove` | `sfu::remove` | `sfu::remove` | done: `{ room, user, reason? }` puts that person out at once |
+| `sfu::end` | `sfu::end` | `sfu::end` | done: `{ room, reason? }` ends the meeting for everyone |
+| `sfu::lock` | `sfu::lock` | `sfu::lock` | done: `{ room, locked }`; while locked nobody new can join |
+| `context::get` | none | `context::get` | done |
+| `settings::get` | `settings::get` | `settings::get/get_many` | done: `{ key }` or `{ keys }` -> `{ key: value }` for each setting that has one (the organization's own value, else the global one). Secrets are never given to a plugin |
+| `settings::set` | `settings::set` | `settings::set` | done: `{ key, value }` sets the organization's value of a setting the plugin declared (its key starts with the plugin's name and a dot). Refused unless an organization administrator (or the kernel) caused the call |
+| `org::members` | `org::members` | `org.members` | done: active login accounts in this organization (`id`, `display_name`). With `{ role: "<this plugin>.<name>" }` only the accounts that hold that role of the calling plugin, and organization admins (who hold every plugin role); another plugin's role is refused |
+| `org::create_member` | `org::create_member` | `org.create_member` | done: create a login with a generated password, or add an existing account, in this organization. Payload `{ email, username?, display_name? }`. Returns `{ user_id, username, created, temporary_password, email_sent }`. The plugin cannot set the password. `temporary_password` is empty when the email already had an account |
+| `org::invite` | `org::invite` | `org.invite` | done: email a link so a new person sets their own password (`auth.account_invite`, 7 days), or add an existing account. Same payload. Returns `{ status: "invited", expires_at, email_sent, url }` or `{ status: "joined", user_id, username, email_sent }`. The URL is returned once because mail may be unconfigured |
+| `fs::read`, `fs::stat` | `fs::read` | `fs::read/read_base64/stat` | done: the plugin's folder on disk, see [File watches](../architecture/watch.md) |
+| `fs::write`, `fs::rename` | `fs::write` | `fs::write/write_base64/rename` | done |
+| `fs::list` | `fs::list` | `fs::list` | done |
+| `fs::delete` | `fs::delete` | `fs::delete` | done |
+| `communication::send` | `communication::send` + `email::send` / `sms::send` | `communication::send` | done: one command for every message type, see [Communication](../architecture/communication.md) |
+| `scheduler::enqueue`, `scheduler::job`, `scheduler::cancel_job` | `scheduler::enqueue` | `scheduler::enqueue/job/cancel_job` | done: background jobs, see [the scheduler](../architecture/scheduler.md) |
+| `scheduler::enqueue_many` | `scheduler::enqueue` | `parallel::fan_out` uses it | done: `{ jobs: [ <enqueue payload>, … ] }` (up to 10 000) in one call and a few database round trips; answers `{ jobs: [ { id, created } ] }` in order |
+| `payroll::calculate` | `payroll::calculate` | (call it with `transport::call`) | done: payslips with the Swift payroll engine, native and on every core, compiled structures kept by key; a structure it does not hold is read from its record (`structure_records`); `"lines": "keep"` keeps the payslip lines in the kernel and answers a `ticket`; see `kernel/host/payroll.rs` |
+| `payroll::write` | `payroll::calculate` | (call it with `transport::call`) | done: `{ ticket, lines_field?, ops }` runs `ops` as one quiet `db::transaction`, each `create` with `"lines_of": person` getting the lines kept under the ticket, so payslip lines never pass through the plugin |
+| `payroll::sum_lines` | `payroll::calculate` | (call it with `transport::call`) | done: `{ model, filter, order?, limit?, field, key, add_to? }` adds the comma-joined amounts under `field.key.*` of the records found (with the plugin's grants), natively; answers `{ sums, rows }` |
+| `scheduler::register`, `scheduler::cancel` | same name | `scheduler::register/cancel` | done: recurring tasks (also `[[schedule]]` in `plugin.toml`) |
+| `bridge::call` | `bridge::call` (+ `bridges`) | `bridge::invoke` | done: Paystack and OpenStreetMap, see [Bridges](../bridges.md) |
+| `events::subscribe`, `events::unsubscribe` | `events::subscribe` | `events::subscribe/unsubscribe` | done: see [Events](../architecture/events.md) |
+
+A command that is not implemented checks its capability and then answers "not implemented".
+`call` is a reserved word in Rhai, which is why `plugins::call` is `plugins::invoke` in Rhai scripts (Lua has both `plugins.call` and `plugins.invoke`).
+
+## db::transaction
+
+Several writes, applied together or not at all. Each entry has the fields of the single command
+plus `op` (`create`, `update`, `delete` or `increment`); 1 to 500 writes.
+
+```json
+{ "ops": [
+  { "op": "create", "model": "invoice", "data": { "number": "A-1" } },
+  { "op": "increment", "model": "counter", "id": "invoices", "field": "next" }
+] }
+```
+
+Every write is checked against the plugin's model grants exactly as if sent alone, and each leaves
+its own audit row (and chatter entry) inside the same transaction. If any write fails, none is
+applied. `data` in the answer lists each write's record, in order.
+
+```rhai
+let made = db::transaction([
+    #{ op: "create", model: "invoice", data: #{ number: "A-1" } },
+    #{ op: "increment", model: "counter", id: "invoices", field: "next" },
+]);
+```
+
+## cache
+
+A small key/value store for a plugin's own use, shared between its calls. Values are JSON.
+
+| | |
+|---|---|
+| `cache::set { key, value, ttl_secs? }` | store; `ttl_secs` is 1 to 30 days, otherwise the cache's default applies |
+| `cache::get { key }` | the value, or `null` |
+| `cache::invalidate { key }` or `{ prefix }` | remove one entry or every entry starting with `prefix`; answers `{ removed }` |
+| `cache::clear {}` | remove all of **this plugin's** entries in this organization |
+
+Entries are kept under the namespace `plugin:<organization>:<plugin>`: another plugin or
+organization can neither read nor clear them. Keys are at most 256 bytes; a value must fit the
+cache's `max_value_bytes`. The cache can drop entries at any time (memory pressure, a restart,
+a different node when Redis is not used), so it holds things that can be recomputed, never the
+only copy of data.
+
+## storage
+
+Files in the organization's media storage (a local directory or S3, whichever `[media]` selects).
+
+| | |
+|---|---|
+| `storage::write { key, text }` or `{ key, base64 }` | write a file, replacing any existing one |
+| `storage::read { key, encoding? }` | `{ text }`, or `{ base64 }` with `encoding: "base64"`; `null` when the file does not exist |
+| `storage::delete { key }` | remove; a missing file is not an error |
+| `storage::list { prefix? }` | `[ { key, size } ]`, at most 1000 |
+
+A plugin's files live under `plugins/<plugin>/` inside the organization's folder; the kernel adds
+the prefix, so a plugin cannot reach another plugin's files or the organization's uploads, and
+keys with `..`, empty segments or backslashes are refused. A file is at most 10 MiB through this
+command. Backend errors are logged and the plugin only sees "storage is unavailable".
+
+## http::request
+
+Calls an outside web API.
+
+```json
+{ "method": "POST", "url": "https://api.example.com/v1/charges",
+  "headers": { "authorization": "Bearer ..." }, "json": { "amount": 500 }, "timeout_secs": 10 }
+```
+
+Give one body: `body` (text), `json` or `base64`. The answer is `{ status, ok, headers, body }`
+(`body_base64` when the answer is not text); a `404` or `500` from the other side is an answer, not
+an error. Restrictions, all enforced by the kernel:
+
+- **Allowlist.** `plugin.toml` must list the host: `http_hosts = ["api.example.com",
+  "*.example.org"]`. A wildcard covers subdomains, not the bare domain. Nothing listed means no
+  access.
+- **Public addresses only.** The host is resolved by the kernel and refused if any address is
+  loopback, private (10/8, 172.16/12, 192.168/16), link-local (including the 169.254.169.254
+  cloud metadata address), carrier-grade NAT, multicast or otherwise reserved, for IPv4 and IPv6.
+  The connection is made to the checked address, so DNS cannot change the answer afterwards.
+- **No redirects** are followed (a redirect could leave the allowlist); the `3xx` answer and its
+  `location` header are returned.
+- `https` only, no username or password in the URL, methods GET, POST, PUT, PATCH, DELETE and
+  HEAD, request and response bodies of at most 1 MiB, a timeout of 10 s by default (30 s at most),
+  no proxy. Headers the kernel sets itself (`host`, `content-length`, `connection`, ...) are refused.
+- Every call is logged with the plugin and host (never the URL's query or the headers).
+
+```rhai
+let answer = http::get("https://api.example.com/rate");
+let created = http::post("https://api.example.com/charges", #{ amount: 500 });   // a map is sent as JSON
+let full = http::request(#{ method: "PUT", url: "...", headers: #{ "x-key": "..." }, body: "..." });
+if full.status >= 400 { fail("the payment service refused it"); }
+```
+
+## plugins::call
+
+One plugin calls a function of another and gets its JSON result (`plugins::invoke` in Rhai).
+
+```rhai
+let rate = plugins::invoke("currency", "convert", #{ amount: 10, to: "EUR" });
+```
+
+- The target must be in the caller's `dependencies` (`plugin.toml`), which also tells the
+  administrator what must be installed.
+- The target runs **as the same actor** as the request, under **its own** capabilities and model
+  grants. Nothing is lent in either direction: calling `billing` does not give the caller access
+  to billing's models, and an anonymous visitor still reaches only the target's `public_functions`.
+- It must be installed and enabled in the organization, like any call.
+- **Optional dependencies:** a plugin that works with or without another lists it under
+  `optional_dependencies` (not `dependencies`). It is not installed with the plugin and never blocks
+  it; `plugins::call` and the read-only `plugin.model` access work once it is installed, and
+  `plugins::available("name")` (Rhai, Lua `plugins.available`, Rust `plugins::available`) answers whether
+  it is installed and enabled in this organization. Ask first; calling an absent one fails like any
+  call to an uninstalled plugin.
+- `optional_dependencies = ["*"]` stands for every plugin installed in the organization, for
+  **reading models only** (reports; `plugins::call` still needs real names). A model is attached only
+  when it has `rules/`, and the caller's rules and hidden fields apply as for any dependency.
+- Calls nest at most 4 deep and a function cannot be called while it is already running further up
+  the chain, so plugins cannot loop. Waiting for a free execution slot is bounded (10 s), after
+  which the call fails with "busy".
+- The target's `fail("...")` message comes back as the error. Each nested call is recorded in the
+  plugin call audit under the same request id.
+
+## communication::send
+
+One command for email, SMS and anything else the kernel learns to send. The plugin gives the
+`type` and the content and never a provider or a sender; the kernel queues one job per recipient and
+the scheduler delivers it through the configured bridge, with retries.
+
+```json
+{ "type": "email", "to": ["ann@example.com"], "subject": "Your invoice", "text": "Total: 500" }
+{ "type": "sms",   "to": "+2348012345678", "text": "Your code is 1234" }
+```
+
+Needs `communication::send` **and** `email::send` or `sms::send`. Answer: `{ jobs: [ids] }`. A field the
+kernel does not know, such as `from`, is refused. Full rules, limits, providers and settings are in
+[Communication](../architecture/communication.md).
+
+```rhai
+let queued = communication::send(#{ type: "sms", to: input.phone, text: "Your code is " + code });
+```
+
+## scheduler::*
+
+Background jobs (`scheduler::enqueue { function, payload?, delay_secs?, queue?, max_attempts?,
+unique_key? }`, `scheduler::job { id }`, `scheduler::cancel_job { id }`) and recurring tasks
+(`scheduler::register { name, function, cron | every, … }`, `scheduler::cancel { name }`). Jobs run
+one of the plugin's own functions, as the kernel, with the plugin's own permissions, at least once.
+Tasks that always exist are declared as `[[schedule]]` in `plugin.toml`. See
+[the scheduler](../architecture/scheduler.md).
+
+```rhai
+scheduler::enqueue("send_report", #{ month: "2026-10" }, #{ delay_secs: 60, unique_key: "report-2026-10" });
+```
+
+## fs::*
+
+The plugin's own folder on local disk (`orgs/<organization>/plugins/<plugin>/`), the folder a
+`[[watch]]` in `plugin.toml` listens to: the plugin is told when a file arrives, reads it, and moves it away.
+Paths are relative to the folder and nothing outside it can be reached. See
+[File watches](../architecture/watch.md).
+
+```rhai
+let text = fs::read(change.path);
+fs::rename(change.path, "done/" + name);
+```
+
+## bridge::call
+
+`{ "bridge": "paystack", "action": "verify_transaction", "params": { "reference": "r1" } }` calls an
+integration the administrator set up. Needs `bridge::call` and the bridge listed under `bridges` in
+`plugin.toml`; the plugin never sees a key. Synchronous (at most 45 s). See [Bridges](../bridges.md).
+
+## events::subscribe, events::unsubscribe
+
+`events::emit` announces to browsers **and** to listening plugins; `events::subscribe { event, function }`
+adds a listener while running (`<plugin>.<event>`, the emitter being a dependency), `events::unsubscribe
+{ event }` removes it. Listeners run as background jobs. See [Events between plugins](../architecture/events.md).
+
+## Not implemented yet
+
+| Command | What is missing |
+|---|---|
+| Mailgun, Postmark, Bravo, WhatsApp, Stripe, Flutterwave, and the document, storage and identity bridges | Their crates are still empty. The kernel routes email to SMTP and Resend, SMS to Twilio, Termii and Africa's Talking, and `bridge::call` to Paystack and OpenStreetMap. |
+
+## history::list, history::diff, history::restore, history::undo, history::redact, db::get and db::find with as_of
+
+| Command | Capability | Rhai | Status |
+|---|---|---|---|
+| `db::get { model, id, as_of }` | `db::query` | `db::get(model, id, #{ as_of: "2026-03-01T12:00:00Z" })` | done: the record as it was, under today's rules |
+| `history::list { model, id, limit?, before_seq? }` | `history::read` | `history::list(#{ model, id })` | done: versions, newest first |
+| `history::diff { model, id, from, to? }` | `history::read` | `history::diff(#{ model, id, from })` | done: what changed between two versions |
+| `history::restore { model, id, seq }` | `history::restore` + `db::mutate` | `history::restore(#{ model, id, seq })` | done: put the record back as one new version; checks, workflow and rules apply |
+| `history::undo { model, id }` | `history::restore` + `db::mutate` | `history::undo(#{ model, id })` | done: take back your own last change, within `history.undo_window_secs` |
+| `history::redact { model, id, fields, reason? }` | `history::redact` (administrators) | `history::redact(#{ model, id, fields })` | done: blot out fields in the whole history; cannot be undone |
+| `db::find { model, as_of, filter?, limit? }` | `db::query` | `db::find(model, #{ as_of: "…" })` | done: the records as they were then, under today's rules; bounded |
+
+The model must keep a history (`"history": { "enabled": true }`). See [History](../architecture/history.md).
+
+## import::*, export::run
+
+Built. Run a file import with a dry run and undo, and write records to CSV or JSON. See [Import and export](../architecture/import_export.md) for the arguments. Capabilities `import::run` and `export::run`; the Lua modules are `imports` and `exports`.
+
+## Proposed commands (not built)
+
+Designed in [the gaps roadmap](../architecture/gaps_roadmap.md). None of these exist yet; do not call them.
+
+| Command | Capability | Design |
+|---|---|---|
+| `webhooks::subscribe`, `unsubscribe`, `list`, `deliveries` | `webhooks::manage` | [API and webhooks](../architecture/api_and_webhooks.md) |
+| `mail::routes`, `reply`, `unmatched`, `assign` | `mail::manage`, `mail::send` | [Inbound mail](../architecture/inbound_mail.md) |
+| `auth::require_recent_mfa`, `auth::mfa_state` | `auth::step_up`, `auth::read` | [Auth hardening](../architecture/auth_hardening.md) |
+| `encryption::status`, `rotate`, `destroy_key` | `encryption::read`, `encryption::manage` | [Field encryption](../architecture/field_encryption.md) |
+| `sharing::share`, `revoke`, `list`, `link` | `sharing::manage` | [Sharing](../architecture/sharing.md) |
+| `automation::list`, `runs`, `run`, `simulate`, `enable`, `disable`; `approval::pending`, `answer`, `delegate` | `automation::*`, `approval::answer` | [Automation](../architecture/automation.md) |
+| `verify::matrix` | `verify::read` | [Verification](../architecture/verification.md) |
+| `print::render`, `batch`, `templates` | `print::render`, `print::read` | [Print](../architecture/print.md) |
+| `report::save`, `delete`, `list`, `run`, `snapshot` | `report::save`, `report::query` | [Views and reports](../architecture/views_reports.md) |
+| `overlay::get`, `apply`, `revert`; `hook::save`, `enable`, `runs` | `overlay::*`, `hook::manage` | [Customization](../architecture/customization.md) |
+| `federation::links`, `send`, `inbox`, `answer` | `federation::*` | [Federation](../architecture/federation.md) |

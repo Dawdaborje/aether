@@ -1,0 +1,32 @@
+{
+  "code": "sfu",
+  "name": "Video meetings",
+  "description": "Rooms of the built-in video meeting server: see who is in a room, mute or remove someone, lock or end the room.",
+  "capabilities": [
+    {
+      "code": "room",
+      "name": "Read a room",
+      "description": "List who is in one of the plugin's declared meeting rooms. Maps to kernel command sfu::room."
+    },
+    {
+      "code": "mute",
+      "name": "Mute someone",
+      "description": "Stop forwarding one person's audio or video in a room. Maps to kernel command sfu::mute."
+    },
+    {
+      "code": "remove",
+      "name": "Remove someone",
+      "description": "Put one person out of a room at once. Maps to kernel command sfu::remove."
+    },
+    {
+      "code": "end",
+      "name": "End a room",
+      "description": "End a meeting room for everyone in it. Maps to kernel command sfu::end."
+    },
+    {
+      "code": "lock",
+      "name": "Lock a room",
+      "description": "While a room is locked nobody new can join it. Maps to kernel command sfu::lock."
+    }
+  ]
+}

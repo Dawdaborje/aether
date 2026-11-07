@@ -1,0 +1,42 @@
+{
+  "model_id": "mdl_47zep4y5tz",
+  "name": "message",
+  "label": "Message",
+  "title_field": "body",
+  "fields": [
+    {
+      "id": "fld_xbr4lsg47f",
+      "name": "channel",
+      "type": "string",
+      "required": true
+    },
+    {
+      "id": "fld_xi72lxaaud",
+      "name": "author",
+      "type": "string",
+      "required": true
+    },
+    {
+      "id": "fld_deb5yg4yjc",
+      "name": "body",
+      "type": "string",
+      "required": true
+    },
+    {
+      "id": "fld_c4mlfdmkqr",
+      "name": "n",
+      "type": "int",
+      "required": true
+    },
+    {
+      "id": "fld_yrcq5csnui",
+      "name": "files",
+      "type": "json"
+    },
+    {
+      "id": "fld_2qk3vytrmm",
+      "name": "author_name",
+      "type": "string"
+    }
+  ]
+}

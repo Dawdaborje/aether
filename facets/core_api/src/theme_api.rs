@@ -1,0 +1,491 @@
+//! `GET /api/ui/theme` and `GET /api/ui/themes`.
+//!
+//! The theme is the active theme of the caller's organization: the one an
+//! installed theme plugin brought with it (colours, the layout component that
+//! renders the app, and its navigation). When the organization cannot be
+//! determined (a login page with no tenancy configured, say) or has no theme,
+//! the built-in default theme is served so the app always renders.
+
+use std::net::SocketAddr;
+
+use aether_web::api::theme::default_theme;
+use axum::{
+    Extension, Json, Router,
+    extract::{ConnectInfo, State},
+    http::{HeaderMap, StatusCode, Uri},
+    response::{IntoResponse, Response},
+    routing::{get, post},
+};
+use serde::Deserialize;
+use serde_json::{Value, json};
+use surrealdb::types::SurrealValue;
+
+use aether_core::access::identity::{IdentityError, identify, with_retry_after};
+use aether_core::state::{AppState, Databases};
+
+pub fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/ui/theme", get(get_theme))
+        .route("/api/ui/themes", get(list_themes))
+        .route("/api/ui/themes/active", post(activate_theme))
+}
+
+#[derive(Debug, Deserialize, SurrealValue)]
+struct ActiveTheme {
+    color_mode: Option<String>,
+    name: Option<String>,
+    label: Option<String>,
+    tokens: Option<Value>,
+    layout: Option<String>,
+    error_pages: Option<String>,
+    nav: Option<Value>,
+    layout_def: Option<Value>,
+    error_pages_def: Option<Value>,
+    shell: Option<Value>,
+    plugin_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize, SurrealValue)]
+struct ThemeListRow {
+    name: String,
+    label: String,
+    is_system: bool,
+    layout: Option<String>,
+    tokens: Option<Value>,
+}
+
+/// A few light-mode colours, enough to draw a preview swatch of a theme.
+fn preview(tokens: Option<&Value>) -> Value {
+    let light = tokens.and_then(|tokens| tokens.get("light"));
+    let pick = |key: &str| {
+        light
+            .and_then(|light| light.get(key))
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
+    json!({
+        "background": pick("background"),
+        "foreground": pick("foreground"),
+        "primary": pick("primary"),
+        "sidebar": pick("sidebar"),
+    })
+}
+
+/// The organization's database session, or the response to send when it is unavailable.
+async fn org_session(state: &Databases, org_db: &str) -> Result<aether_core::state::Db, Response> {
+    state.org(org_db).await.map_err(|error| {
+        log::error!("theme: organization `{org_db}`: {error}");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "database error" })),
+        )
+            .into_response()
+    })
+}
+
+/// The only organization of this instance, when there is exactly one: whom an anonymous visitor
+/// can be shown (the sign-in screen).
+async fn only_organization(state: &AppState) -> Option<String> {
+    let names = match state.cache.warm_get_org_databases() {
+        Ok(Some(names)) => names,
+        _ => aether_core::access::org_databases::refresh(state).await.ok()?,
+    };
+    match names.as_slice() {
+        [only] => Some(only.clone()),
+        _ => None,
+    }
+}
+
+fn fallback() -> Response {
+    Json(json!(default_theme("fallback"))).into_response()
+}
+
+async fn get_theme(
+    State(state): State<AppState>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> Response {
+    let peer_ip = peer.map(|Extension(ConnectInfo(address))| address.ip());
+    let (org_name, request_id) = match identify(&state, &headers, peer_ip, &uri).await {
+        Ok(identity) => (identity.org_db.clone(), identity.audit.request_id.clone()),
+        Err(IdentityError::RateLimited) => {
+            return with_retry_after(
+                (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    Json(json!({ "error": "too many requests" })),
+                )
+                    .into_response(),
+            );
+        }
+        Err(IdentityError::Database(error)) => {
+            log::error!("theme request: {error}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "database error" })),
+            )
+                .into_response();
+        }
+        // No organization the caller is in or names. An instance with exactly one organization
+        // shows that organization's look (its sign-in screen included); otherwise the default.
+        Err(error) => match only_organization(&state).await {
+            Some(db) => (db, String::from("-")),
+            None => {
+                log::debug!("theme request: serving the fallback theme ({error})");
+                return fallback();
+            }
+        },
+    };
+
+    if let Ok(Some(cached)) = state.cache.warm_get_theme_json(&org_name) {
+        if cached.is_null() {
+            return fallback();
+        }
+        return Json(cached).into_response();
+    }
+
+    let org_db = match org_session(state.databases(), &org_name).await {
+        Ok(db) => db,
+        Err(response) => return response,
+    };
+    let found = org_db
+        .query(
+            "SELECT color_mode, \
+                    active_theme.name AS name, active_theme.label AS label, \
+                    active_theme.tokens AS tokens, active_theme.layout AS layout, \
+                    active_theme.error_pages AS error_pages, \
+                    active_theme.nav AS nav, \
+                    active_theme.layout_def AS layout_def, \
+                    active_theme.error_pages_def AS error_pages_def, \
+                    active_theme.shell AS shell, \
+                    active_theme.plugin_name AS plugin_name \
+             FROM ui_theme_config LIMIT 1;",
+        )
+        .await
+        .and_then(|response| response.check());
+    let mut response = match found {
+        Ok(response) => response,
+        Err(error) => {
+            log::error!("theme lookup in `{}`: {error}", &org_name);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "database error" })),
+            )
+                .into_response();
+        }
+    };
+    let rows: Vec<ActiveTheme> = match response.take(0) {
+        Ok(rows) => rows,
+        Err(error) => {
+            log::error!("theme decode in `{}`: {error}", &org_name);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "database error" })),
+            )
+                .into_response();
+        }
+    };
+
+    let Some(ActiveTheme {
+        color_mode,
+        name: Some(name),
+        label,
+        tokens: Some(tokens),
+        layout,
+        error_pages,
+        nav,
+        layout_def,
+        error_pages_def,
+        shell,
+        plugin_name,
+    }) = rows.into_iter().next()
+    else {
+        let _ = state
+            .cache
+            .warm_set_theme_json(&org_name, &Value::Null);
+        log::debug!(
+            "{} organization `{}` has no active theme; serving the fallback",
+            request_id,
+            org_name
+        );
+        return fallback();
+    };
+
+    log::debug!(
+        "{} theme `{name}` for organization `{}`",
+        request_id,
+        org_name
+    );
+    let body = json!({
+        "name": name,
+        "label": label.unwrap_or_else(|| name.clone()),
+        "color_mode": color_mode.unwrap_or_else(|| "system".to_string()),
+        "source": "organization",
+        "tokens": tokens,
+        "layout": layout.unwrap_or_else(|| "default".to_string()),
+        "error_pages": error_pages.unwrap_or_else(|| "default".to_string()),
+        "nav": nav,
+        "layout_def": layout_def,
+        "error_pages_def": error_pages_def,
+        "shell": shell.map(|shell| resolve_shell_assets(shell, plugin_name.as_deref())),
+    });
+    let _ = state.cache.warm_set_theme_json(&org_name, &body);
+    Json(body).into_response()
+}
+
+/// Turn `assets/…` references in a theme's branding into URLs the browser can load:
+/// the theme plugin's asset route. https URLs are left as they are; an asset of a
+/// theme with no plugin behind it cannot be served and is dropped.
+fn resolve_shell_assets(mut shell: Value, plugin: Option<&str>) -> Value {
+    resolve_screen_images(&mut shell, plugin);
+    let Some(branding) = shell.get_mut("branding").and_then(Value::as_object_mut) else {
+        return shell;
+    };
+    for key in ["logo", "favicon"] {
+        let Some(reference) = branding.get(key).and_then(Value::as_str) else {
+            continue;
+        };
+        match (reference.strip_prefix("assets/"), plugin) {
+            (None, _) => {}
+            (Some(path), Some(plugin)) => {
+                let url = format!("/api/ui/plugins/{plugin}/assets/{path}");
+                branding.insert(key.to_string(), Value::String(url));
+            }
+            (Some(_), None) => {
+                branding.remove(key);
+            }
+        }
+    }
+    shell
+}
+
+/// A sign-in screen's `<image src="assets/…">` becomes the plugin's asset route; an image of a
+/// theme with no plugin behind it cannot be served and loses its `src`.
+fn resolve_screen_images(shell: &mut Value, plugin: Option<&str>) {
+    let Some(screens) = shell.get_mut("screens").and_then(Value::as_object_mut) else {
+        return;
+    };
+    for screen in screens.values_mut() {
+        for part in ["aside", "main"] {
+            let Some(blocks) = screen
+                .get_mut(part)
+                .and_then(|part| part.get_mut("blocks"))
+                .and_then(Value::as_array_mut)
+            else {
+                continue;
+            };
+            blocks.retain_mut(|block| {
+                let Some(props) = block.get_mut("props").and_then(Value::as_object_mut) else {
+                    return true;
+                };
+                let Some(src) = props.get("src").and_then(Value::as_str) else {
+                    return true;
+                };
+                match (src.strip_prefix("assets/"), plugin) {
+                    (None, _) => true,
+                    (Some(path), Some(plugin)) => {
+                        let url = format!("/api/ui/plugins/{plugin}/assets/{path}");
+                        props.insert("src".into(), Value::String(url));
+                        true
+                    }
+                    (Some(_), None) => false,
+                }
+            });
+        }
+    }
+}
+
+async fn list_themes(
+    State(state): State<AppState>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> Response {
+    let peer_ip = peer.map(|Extension(ConnectInfo(address))| address.ip());
+    let identity = match identify(&state, &headers, peer_ip, &uri).await {
+        Ok(identity) => identity,
+        Err(IdentityError::RateLimited) => {
+            return with_retry_after(
+                (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    Json(json!({ "error": "too many requests" })),
+                )
+                    .into_response(),
+            );
+        }
+        Err(_) => {
+            return Json(json!({ "themes": [], "active": null, "source": "fallback" }))
+                .into_response();
+        }
+    };
+
+    let org_db = match org_session(state.databases(), &identity.org_db).await {
+        Ok(db) => db,
+        Err(response) => return response,
+    };
+    let listed = org_db
+        .query(
+            "SELECT name, label, is_system, layout, tokens FROM ui_themes ORDER BY name; \
+             SELECT VALUE active_theme.name FROM ui_theme_config LIMIT 1;",
+        )
+        .await
+        .and_then(|response| response.check());
+    let mut response = match listed {
+        Ok(response) => response,
+        Err(error) => {
+            log::error!("theme list in `{}`: {error}", identity.org_db);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "database error" })),
+            )
+                .into_response();
+        }
+    };
+    let themes: Vec<ThemeListRow> = response.take(0).unwrap_or_default();
+    let active: Vec<String> = response.take(1).unwrap_or_default();
+    Json(json!({
+        "themes": themes
+            .into_iter()
+            .map(|row| json!({
+                "name": row.name,
+                "label": row.label,
+                "is_system": row.is_system,
+                "layout": row.layout.unwrap_or_else(|| "default".to_string()),
+                "preview": preview(row.tokens.as_ref()),
+            }))
+            .collect::<Vec<_>>(),
+        // `null`: no theme is active, so the built-in default is.
+        "active": active.into_iter().next(),
+        "source": "organization",
+    }))
+    .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct ActivateBody {
+    /// The theme to activate, or `null` to go back to the built-in default.
+    name: Option<String>,
+}
+
+/// `POST /api/ui/themes/active` `{ "name": "ocean" }`: make an installed theme
+/// the organization's active one; `{ "name": null }` returns to the built-in
+/// default. Developers only.
+async fn activate_theme(
+    State(state): State<AppState>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
+    uri: Uri,
+    Json(body): Json<ActivateBody>,
+) -> Response {
+    let peer_ip = peer.map(|Extension(ConnectInfo(address))| address.ip());
+    let identity = match identify(&state, &headers, peer_ip, &uri).await {
+        Ok(identity) => identity,
+        Err(error) => {
+            if matches!(error, IdentityError::Database(_) | IdentityError::Audit(_)) {
+                log::error!("theme activation identity: {error}");
+            }
+            let (status, message) = error.http();
+            return with_retry_after((status, Json(json!({ "error": message }))).into_response());
+        }
+    };
+    let is_developer = identity
+        .session
+        .as_ref()
+        .is_some_and(|session| session.user.is_super_user);
+    if !is_developer {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "developer access required" })),
+        )
+            .into_response();
+    }
+
+    use aether_core::plugin_manager::catalog::{CatalogError, activate_theme as activate};
+    let Some(name) = body.name else {
+        let cleared = async {
+            let org = state.org(&identity.org_db).await?;
+            org.query("DELETE ui_theme_config;").await?.check()?;
+            Ok::<(), surrealdb::Error>(())
+        }
+        .await;
+        return match cleared {
+            Ok(()) => {
+                crate::plugins_changed(&state, &identity.org_db);
+                log::info!(
+                    "{} organization `{}` returned to the built-in theme",
+                    identity.audit.request_id,
+                    identity.org_db
+                );
+                Json(json!({ "ok": true, "active": null })).into_response()
+            }
+            Err(error) => {
+                log::error!("clearing the theme of `{}`: {error}", identity.org_db);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": "database error" })),
+                )
+                    .into_response()
+            }
+        };
+    };
+    match activate(
+        &state.fresh_session(),
+        &state.namespace,
+        &identity.org_db,
+        &name,
+    )
+    .await
+    {
+        Ok(()) => {
+            crate::plugins_changed(&state, &identity.org_db);
+            log::info!(
+                "{} theme `{name}` activated for organization `{}`",
+                identity.audit.request_id,
+                identity.org_db
+            );
+            Json(json!({ "ok": true, "active": name })).into_response()
+        }
+        Err(CatalogError::ThemeNotInstalled(name)) => (
+            StatusCode::NOT_FOUND,
+            Json(
+                json!({ "error": format!("theme `{name}` is not installed in this organization") }),
+            ),
+        )
+            .into_response(),
+        Err(error) => {
+            log::error!("theme activation in `{}`: {error}", identity.org_db);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "database error" })),
+            )
+                .into_response()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn branding_assets_point_at_the_theme_plugin() {
+        let shell = json!({ "branding": {
+            "logo": "assets/brand/logo.svg",
+            "favicon": "https://cdn.example/fav.ico",
+            "product_name": "Sea"
+        } });
+        let resolved = resolve_shell_assets(shell.clone(), Some("sea_theme"));
+        assert_eq!(
+            resolved["branding"]["logo"],
+            "/api/ui/plugins/sea_theme/assets/brand/logo.svg"
+        );
+        assert_eq!(
+            resolved["branding"]["favicon"],
+            "https://cdn.example/fav.ico"
+        );
+
+        let orphan = resolve_shell_assets(shell, None);
+        assert!(orphan["branding"].get("logo").is_none());
+        assert_eq!(orphan["branding"]["product_name"], "Sea");
+    }
+}

@@ -1,0 +1,171 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Same SurrealDB the developers run (`surreal version`); the tests need no more than a memory server.
+  SURREAL_IMAGE: surrealdb/surrealdb:v3.1.3
+
+jobs:
+  # Unit tests: no database, no network.
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Unit tests
+        run: cargo test --workspace --lib --locked
+
+  # Integration tests that need a SurrealDB server. They are `#[ignore]`d so a plain
+  # `cargo test` stays offline; here they run with `--include-ignored`, one test at a time:
+  # with two at once, a notifications and a roles test each failed once on a SurrealDB write
+  # conflict ("can be retried") and passed on rerun.
+  database:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Start SurrealDB
+        run: |
+          docker run -d --name surreal -p 127.0.0.1:18000:8000 "$SURREAL_IMAGE" \
+            start --user root --pass root memory
+          for i in $(seq 1 30); do
+            curl -fs http://127.0.0.1:18000/health && exit 0
+            sleep 1
+          done
+          docker logs surreal
+          exit 1
+      - name: Database tests
+        env:
+          AETHER_TEST_DB: 127.0.0.1:18000
+        run: cargo test -p aether_core --tests --locked --no-fail-fast -- --include-ignored --test-threads=1
+      - name: SurrealDB log (on failure)
+        if: failure()
+        run: docker logs surreal | tail -200
+
+  # The SvelteKit app: unit tests (the Node project; the browser project needs Chromium and is not run
+  # here), type check (informational: it reports errors that exist today) and a production build.
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - name: Unit tests
+        run: pnpm exec vitest --run --project server
+      - name: Type check (informational)
+        continue-on-error: true
+        run: pnpm run check
+      - name: Build
+        run: pnpm run build
+
+  # End to end: the real binary against a real SurrealDB. Each suite has its own throwaway
+  # instance (own namespace and port) under tests/e2e; the scripts drive it over HTTP,
+  # WebSocket, or, for mcp_live, over the stdio of `aether --mcp`.
+  # Not here: the plugin suites under plugins/*/tests, which live in the plugin repositories.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Build the web app (the server serves web/build) and get Chromium
+        working-directory: web
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run build
+          pnpm exec playwright install --with-deps chromium
+      - name: Start SurrealDB
+        run: |
+          docker run -d --name surreal -p 127.0.0.1:18000:8000 "$SURREAL_IMAGE" \
+            start --user root --pass root memory
+          for i in $(seq 1 30); do
+            curl -fs http://127.0.0.1:18000/health && exit 0
+            sleep 1
+          done
+          docker logs surreal
+          exit 1
+      - name: Build aether
+        run: cargo build -p aether --locked
+      - name: Python packages
+        run: pip install websocket-client
+
+      - name: Mail, API tokens, record API, webhooks, inbound hooks, import
+        working-directory: tests/e2e/api_tokens
+        env:
+          DB_PORT: "18000"
+        run: |
+          ./setup.sh
+          ./serve.sh > serve.log 2>&1 &
+          echo $! > serve.pid
+          for i in $(seq 1 60); do curl -s -o /dev/null http://127.0.0.1:17890/ && break; sleep 1; done
+          # mail_e2e first: it expects an instance no other script has written to.
+          status=0
+          for script in mail_e2e api_tokens_e2e record_api_e2e webhooks_e2e inbound_e2e import_e2e; do
+            echo "::group::$script"
+            python3 $script.py || status=1
+            echo "::endgroup::"
+          done
+          kill "$(cat serve.pid)" || true
+          exit $status
+      - name: Server log (on failure)
+        if: failure()
+        run: tail -200 tests/e2e/api_tokens/serve.log || true
+
+      - name: Realtime (WebSocket and the chat page in a browser)
+        working-directory: tests/e2e/realtime
+        env:
+          DB_PORT: "18000"
+        run: |
+          ./setup.sh
+          ./serve.sh > serve.log 2>&1 &
+          echo $! > serve.pid
+          for i in $(seq 1 60); do curl -s -o /dev/null http://127.0.0.1:17891/ && break; sleep 1; done
+          status=0
+          python3 realtime_e2e.py || status=1
+          CHROMIUM="$(cd ../../../web && node -e "console.log(require('playwright').chromium.executablePath())")" \
+            node ui_e2e.mjs || status=1
+          kill "$(cat serve.pid)" || true
+          exit $status
+      - name: Server log (on failure)
+        if: failure()
+        run: tail -200 tests/e2e/realtime/serve.log || true
+
+      - name: MCP live tools
+        working-directory: tests/e2e/mcp_live
+        env:
+          DB_PORT: "18000"
+        run: |
+          ./setup.sh
+          python3 mcp_live_e2e.py

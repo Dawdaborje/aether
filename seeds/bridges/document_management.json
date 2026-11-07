@@ -1,0 +1,15 @@
+{
+	"code": "document_management",
+	"name": "Document Management",
+	"description": "Document signing and management providers",
+	"icon": "file-text",
+	"icon_type": "lucide",
+	"color": "orange",
+	"color_type": "lucide",
+	"items": [
+		{ "feature_key": "docusign", "name": "DocuSign", "label": "DocuSign", "description": "DocuSign", "version": null, "is_builtin": true, "enabled_globally": false, "config_schema": null },
+		{ "feature_key": "google_drive", "name": "Google Drive", "label": "Google Drive", "description": "Google Drive", "version": null, "is_builtin": true, "enabled_globally": false, "config_schema": null },
+		{ "feature_key": "mayan_edms", "name": "Mayan EDMS", "label": "Mayan EDMS", "description": "Mayan EDMS", "version": null, "is_builtin": true, "enabled_globally": false, "config_schema": null },
+		{ "feature_key": "nextcloud", "name": "Nextcloud", "label": "Nextcloud", "description": "Nextcloud", "version": null, "is_builtin": true, "enabled_globally": false, "config_schema": null }
+	]
+}

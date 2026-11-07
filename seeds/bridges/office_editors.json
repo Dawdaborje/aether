@@ -1,0 +1,12 @@
+{
+	"code": "office_editors",
+	"name": "Office Editors",
+	"description": "Editors that open office files in the browser",
+	"icon": "file-pen-line",
+	"icon_type": "lucide",
+	"color": "green",
+	"color_type": "lucide",
+	"items": [
+		{ "feature_key": "collabora", "name": "Collabora Online", "label": "Collabora Online", "description": "Edit office files in the browser (WOPI editor)", "version": null, "is_builtin": true, "enabled_globally": false, "config_schema": null }
+	]
+}

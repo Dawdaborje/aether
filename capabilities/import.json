@@ -1,0 +1,12 @@
+{
+  "code": "import",
+  "name": "Import records from a file",
+  "description": "Read records from a CSV or XLSX file the plugin names, as the person who asks: rehearse it first (a dry run takes every write back), run it, look at what became of each row, and undo it. The model's checks and that person's record and field rules apply to every row.",
+  "capabilities": [
+    {
+      "code": "run",
+      "name": "Import from a file",
+      "description": "Start, follow and undo an import, and get a template or a guessed column mapping (import::start, import::status, import::result, import::undo, import::templates, import::guess). The plugin needs write access to the model."
+    }
+  ]
+}

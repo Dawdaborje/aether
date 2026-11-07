@@ -1,0 +1,37 @@
+{
+  "groups": [
+    {
+      "id": "general",
+      "label": "General Settings",
+      "color": "blue",
+      "icon": "settings",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "domain",
+          "label": "Domain",
+          "s_key": "domain",
+          "s_value": "",
+          "description": "The address people use to reach this application.",
+          "long_description": "Used for the links in emails, such as invitations and password resets. Enter a host name like app.example.com, or a full address like https://app.example.com. Leave it empty to use the server's own address, which is usually localhost. Organizations can override it with their own domain."
+        },
+        {
+          "id": "login_headline",
+          "label": "Login headline",
+          "s_key": "login.headline",
+          "s_value": "",
+          "description": "The large heading beside the sign-in form. Leave blank for \"Welcome back\".",
+          "long_description": "Shown on the login page next to the form. An organization can set its own."
+        },
+        {
+          "id": "login_subtitle",
+          "label": "Login subtitle",
+          "s_key": "login.subtitle",
+          "s_value": "",
+          "description": "The line under the login headline. Leave blank for \"Sign in to pick up where you left off.\"",
+          "long_description": "Shown on the login page under the headline. An organization can set its own."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+{
+  "groups": [
+    {
+      "id": "mail",
+      "label": "Inbound mail",
+      "color": "slate",
+      "icon": "mail",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "mail_inbound_domain",
+          "label": "Mail domain",
+          "s_key": "mail.inbound.domain",
+          "s_value": "",
+          "description": "The domain mail to your plugins' addresses arrives at, such as mail.acme.example.",
+          "long_description": "Mail is matched by the part before the @ (and before a +). When this is empty mail to any domain is accepted; when it is set, only mail to this domain. Organizations can override the global default."
+        },
+        {
+          "id": "mail_max_per_sender_hour",
+          "label": "Most messages per sender per hour",
+          "s_key": "mail.max_per_sender_hour",
+          "s_value": 30,
+          "description": "A sender who sends more than this in an hour has the rest set aside, not delivered.",
+          "long_description": "Stops mail loops and floods. Set-aside messages are kept and listed with the reason. Organizations can override the global default."
+        },
+        {
+          "id": "mail_keep_days",
+          "label": "Keep handled messages (days)",
+          "s_key": "mail.keep_days",
+          "s_value": 90,
+          "description": "Messages that were routed, answered or set aside are removed after this many days. 0 keeps them.",
+          "long_description": "Organizations can override the global default."
+        },
+        {
+          "id": "mail_unmatched_keep_days",
+          "label": "Keep unmatched messages (days)",
+          "s_key": "mail.unmatched_keep_days",
+          "s_value": 90,
+          "description": "Messages nobody has handled are removed after this many days. 0 keeps them.",
+          "long_description": "Organizations can override the global default."
+        }
+      ]
+    }
+  ]
+}

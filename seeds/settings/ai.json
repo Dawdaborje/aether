@@ -1,0 +1,114 @@
+{
+  "groups": [
+    {
+      "id": "ai",
+      "label": "AI assistant",
+      "color": "violet",
+      "icon": "sparkles",
+      "icon_type": "lucide",
+      "items": [
+        {
+          "id": "ai_enabled",
+          "label": "AI on",
+          "s_key": "ai.enabled",
+          "s_value": false,
+          "description": "Let plugins send text to a language model.",
+          "long_description": "Off by default: a prompt leaves the plugin and, with a remote provider, your network. Organizations can override the global default."
+        },
+        {
+          "id": "ai_provider",
+          "label": "AI provider",
+          "s_key": "ai.provider",
+          "s_value": "ollama",
+          "description": "Which provider answers: ollama, openai_compatible or anthropic.",
+          "long_description": "Its address and key are set under Bridges."
+        },
+        {
+          "id": "ai_model",
+          "label": "AI model",
+          "s_key": "ai.model",
+          "s_value": "",
+          "description": "The model used when a plugin names none.",
+          "long_description": "Empty uses the provider's own default model."
+        },
+        {
+          "id": "ai_embed_model",
+          "label": "AI embedding model",
+          "s_key": "ai.embed_model",
+          "s_value": "",
+          "description": "The model used for embeddings when a plugin names none."
+        },
+        {
+          "id": "ai_local_only",
+          "label": "Local AI providers only",
+          "s_key": "ai.local_only",
+          "s_value": false,
+          "description": "Refuse any provider that runs outside your own machines.",
+          "long_description": "Only ollama counts as local; an OpenAI-compatible server on your own network still counts as remote."
+        },
+        {
+          "id": "ai_max_tokens",
+          "label": "Most tokens in an answer",
+          "s_key": "ai.max_tokens",
+          "s_value": 1024,
+          "description": "A plugin can ask for fewer, never more.",
+          "long_description": "From 1 to 8192."
+        },
+        {
+          "id": "ai_max_prompt_kb",
+          "label": "Largest prompt (KB)",
+          "s_key": "ai.max_prompt_kb",
+          "s_value": 64,
+          "description": "Longer conversations are refused.",
+          "long_description": "From 1 to 512."
+        },
+        {
+          "id": "ai_sync_ceiling_secs",
+          "label": "Seconds a plugin waits for an answer",
+          "s_key": "ai.sync_ceiling_secs",
+          "s_value": 8,
+          "description": "A slower answer is for a queued request.",
+          "long_description": "From 1 to 9: a plugin call is cut off after ten seconds, so this cannot be higher."
+        },
+        {
+          "id": "ai_job_timeout_secs",
+          "label": "Seconds a queued request may take",
+          "s_key": "ai.job_timeout_secs",
+          "s_value": 100,
+          "description": "The provider is given up on after this long.",
+          "long_description": "From 10 to 110: a job is stopped when its lease runs out."
+        },
+        {
+          "id": "ai_max_concurrent",
+          "label": "Requests running at once",
+          "s_key": "ai.max_concurrent",
+          "s_value": 2,
+          "description": "More are made to wait, then told the provider is busy.",
+          "long_description": "From 1 to 8."
+        },
+        {
+          "id": "ai_max_queued",
+          "label": "Most queued requests",
+          "s_key": "ai.max_queued",
+          "s_value": 50,
+          "description": "More are refused until some finish.",
+          "long_description": "From 1 to 1000."
+        },
+        {
+          "id": "ai_daily_tokens_org",
+          "label": "Tokens a day for the organization",
+          "s_key": "ai.daily_tokens_org",
+          "s_value": 0,
+          "description": "Requests stop for the rest of the UTC day when this many tokens are used. 0 is no limit."
+        },
+        {
+          "id": "ai_daily_tokens_user",
+          "label": "Tokens a day for each person",
+          "s_key": "ai.daily_tokens_user",
+          "s_value": 0,
+          "description": "The same, for each person separately. 0 is no limit."
+        }
+      ]
+    }
+  ]
+}
