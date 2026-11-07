@@ -588,7 +588,7 @@ mod tests {
     fn sample() -> Vec<PluginDocs> {
         vec![
             plugin("notes", Visibility::Public, &[("README.md", "# Notes\n\nTake notes. See [sharing](guide/sharing.md).\n"), ("guide/sharing.md", "# Sharing\n\nUse `notes::share`. Back to [home](../README.md).\n")]),
-            plugin("payroll", Visibility::Org, &[("README.md", "# Payroll secrets\n\nOnly for payroll staff.\n")]),
+            plugin("zephyr", Visibility::Org, &[("README.md", "# Zephyr secrets\n\nOnly for zephyr staff.\n")]),
         ]
     }
 
@@ -615,19 +615,19 @@ mod tests {
     #[tokio::test]
     async fn a_hidden_plugin_is_a_plain_404_and_absent_everywhere() {
         let app = with_plugins("", sample(), true); // no sessions: only public docs
-        for path in ["/plugins/payroll", "/plugins/payroll/index", "/plugins/payroll/index.md", "/plugins/ghost"] {
+        for path in ["/plugins/zephyr", "/plugins/zephyr/index", "/plugins/zephyr/index.md", "/plugins/ghost"] {
             let (status, _, body) = fetch(app.clone(), path).await;
             assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
-            assert!(!body.contains("Payroll") && !body.contains("payroll"), "{path} reveals the plugin: {body}");
+            assert!(!body.contains("Zephyr") && !body.contains("zephyr"), "{path} reveals the plugin: {body}");
         }
         let (_, _, home) = fetch(app.clone(), "/").await;
-        assert!(home.contains("notes tool") && !home.contains("payroll"));
-        let (_, _, found) = fetch(app.clone(), "/search?q=payroll+secrets").await;
-        assert!(!found.contains("Payroll secrets"), "search leaks hidden docs");
+        assert!(home.contains("notes tool") && !home.contains("zephyr"));
+        let (_, _, found) = fetch(app.clone(), "/search?q=zephyr+secrets").await;
+        assert!(!found.contains("Zephyr secrets"), "search leaks hidden docs");
         let (_, _, llms) = fetch(app.clone(), "/llms.txt").await;
-        assert!(!llms.contains("payroll") && llms.contains("/plugins/notes/index.md"));
+        assert!(!llms.contains("zephyr") && llms.contains("/plugins/notes/index.md"));
         let (_, _, full) = fetch(app, "/llms-full.txt").await;
-        assert!(!full.contains("Only for payroll staff") && full.contains("notes::share"));
+        assert!(!full.contains("Only for zephyr staff") && full.contains("notes::share"));
     }
 
     #[tokio::test]

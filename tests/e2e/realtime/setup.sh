@@ -20,6 +20,10 @@ port = 17891
 [configuration]
 is_development_mode = true
 is_development_with_assets = false
+[tenancy]
+mode = "single"
+single_org_name = "Rt Org"
+single_org_db_name = "rt_org"
 [database]
 host = "127.0.0.1"
 port = $port
@@ -37,7 +41,7 @@ TOML
 cd "$here"
 a() { "$bin" -c "$here/aether.toml" "$@"; }
 a --init --admin-username admin --admin-email admin@test.local --admin-password Test-pass-123 >/dev/null
-a --create-org "Rt Org" --org-db-name rt_org --username owner --email owner@test.local --password Test-pass-123 >/dev/null
+a --create-user --username owner --email owner@test.local --password Test-pass-123 >/dev/null
 a --sync-models "$here/chatplug" >/dev/null
 a --load-plugins "$here/chatplug" >/dev/null
 a --install-plugin chatplug --org rt_org >/dev/null

@@ -20,6 +20,10 @@ port = 17892
 [configuration]
 is_development_mode = true
 is_development_with_assets = false
+[tenancy]
+mode = "single"
+single_org_name = "MCP Org"
+single_org_db_name = "mcp_org"
 [database]
 host = "127.0.0.1"
 port = $port
@@ -37,6 +41,6 @@ TOML
 cd "$here"
 a() { "$bin" -c "$here/aether.toml" "$@"; }
 a --init --admin-username admin --admin-email admin@test.local --admin-password Test-pass-123 >/dev/null
-a --create-org "MCP Org" --org-db-name mcp_org --username owner --email owner@test.local --password Test-pass-123 >/dev/null
+a --create-user --username owner --email owner@test.local --password Test-pass-123 >/dev/null
 a --seed >/dev/null
 echo "Ready. Run: python3 mcp_live_e2e.py"
