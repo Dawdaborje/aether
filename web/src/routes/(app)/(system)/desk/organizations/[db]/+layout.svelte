@@ -25,7 +25,6 @@
 			{ id: 'overview', label: 'Overview', href: `/desk/organizations/${params.db}/overview` },
 			{ id: 'members', label: 'Members', href: `/desk/organizations/${params.db}/members` },
 			{ id: 'roles', label: 'Roles', href: `/desk/organizations/${params.db}/roles` },
-			{ id: 'children', label: 'Children', href: `/desk/organizations/${params.db}/children` },
 			{
 				id: 'schedules',
 				label: 'Schedules',
@@ -38,13 +37,11 @@
 				label: 'Plugin activity',
 				href: `/desk/organizations/${params.db}/plugin-activity`
 			}
-			// A single-organization installation has no child organizations.
-		].filter((tab) => !(orgStore.isSingle && tab.id === 'children'))
+		]
 	);
 
 	const activeTab = $derived.by(() => {
 		const path = $page.url.pathname;
-		if (path.includes('/children')) return 'children';
 		if (path.includes('/members')) return 'members';
 		if (path.includes('/roles')) return 'roles';
 		if (path.includes('/schedules')) return 'schedules';

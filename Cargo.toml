@@ -51,7 +51,6 @@ members = [
     "facets/ai",
     "facets/event_bus",
     "facets/localization",
-    "facets/organization",
     "facets/orm",
     "facets/payroll",
     "facets/report",

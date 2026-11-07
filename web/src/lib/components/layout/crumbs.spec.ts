@@ -21,11 +21,10 @@ describe('orgCrumbs', () => {
 			'/desk/organizations/acme/overview'
 		);
 	});
-	it('adds the role and the children view', () => {
+	it('adds the role', () => {
 		const role = org('/desk/organizations/acme/roles/sales%20lead');
 		expect(role.map((c) => c.label)).toEqual(['Organizations', 'Acme', 'Roles', 'sales lead']);
 		expect(role[2].href).toBe('/desk/organizations/acme/roles');
-		expect(org('/desk/organizations/acme/children/graph').at(-1)?.label).toBe('Graph');
 	});
 	it('has no organizations list on a single-organization install', () => {
 		expect(org('/desk/organizations/acme/plugins', true).map((c) => c.label)).toEqual([

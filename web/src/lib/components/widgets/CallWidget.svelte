@@ -7,7 +7,6 @@
 	import { columnsFor, initials, orderTiles } from '$lib/call/layout';
 	import { describeDevices, deviceOf, type DeviceLists } from '$lib/call/devices';
 	import { navHref } from '$lib/components/layout/nav';
-	import { getHeaderOrg } from '$lib/org/selection';
 	import { topicName } from '$lib/pages/liveTopic.svelte';
 	import { getPageState, interpolate, text } from '$lib/pages/pageContext.svelte';
 
@@ -166,7 +165,7 @@
 			for (const track of preview.getVideoTracks()) track.enabled = wantVideo;
 		}
 		client = new CallClient({
-			url: signalingUrl(room, getHeaderOrg(), location),
+			url: signalingUrl(room, location),
 			stream: preview,
 			onChange: () => version++
 		});

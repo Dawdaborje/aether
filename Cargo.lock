@@ -161,7 +161,6 @@ dependencies = [
  "aether_kernel",
  "aether_localization",
  "aether_ocr",
- "aether_organization",
  "aether_orm",
  "aether_paystack_integration",
  "aether_report",
@@ -350,7 +349,6 @@ dependencies = [
  "aether_event_bus",
  "aether_localization",
  "aether_ocr",
- "aether_organization",
  "aether_orm",
  "aether_payroll",
  "aether_paystack_integration",
@@ -442,10 +440,6 @@ dependencies = [
  "sha2 0.10.9",
  "tokio",
 ]
-
-[[package]]
-name = "aether_organization"
-version = "0.1.0"
 
 [[package]]
 name = "aether_orm"

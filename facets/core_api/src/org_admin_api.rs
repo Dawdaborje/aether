@@ -149,9 +149,6 @@ struct UpdateBody {
     /// When the key is present, replaces description (`""` clears it).
     #[serde(default)]
     description: Option<String>,
-    /// When the key is present, replaces parent (`""` clears it).
-    #[serde(default)]
-    parent: Option<String>,
     /// Which optional fields the client meant to set (so `null`/empty can clear).
     #[serde(default)]
     set: Vec<String>,
@@ -224,18 +221,6 @@ fn map_org_error(error: OrganizationError) -> Response {
         OrganizationError::OrganizationNotFound(org) => (
             StatusCode::NOT_FOUND,
             format!("Organization `{org}` was not found."),
-        ),
-        OrganizationError::ParentNotFound(org) => (
-            StatusCode::BAD_REQUEST,
-            format!("Parent organization `{org}` was not found."),
-        ),
-        OrganizationError::ParentIsSelf => (
-            StatusCode::BAD_REQUEST,
-            "An organization cannot be its own parent.".into(),
-        ),
-        OrganizationError::ParentCycle => (
-            StatusCode::BAD_REQUEST,
-            "That parent would create a cycle.".into(),
         ),
         OrganizationError::InvalidLogo(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
         OrganizationError::EmptyOrganizationName
@@ -487,7 +472,6 @@ async fn update_one(
     }
 
     let set_description = body.set.iter().any(|f| f == "description") || body.description.is_some();
-    let set_parent = body.set.iter().any(|f| f == "parent") || body.parent.is_some();
     let name = body
         .name
         .as_deref()
@@ -496,16 +480,6 @@ async fn update_one(
     let description = if set_description {
         Some(
             body.description
-                .as_deref()
-                .map(str::trim)
-                .filter(|v| !v.is_empty()),
-        )
-    } else {
-        None
-    };
-    let parent = if set_parent {
-        Some(
-            body.parent
                 .as_deref()
                 .map(str::trim)
                 .filter(|v| !v.is_empty()),
@@ -527,7 +501,6 @@ async fn update_one(
                 .map(str::trim)
                 .filter(|v| !v.is_empty()),
             description,
-            parent_db_name: parent,
         },
     )
     .await

@@ -1,7 +1,6 @@
 <script lang="ts">
 	import { themeStore } from '$lib/theme';
 	import NavMenu from '../NavMenu.svelte';
-	import OrgSwitchButton from '../OrgSwitchButton.svelte';
 	import UserMenu from '../shell/UserMenu.svelte';
 	import { authSession } from '$lib/auth/session.svelte';
 	import { builtInNav, pluginNavItems } from '../nav';
@@ -26,7 +25,6 @@
 	<h1 class="type-title">{nav.header ?? themeStore.theme.label}</h1>
 	<div class="flex items-center gap-4">
 		<NavMenu items={nav.items} />
-		<OrgSwitchButton tone="on-primary" />
 		<UserMenu tone="on-primary" />
 	</div>
 </nav>

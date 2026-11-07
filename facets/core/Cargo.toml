@@ -13,7 +13,6 @@ schemars = { version = "1", optional = true }
 aether_core_base = { path = "../core_base" }
 aether_kernel = { path = "../kernel" }
 aether_sfu = { path = "../sfu" }
-aether_organization = { path = "../organization" }
 aether_orm = { path = "../orm" }
 aether_security = { path = "../security" }
 aether_report = { path = "../report" }

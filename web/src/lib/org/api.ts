@@ -6,8 +6,6 @@ export interface OrganizationProfile {
 	description?: string | null;
 	/** The organization's contact address; older organizations may not have one yet. */
 	email?: string | null;
-	parent_db_name?: string | null;
-	parent_name?: string | null;
 	logo_url?: string | null;
 	owner_user_id?: string | null;
 	owner_login?: string | null;
@@ -109,7 +107,7 @@ export async function fetchOrganization(db: string): Promise<OrganizationProfile
 
 export async function updateOrganization(
 	db: string,
-	input: { name?: string; email?: string; description?: string; parent?: string; set?: string[] }
+	input: { name?: string; email?: string; description?: string; set?: string[] }
 ): Promise<OrganizationProfile> {
 	const res = await apiFetch(`/api/ui/organizations/${encodeURIComponent(db)}`, {
 		method: 'PATCH',

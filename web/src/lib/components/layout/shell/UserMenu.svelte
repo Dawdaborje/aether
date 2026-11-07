@@ -4,7 +4,6 @@
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
 	import UserAvatar from '$lib/components/auth/UserAvatar.svelte';
 	import { authSession } from '$lib/auth/session.svelte';
-	import { orgStore } from '$lib/org/orgStore.svelte';
 	import { appsStore } from '$lib/apps/appsStore.svelte';
 	import { iconRef } from '$lib/icons';
 	import AppIcon from '$lib/icons/AppIcon.svelte';
@@ -15,11 +14,6 @@
 
 	const user = $derived(authSession.me?.user ?? null);
 	const name = $derived(user?.display_name || user?.username || user?.email || 'Account');
-
-	async function leaveOrganization() {
-		await orgStore.leave();
-		if (!orgStore.error) await goto(resolve('/desk/organizations'));
-	}
 
 	async function signOut() {
 		await authSession.signOut();
@@ -88,11 +82,6 @@
 					<AppIcon name="clock" /> Schedules
 				</DropdownMenu.Item>
 			{/if}
-			{#if orgStore.canSwitch}
-				<DropdownMenu.Item onclick={() => orgStore.openSwitcher()}>
-					Switch organization{orgStore.currentName ? ` (${orgStore.currentName})` : ''}
-				</DropdownMenu.Item>
-			{/if}
 			<DropdownMenu.Separator />
 			<DropdownMenu.Group>
 				<DropdownMenu.GroupHeading>Appearance</DropdownMenu.GroupHeading>
@@ -112,11 +101,6 @@
 					</DropdownMenu.RadioItem>
 				</DropdownMenu.RadioGroup>
 			</DropdownMenu.Group>
-			{#if orgStore.canLeave}
-				<DropdownMenu.Item onclick={leaveOrganization}>
-					Leave organization{orgStore.currentName ? ` (${orgStore.currentName})` : ''}
-				</DropdownMenu.Item>
-			{/if}
 			<DropdownMenu.Separator />
 			<DropdownMenu.Item onclick={signOut}>Sign out</DropdownMenu.Item>
 		</DropdownMenu.Content>

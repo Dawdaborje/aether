@@ -1,4 +1,3 @@
-import { getHeaderOrg } from '$lib/org/selection';
 
 const CSRF_COOKIE = 'aether_csrf';
 const CSRF_HEADER = 'X-CSRF-Token';
@@ -28,10 +27,7 @@ async function ensureCsrfCookie(fetchFn: typeof fetch): Promise<string | undefin
 }
 
 /**
- * `fetch` for Aether's API: always sends the session cookie, and names the
- * organization this browser chose in `X-Org-Slug`. The server only reads that
- * header when it is configured for header tenancy, so sending it is harmless
- * elsewhere.
+ * `fetch` for Aether's API: always sends the session cookie.
  *
  * Unsafe methods also send `X-CSRF-Token` matching the readable `aether_csrf`
  * cookie (double-submit). A missing cookie is bootstrapped once via
@@ -45,9 +41,6 @@ export async function apiFetch(
 	fetchFn: typeof fetch = fetch
 ): Promise<Response> {
 	const headers = new Headers(init.headers);
-	const org = getHeaderOrg();
-	if (org && !headers.has('x-org-slug')) headers.set('x-org-slug', org);
-
 	const csrf = isUnsafe(init.method) && !headers.has(CSRF_HEADER);
 	if (csrf) {
 		const token = await ensureCsrfCookie(fetchFn);

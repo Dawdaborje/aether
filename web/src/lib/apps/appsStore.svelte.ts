@@ -49,8 +49,6 @@ class AppsStore {
 			return;
 		}
 		if (res.status === 409) {
-			// Several organizations and none chosen yet: ask.
-			void orgStore.requireSelection();
 			this.problem = 'organization';
 		} else if (res.status === 404) {
 			// A developer who belongs to no organization has not entered one yet,

@@ -80,15 +80,6 @@ pub enum OrganizationError {
     #[error("`{0}` is not a member of organization `{1}`")]
     NotAMember(String, String),
 
-    #[error("parent organization `{0}` was not found")]
-    ParentNotFound(String),
-
-    #[error("an organization cannot be its own parent")]
-    ParentIsSelf,
-
-    #[error("setting that parent would create a cycle")]
-    ParentCycle,
-
     #[error("invalid logo: {0}")]
     InvalidLogo(String),
 
@@ -148,8 +139,6 @@ pub struct OrganizationRequest<'a> {
     pub db_name: Option<&'a str>,
     pub member: FirstMember<'a>,
     pub description: Option<&'a str>,
-    /// Parent organization's database name, if any.
-    pub parent_db_name: Option<&'a str>,
 }
 
 /// A plausible address: one `@`, text on both sides, no spaces. Delivery is not checked.
@@ -185,7 +174,6 @@ pub async fn create_organization(
         db_name: organization_db_name,
         member,
         description,
-        parent_db_name,
     } = *request;
     if organization_name.trim().is_empty() {
         return Err(OrganizationError::EmptyOrganizationName);
@@ -226,10 +214,6 @@ pub async fn create_organization(
     let taken: Vec<OrgDatabaseRow> = taken.take(0)?;
     if !taken.is_empty() {
         return Err(OrganizationError::AlreadyExists(db_name));
-    }
-    let parent = normalize_optional(parent_db_name);
-    if let Some(ref parent) = parent {
-        validate_parent(db, &db_name, parent).await?;
     }
     let description = normalize_optional(description);
     // The user is looked up before anything is created too.
@@ -306,7 +290,6 @@ pub async fn create_organization(
             db_name: db_name.clone(),
             owner_user_id: first.as_ref().map(|(id, _)| id.clone()),
             description: description.clone(),
-            parent_db_name: parent.clone(),
             email: Some(organization_email.trim().to_string()),
             date_created: now.clone(),
             date_updated: now.clone(),
@@ -738,59 +721,6 @@ fn normalize_optional(value: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
-async fn validate_parent(
-    db: &Surreal<Client>,
-    child_db_name: &str,
-    parent_db_name: &str,
-) -> Result<(), OrganizationError> {
-    if parent_db_name == child_db_name {
-        return Err(OrganizationError::ParentIsSelf);
-    }
-    let mut response = db
-        .query("SELECT db_name, parent_db_name FROM organizations WHERE db_name = $parent LIMIT 1;")
-        .bind(("parent", parent_db_name.to_string()))
-        .await?
-        .check()?;
-    let parents: Vec<OrgParentRow> = response.take(0)?;
-    if parents.is_empty() {
-        return Err(OrganizationError::ParentNotFound(
-            parent_db_name.to_string(),
-        ));
-    }
-    // Walk ancestors; refuse if we meet the child.
-    let mut cursor = parents[0].parent_db_name.clone();
-    let mut guard = 0;
-    while let Some(next) = cursor {
-        if next == child_db_name {
-            return Err(OrganizationError::ParentCycle);
-        }
-        guard += 1;
-        if guard > 64 {
-            return Err(OrganizationError::ParentCycle);
-        }
-        let mut response = db
-            .query("SELECT parent_db_name FROM organizations WHERE db_name = $org LIMIT 1;")
-            .bind(("org", next))
-            .await?
-            .check()?;
-        let rows: Vec<OrgParentOnly> = response.take(0)?;
-        cursor = rows.into_iter().next().and_then(|row| row.parent_db_name);
-    }
-    Ok(())
-}
-
-#[derive(Debug, Deserialize, SurrealValue)]
-struct OrgParentRow {
-    #[allow(dead_code)]
-    db_name: String,
-    parent_db_name: Option<String>,
-}
-
-#[derive(Debug, Deserialize, SurrealValue)]
-struct OrgParentOnly {
-    parent_db_name: Option<String>,
-}
-
 /// Organization as shown on the desk list and detail pages.
 #[derive(Debug, Clone, Serialize)]
 pub struct OrganizationProfile {
@@ -800,10 +730,6 @@ pub struct OrganizationProfile {
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent_db_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub logo_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -825,7 +751,6 @@ struct OrgProfileRow {
     description: Option<String>,
     #[serde(default)]
     email: Option<String>,
-    parent_db_name: Option<String>,
     logo_file: Option<String>,
     owner_user_id: Option<String>,
     #[serde(default)]
@@ -892,7 +817,6 @@ pub struct OrganizationUpdate<'a> {
     /// Replaces the organization's email; it cannot be cleared.
     pub email: Option<&'a str>,
     pub description: Option<Option<&'a str>>,
-    pub parent_db_name: Option<Option<&'a str>>,
 }
 
 fn logo_url_for(db_name: &str, logo_file: Option<&str>) -> Option<String> {
@@ -921,21 +845,6 @@ async fn profile_from_row(
     db: &Surreal<Client>,
     row: OrgProfileRow,
 ) -> Result<OrganizationProfile, OrganizationError> {
-    let parent_name = if let Some(ref parent) = row.parent_db_name {
-        let mut response = db
-            .query("SELECT name FROM organizations WHERE db_name = $org LIMIT 1;")
-            .bind(("org", parent.clone()))
-            .await?
-            .check()?;
-        #[derive(Debug, Deserialize, SurrealValue)]
-        struct NameRow {
-            name: String,
-        }
-        let names: Vec<NameRow> = response.take(0)?;
-        names.into_iter().next().map(|r| r.name)
-    } else {
-        None
-    };
     let owner_login = match row.owner_user_id.as_deref() {
         Some(id) => login_for(db, id).await?,
         None => None,
@@ -954,8 +863,6 @@ async fn profile_from_row(
         name: row.name,
         description: row.description,
         email: row.email,
-        parent_db_name: row.parent_db_name,
-        parent_name,
         owner_user_id: row.owner_user_id,
         owner_login,
         member_count,
@@ -974,7 +881,7 @@ pub async fn list_profiles(
     db.use_db("core").await?;
     let mut response = db
         .query(
-            "SELECT name, db_name, description, email, parent_db_name, logo_file, owner_user_id, \
+            "SELECT name, db_name, description, email, logo_file, owner_user_id, \
              disabled_at, date_created, date_updated FROM organizations ORDER BY name;",
         )
         .await?
@@ -997,7 +904,7 @@ pub async fn get_profile(
     db.use_db("core").await?;
     let mut response = db
         .query(
-            "SELECT name, db_name, description, email, parent_db_name, logo_file, owner_user_id, \
+            "SELECT name, db_name, description, email, logo_file, owner_user_id, \
              disabled_at, date_created, date_updated FROM organizations WHERE db_name = $org LIMIT 1;",
         )
         .bind(("org", db_name.to_string()))
@@ -1065,22 +972,6 @@ pub async fn update_profile(
             "UPDATE organizations SET description = $description, date_updated = time::now() WHERE db_name = $org;",
         )
         .bind(("description", description))
-        .bind(("org", db_name.to_string()))
-        .await?
-        .check()?;
-    }
-    if let Some(parent) = update.parent_db_name {
-        let parent = parent
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-            .map(str::to_string);
-        if let Some(ref parent) = parent {
-            validate_parent(db, db_name, parent).await?;
-        }
-        db.query(
-            "UPDATE organizations SET parent_db_name = $parent, date_updated = time::now() WHERE db_name = $org;",
-        )
-        .bind(("parent", parent))
         .bind(("org", db_name.to_string()))
         .await?
         .check()?;

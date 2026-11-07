@@ -1,11 +1,9 @@
-import { getHeaderOrg } from '$lib/org/selection';
 import { RealtimeClient, type SubscribeOptions, type TopicHandlers } from './client';
 
-/** The WebSocket address of this site; the organization goes in the query because a browser socket has no headers. */
+/** The WebSocket address of this site. */
 function address(): string {
 	const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
-	const org = getHeaderOrg();
-	return `${scheme}://${location.host}/api/ui/realtime${org ? `?org=${encodeURIComponent(org)}` : ''}`;
+	return `${scheme}://${location.host}/api/ui/realtime`;
 }
 
 let client: RealtimeClient | null = null;

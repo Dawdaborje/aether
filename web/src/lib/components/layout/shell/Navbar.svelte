@@ -7,7 +7,6 @@
 	import { orgStore } from '$lib/org/orgStore.svelte';
 	import type { ThemeNav } from '$lib/theme/types';
 	import { activeApp, activeInstalledApp, navHref } from '../nav';
-	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { appsStore } from '$lib/apps/appsStore.svelte';
 	import HomeMenu from './HomeMenu.svelte';
@@ -35,10 +34,6 @@
 	$effect(() => {
 		if (authSession.isUser && appsStore.apps === null) void appsStore.load();
 	});
-	async function leaveOrganization() {
-		await orgStore.leave();
-		if (!orgStore.error) await goto(resolve('/desk/organizations'));
-	}
 </script>
 
 <!--
@@ -114,30 +109,13 @@
 			</DropdownMenu.Root>
 		{/if}
 		{#if orgStore.currentName}
-			<DropdownMenu.Root>
-				<DropdownMenu.Trigger
-					disabled={!orgStore.canSwitch && !orgStore.canLeave}
-					aria-label="Organization"
-					class="flex h-8 items-center gap-1.5 rounded-md px-2.5 text-[13px] text-sidebar-foreground/85 transition outline-none enabled:cursor-pointer enabled:hover:bg-sidebar-accent enabled:hover:text-sidebar-accent-foreground disabled:cursor-default data-[state=open]:bg-sidebar-accent"
-				>
-					<span class="size-1.5 rounded-full bg-sidebar-primary"></span>
-					{orgStore.currentName}
-					{#if orgStore.canSwitch || orgStore.canLeave}<AppIcon
-							name="chevron-down"
-							class="size-3 opacity-60"
-						/>{/if}
-				</DropdownMenu.Trigger>
-				<DropdownMenu.Content align="end" class="min-w-52">
-					{#if orgStore.canSwitch}
-						<DropdownMenu.Item onclick={() => orgStore.openSwitcher()}
-							>Switch organization</DropdownMenu.Item
-						>
-					{/if}
-					{#if orgStore.canLeave}
-						<DropdownMenu.Item onclick={leaveOrganization}>Leave organization</DropdownMenu.Item>
-					{/if}
-				</DropdownMenu.Content>
-			</DropdownMenu.Root>
+			<span
+				aria-label="Organization"
+				class="flex h-8 items-center gap-1.5 rounded-md px-2.5 text-[13px] text-sidebar-foreground/85"
+			>
+				<span class="size-1.5 rounded-full bg-sidebar-primary"></span>
+				{orgStore.currentName}
+			</span>
 		{/if}
 		<UserMenu tone="on-primary" />
 	</div>

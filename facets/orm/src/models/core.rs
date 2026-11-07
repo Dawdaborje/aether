@@ -36,9 +36,6 @@ pub struct Organization {
     pub owner_user_id: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
-    /// Parent organization's `db_name`, when this org sits under another.
-    #[serde(default)]
-    pub parent_db_name: Option<String>,
     /// Filename under `app_dir/orgs/<db>/` for the logo (`logo.png`, …).
     #[serde(default)]
     pub logo_file: Option<String>,
@@ -58,8 +55,6 @@ pub struct NewOrganization {
     pub owner_user_id: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
-    #[serde(default)]
-    pub parent_db_name: Option<String>,
     #[serde(default)]
     pub email: Option<String>,
     pub date_created: Datetime,

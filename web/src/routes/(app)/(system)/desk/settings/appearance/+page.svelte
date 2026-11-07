@@ -122,8 +122,7 @@
 	{:else if !orgStore.current}
 		<div class="space-y-3 rounded-md border border-dashed border-border bg-card p-8 text-center">
 			<p class="font-medium">Appearance is set per organization</p>
-			<p class="text-sm text-muted-foreground">Enter an organization to choose its theme.</p>
-			<Button onclick={() => orgStore.openSwitcher()}>Choose organization</Button>
+			<p class="text-sm text-muted-foreground">This installation has no organization yet.</p>
 		</div>
 	{:else}
 		{#if error}

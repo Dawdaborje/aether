@@ -1,7 +1,6 @@
 <script lang="ts">
 	import { navigating, page } from '$app/state';
 	import AppShell from '$lib/components/layout/AppShell.svelte';
-	import OrgSwitcherModal from '$lib/components/layout/OrgSwitcherModal.svelte';
 	import BootstrapLoading from '$lib/components/errors/BootstrapLoading.svelte';
 	import ServerUnavailable from '$lib/components/errors/ServerUnavailable.svelte';
 	import { authSession } from '$lib/auth/session.svelte';
@@ -155,7 +154,6 @@
 			{@render children()}
 		</AppShell>
 		{#if authSession.isUser}
-			<OrgSwitcherModal />
 		{/if}
 	{/if}
 </div>

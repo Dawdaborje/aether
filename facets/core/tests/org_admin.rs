@@ -60,7 +60,6 @@ fn request<'a>(name: &'a str, member: FirstMember<'a>) -> OrganizationRequest<'a
         db_name: None,
         member,
         description: None,
-        parent_db_name: None,
     }
 }
 

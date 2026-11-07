@@ -6,14 +6,11 @@ const ORG_SECTIONS: Record<string, string> = {
 	overview: 'Overview',
 	members: 'Members',
 	roles: 'Roles',
-	children: 'Children',
 	schedules: 'Schedules',
 	plugins: 'Plugins',
 	audit: 'Audit log',
 	'plugin-activity': 'Plugin activity'
 };
-
-const CHILD_VIEWS: Record<string, string> = { graph: 'Graph', list: 'List' };
 
 function decoded(segment: string): string {
 	try {
@@ -46,12 +43,7 @@ export function orgCrumbs(opts: {
 	if (!sectionLabel) return [...trail, { label: opts.name }];
 
 	trail.push({ label: opts.name, href: `${base}/overview` });
-	const detail =
-		section === 'roles' && rest[0]
-			? decoded(rest[0])
-			: section === 'children' && rest[0]
-				? CHILD_VIEWS[rest[0]]
-				: undefined;
+	const detail = section === 'roles' && rest[0] ? decoded(rest[0]) : undefined;
 	if (!detail) return [...trail, { label: sectionLabel }];
 	return [...trail, { label: sectionLabel, href: `${base}/${section}` }, { label: detail }];
 }

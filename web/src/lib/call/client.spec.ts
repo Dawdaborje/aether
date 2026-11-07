@@ -343,8 +343,8 @@ describe('in a meeting', () => {
 });
 
 describe('signalingUrl', () => {
-	it('builds a ws address for the room, with the organization when there is one', () => {
-		expect(signalingUrl('meet:m.1', null, { protocol: 'http:', host: 'a.test' })).toBe('ws://a.test/api/ui/sfu/meet%3Am.1');
-		expect(signalingUrl('meet:m.1', 'acme', { protocol: 'https:', host: 'a.test' })).toBe('wss://a.test/api/ui/sfu/meet%3Am.1?org=acme');
+	it('builds a ws address for the room', () => {
+		expect(signalingUrl('meet:m.1', { protocol: 'http:', host: 'a.test' })).toBe('ws://a.test/api/ui/sfu/meet%3Am.1');
+		expect(signalingUrl('meet:m.1', { protocol: 'https:', host: 'a.test' })).toBe('wss://a.test/api/ui/sfu/meet%3Am.1');
 	});
 });

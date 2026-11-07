@@ -361,7 +361,7 @@ export class CallClient {
 }
 
 /** The signaling address for a room (`plugin:room`), on this site. */
-export function signalingUrl(room: string, org: string | null | undefined, here: { protocol: string; host: string }): string {
+export function signalingUrl(room: string, here: { protocol: string; host: string }): string {
 	const scheme = here.protocol === 'https:' ? 'wss' : 'ws';
-	return `${scheme}://${here.host}/api/ui/sfu/${encodeURIComponent(room)}${org ? `?org=${encodeURIComponent(org)}` : ''}`;
+	return `${scheme}://${here.host}/api/ui/sfu/${encodeURIComponent(room)}`;
 }

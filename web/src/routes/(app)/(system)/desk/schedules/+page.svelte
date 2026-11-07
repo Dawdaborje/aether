@@ -3,7 +3,6 @@
 	import ControlPanel from '$lib/components/layout/shell/ControlPanel.svelte';
 	import OrgSearchPicker from '$lib/components/org/OrgSearchPicker.svelte';
 	import SchedulesPanel from '$lib/components/schedules/SchedulesPanel.svelte';
-	import { Button } from '$lib/components/ui/button';
 	import { orgStore } from '$lib/org/orgStore.svelte';
 
 	let selectedDb = $state<string | null>(null);
@@ -43,13 +42,8 @@
 	{:else if !selectedDb}
 		<div class="space-y-3 rounded-md border border-dashed border-border px-4 py-8 text-center">
 			<p class="text-sm text-muted-foreground">
-				Choose an organization to view its schedules. Nothing is shown across orgs mixed together.
+				This installation has no organization yet.
 			</p>
-			{#if orgStore.canSwitch}
-				<Button size="sm" variant="outline" onclick={() => orgStore.openSwitcher()}>
-					Switch organization
-				</Button>
-			{/if}
 		</div>
 	{:else}
 		<p class="font-mono text-xs text-muted-foreground">{selectedDb}</p>

@@ -8,8 +8,7 @@ export interface SseMessage {
 /**
  * Read a server-sent-events body.
  *
- * `EventSource` cannot send headers, and the web app needs `X-Org-Slug` (header
- * tenancy) as well as `Last-Event-ID`, so the stream is read from a plain `fetch`.
+ * `EventSource` cannot send headers, and the web app needs `Last-Event-ID`, so the stream is read from a plain `fetch`.
  * Calls `onMessage` for each event until the body ends or `signal` aborts.
  */
 export async function readEventStream(

@@ -68,16 +68,6 @@
 					<span aria-current="page" class="truncate font-medium text-region-foreground"
 						>{crumb.label}</span
 					>
-				{:else if scope && i === 0 && orgStore.canSwitch && crumb.label === orgStore.currentName}
-					<!-- The organization crumb switches organization. -->
-					<button
-						type="button"
-						title="Switch organization"
-						onclick={() => orgStore.openSwitcher()}
-						class="{crumbClass} cursor-pointer"
-					>
-						{crumb.label}
-					</button>
 				{:else if crumb.href}
 					<!-- eslint-disable svelte/no-navigation-without-resolve -- navHref() applies the base path -->
 					<a href={navHref(crumb.href)} class={crumbClass}>{crumb.label}</a>

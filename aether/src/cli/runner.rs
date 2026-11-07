@@ -712,7 +712,6 @@ async fn provision_single_org(
         db_name: Some(&tenancy.single_org_db_name),
         member: FirstMember::Existing { login: &login },
         description: None,
-        parent_db_name: None,
     };
     let (db_name, _) = create_organization(db, namespace, &request, storage).await?;
     println!("  organization: created '{}' ({db_name})", tenancy.single_org_name);

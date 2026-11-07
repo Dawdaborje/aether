@@ -223,20 +223,10 @@
 							>
 								Organization
 							</h2>
-							<button
-								type="button"
-								disabled={!orgStore.canSwitch}
-								onclick={() => {
-									open = false;
-									orgStore.openSwitcher();
-								}}
-								class="flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left text-sm transition enabled:hover:bg-accent disabled:cursor-default"
-							>
+							<div class="flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-sm">
 								<AppIcon name="building-2" class="size-5 text-muted-foreground" />
 								<span class="flex-1 truncate font-medium">{orgStore.currentName}</span>
-								{#if orgStore.canSwitch}<span class="text-xs text-muted-foreground">Switch</span
-									>{/if}
-							</button>
+							</div>
 						</section>
 					{/if}
 

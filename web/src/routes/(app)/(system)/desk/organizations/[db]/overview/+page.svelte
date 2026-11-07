@@ -7,13 +7,11 @@
 	import OrgLogo from '$lib/components/org/OrgLogo.svelte';
 	import {
 		clearOrganizationLogo,
-		fetchOrganizations,
 		updateOrganization,
 		uploadOrganizationLogo,
 		type OrganizationProfile
 	} from '$lib/org/api';
 	import { getOrgDetailContext } from '$lib/org/orgDetailContext';
-	import { resolve } from '$app/paths';
 
 	let { params }: { params: { db: string } } = $props();
 
@@ -22,8 +20,6 @@
 	let name = $state('');
 	let email = $state('');
 	let description = $state('');
-	let parent = $state('');
-	let parents = $state<OrganizationProfile[]>([]);
 	let working = $state(false);
 	let logoWorking = $state(false);
 	let message = $state<string | null>(null);
@@ -35,16 +31,10 @@
 		name = org.name;
 		email = org.email ?? '';
 		description = org.description ?? '';
-		parent = org.parent_db_name ?? '';
 	}
 
-	onMount(async () => {
+	onMount(() => {
 		syncFrom(detail.organization);
-		try {
-			parents = (await fetchOrganizations()).filter((org) => org.db_name !== params.db);
-		} catch {
-			parents = [];
-		}
 	});
 
 	$effect(() => {
@@ -63,8 +53,7 @@
 				// Only sent when filled: the address can be changed but not cleared.
 				email: email.trim() || undefined,
 				description,
-				parent,
-				set: ['description', 'parent']
+				set: ['description']
 			});
 			detail.setOrganization(next);
 			message = 'Saved.';
@@ -134,23 +123,6 @@
 				placeholder="What this organization is for"
 			></textarea>
 		</div>
-		<div class="space-y-1.5">
-			<Label for="org-detail-parent">Parent organization</Label>
-			<select
-				id="org-detail-parent"
-				bind:value={parent}
-				class="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-			>
-				<option value="">None</option>
-				{#each parents as org (org.db_name)}
-					<option value={org.db_name}>{org.name} ({org.db_name})</option>
-				{/each}
-			</select>
-			<p class="text-xs text-muted-foreground">
-				Optional. Use this when the org sits under a holding company or regional parent.
-			</p>
-		</div>
-
 		{#if failed}
 			<p class="text-sm text-destructive" role="alert">{failed}</p>
 		{/if}
@@ -160,15 +132,6 @@
 
 		<div class="flex flex-wrap gap-2">
 			<Button type="submit" disabled={working}>{working ? 'Saving…' : 'Save changes'}</Button>
-			{#if detail.organization?.parent_db_name}
-				<Button
-					type="button"
-					variant="outline"
-					href={resolve(`/desk/organizations/${detail.organization.parent_db_name}/overview`)}
-				>
-					Open parent
-				</Button>
-			{/if}
 		</div>
 	</form>
 

@@ -52,8 +52,6 @@
 			void gotoLogin(`/${params.slug}`);
 		} else if (data.status === 404 && atRoot && authSession.isUser) {
 			void gotoLanding(authSession.me?.user);
-		} else if (data.status === 409) {
-			void orgStore.requireSelection();
 		}
 	});
 
